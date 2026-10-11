@@ -531,6 +531,20 @@ def test_xray_config_error_reports_xray_reason_without_generic_prefix(monkeypatc
     assert kw["env"]["XRAY_LOCATION_ASSET"] == "/assets"
 
 
+def test_xray_config_error_finds_the_reason_when_a_log_line_lands_after_it(monkeypatch):
+    # xray's async logger can flush "Reading config" after "Failed to start"
+    # (seen ~1/300 locally, flaked the CI compat negative control on 26.9.9)
+    run = _XrayRun(
+        23,
+        "Xray 26.9.30\nFailed to start: main: failed to load config files: [stdin:] > "
+        "infra/conf: unknown config id: x\n"
+        "2026/10/11 13:44:37.869765 [Info] infra/conf/serial: Reading config: "
+        "&{Name:stdin: Format:json}",
+    )
+    monkeypatch.setattr(happ.subprocess, "run", run)
+    assert happ.xray_config_error({}, None) == "infra/conf: unknown config id: x"
+
+
 def test_xray_config_error_none_when_config_ok(monkeypatch):
     monkeypatch.setattr(happ.subprocess, "run", _XrayRun())
     assert happ.xray_config_error({}, None) is None

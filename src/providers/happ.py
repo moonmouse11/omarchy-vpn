@@ -257,7 +257,12 @@ def xray_config_error(cfg: dict, asset_dir: Path | None) -> str | None:
     if result.returncode == 0:
         return None
     lines = (result.stdout + result.stderr).strip().splitlines()
-    reason = lines[-1] if lines else ""
+    # not simply lines[-1]: xray's async logger can flush its "[Info] Reading
+    # config" line after "Failed to start", which hid real config errors
+    reason = next(
+        (line for line in reversed(lines) if XRAY_ERROR_PREFIX in line),
+        lines[-1] if lines else "",
+    )
     if XRAY_ERROR_PREFIX not in reason:
         # failed only after the config loaded: older xray (26.3.x) `-test`
         # also creates the server, i.e. opens the TUN device, which fails

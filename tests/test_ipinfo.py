@@ -1,0 +1,102 @@
+import json
+import time
+
+import pytest
+
+import ipinfo
+
+
+def test_flag_emoji():
+    assert ipinfo.flag_emoji("DE") == "🇩🇪"
+    assert ipinfo.flag_emoji("us") == "🇺🇸"
+    assert ipinfo.flag_emoji(None) == ""
+    assert ipinfo.flag_emoji("D") == ""
+
+
+def test_is_fresh():
+    now = time.time()
+    assert ipinfo.is_fresh({"fetched_at": now, "connection": "a"}, "a", 600)
+    assert not ipinfo.is_fresh({"fetched_at": now - 700, "connection": "a"}, "a", 600)
+    assert not ipinfo.is_fresh({"fetched_at": now, "connection": "a"}, "b", 600)
+    assert not ipinfo.is_fresh({"fetched_at": now, "connection": "a", "error": "x"}, "a", 600)
+    assert not ipinfo.is_fresh(None, "a", 600)
+
+
+def test_status_line(tmp_path, monkeypatch):
+    p = tmp_path / "cache.json"
+    monkeypatch.setattr(ipinfo, "CACHE_PATH", p)
+    assert ipinfo.status_line("a", 600) is None
+    entry = {"connection": "a", "fetched_at": time.time(), "ip": "1.2.3.4", "country_code": "DE"}
+    p.write_text(json.dumps(entry))
+    assert ipinfo.status_line("a", 600) == "Exit: 1.2.3.4 🇩🇪"
+    assert ipinfo.status_line("b", 600) is None
+
+
+def test_status_line_has_no_reputation_marker(tmp_path, monkeypatch):
+    # a Russian-registered exit is not a leak — no marker on the Exit line
+    p = tmp_path / "cache.json"
+    monkeypatch.setattr(ipinfo, "CACHE_PATH", p)
+    entry = {
+        "connection": "a",
+        "fetched_at": time.time(),
+        "ip": "1.2.3.4",
+        "country_code": "DE",
+        "domain": "dhost.su",
+    }
+    p.write_text(json.dumps(entry))
+    assert ipinfo.status_line("a", 600) == "Exit: 1.2.3.4 🇩🇪"
+
+
+def test_update_caches_and_throttles(tmp_path, monkeypatch):
+    p = tmp_path / "cache.json"
+    monkeypatch.setattr(ipinfo, "CACHE_PATH", p)
+    monkeypatch.setattr(ipinfo, "_fetch", lambda: {"ip": "9.9.9.9", "country_code": "FI"})
+    ipinfo.update("conn")
+    assert json.loads(p.read_text())["ip"] == "9.9.9.9"
+
+    def boom():
+        raise AssertionError("second update within throttle window must not re-fetch")
+
+    monkeypatch.setattr(ipinfo, "_fetch", boom)
+    ipinfo.update("conn")
+
+
+def test_update_failure_cached(tmp_path, monkeypatch):
+    p = tmp_path / "cache.json"
+    monkeypatch.setattr(ipinfo, "CACHE_PATH", p)
+
+    def fail():
+        raise OSError("no route")
+
+    monkeypatch.setattr(ipinfo, "_fetch", fail)
+    ipinfo.update("conn")
+    entry = json.loads(p.read_text())
+    assert entry["error"] == "no route"
+    assert ipinfo.status_line("conn", 600) is None
+
+
+def test_country_of_ip_uses_cache_for_the_same_ip(tmp_path, monkeypatch):
+    monkeypatch.setattr(ipinfo, "CACHE_PATH", tmp_path / "exit_ip.json")
+    (tmp_path / "exit_ip.json").write_text('{"ip": "1.2.3.4", "country_code": "PL"}')
+    monkeypatch.setattr(ipinfo, "_fetch", lambda: pytest.fail("cache hit must not fetch"))
+    assert ipinfo.country_of_ip("1.2.3.4") == "PL"
+
+
+def test_country_of_ip_fetches_when_cache_is_for_another_ip(tmp_path, monkeypatch):
+    monkeypatch.setattr(ipinfo, "CACHE_PATH", tmp_path / "exit_ip.json")
+    (tmp_path / "exit_ip.json").write_text('{"ip": "9.9.9.9", "country_code": "DE"}')
+    monkeypatch.setattr(ipinfo, "_fetch", lambda: {"ip": "1.2.3.4", "country_code": "pl"})
+    assert ipinfo.country_of_ip("1.2.3.4") == "PL"
+
+
+def test_country_of_ip_none_when_the_route_changed_or_lookup_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(ipinfo, "CACHE_PATH", tmp_path / "missing.json")
+    # a different public IP answering means a different exit — not an opinion on ours
+    monkeypatch.setattr(ipinfo, "_fetch", lambda: {"ip": "5.5.5.5", "country_code": "PL"})
+    assert ipinfo.country_of_ip("1.2.3.4") is None
+
+    def down():
+        raise OSError("offline")
+
+    monkeypatch.setattr(ipinfo, "_fetch", down)
+    assert ipinfo.country_of_ip("1.2.3.4") is None

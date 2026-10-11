@@ -1,0 +1,268 @@
+import json
+import time
+
+import killswitch
+import providers.base as base
+from providers.base import ActionResult, human_bytes, iface_traffic
+
+
+def test_human_bytes():
+    assert human_bytes(0) == "0 B"
+    assert human_bytes(512) == "512 B"
+    assert human_bytes(2048) == "2.0 KiB"
+    assert human_bytes(5 * 1024**3) == "5.0 GiB"
+
+
+IP_S_LINK = """\
+2: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN
+    link/none
+    RX: bytes  packets  errors  dropped missed  mcast
+    123456     1000     0       0       0       0
+    TX: bytes  packets  errors  dropped missed  collisions carrier
+    654321     2000     0       0       0       0          0
+"""
+
+
+def test_iface_traffic_parses(monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = IP_S_LINK
+
+    monkeypatch.setattr(base.subprocess, "run", lambda *a, **k: Result())
+    assert iface_traffic("wg0") == "↓ 120.6 KiB  ↑ 639.0 KiB"
+
+
+def test_iface_traffic_missing(monkeypatch):
+    class Result:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(base.subprocess, "run", lambda *a, **k: Result())
+    assert iface_traffic("nope") is None
+
+
+def test_iface_rate_from_cached_sample(monkeypatch, tmp_path):
+    cache = tmp_path / "rate.json"
+    monkeypatch.setattr(base, "RATE_CACHE", cache)
+    cache.write_text(json.dumps({"wg0": {"rx": 1000, "tx": 500, "at": time.time() - 3}}))
+    # 3 s later: +6144 rx bytes, +1536 tx bytes -> 2048 B/s and 512 B/s
+    monkeypatch.setattr(base, "_iface_counters", lambda iface: (7144, 2036))
+    rate = base.iface_rate("wg0")
+    assert "↓ 2.0 KiB/s" in rate and "↑ 512 B/s" in rate
+
+
+def test_iface_rate_none_without_predecessor_or_on_reset(monkeypatch, tmp_path):
+    cache = tmp_path / "rate.json"
+    monkeypatch.setattr(base, "RATE_CACHE", cache)
+    monkeypatch.setattr(base, "_iface_counters", lambda iface: (100, 100))
+    assert base.iface_rate("wg0") is None  # no cache at all
+    cache.write_text(json.dumps({"wg0": {"rx": 1000, "tx": 1000, "at": time.time() - 3}}))
+    assert base.iface_rate("wg0") is None  # counters reset (delta negative)
+    cache.write_text(json.dumps({"wg0": {"rx": 100, "tx": 100, "at": time.time() - 3}}))
+    assert base.iface_rate("wg0") is None  # no traffic in the window
+
+
+def test_sample_iface_traffic_writes_counters(monkeypatch, tmp_path):
+    cache = tmp_path / "rate.json"
+    monkeypatch.setattr(base, "RATE_CACHE", cache)
+    monkeypatch.setattr(base, "_iface_counters", lambda iface: (4096, 2048))
+    base.sample_iface_traffic("wg0")
+    entry = json.loads(cache.read_text())["wg0"]
+    assert entry["rx"] == 4096 and entry["tx"] == 2048 and entry["at"] > 0
+
+
+def test_is_enabled_probes_via_script(monkeypatch):
+    """Unprivileged nft can't list tables and sudoers has no nft rule, so
+    is_enabled must shell out to the script's 'is-on' and map its rc."""
+    ran = []
+
+    class Result:
+        def __init__(self, rc):
+            self.returncode = rc
+
+    calls = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        ran.append(cmd)
+        calls["n"] += 1
+        return Result(0 if calls["n"] == 1 else 1)
+
+    monkeypatch.setattr(killswitch.subprocess, "run", fake_run)
+    assert killswitch.is_enabled()
+    assert ran == [["sudo", "-n", killswitch.SCRIPT, "is-on"]]
+    assert not killswitch.is_enabled()
+
+
+def test_set_mode_persists(monkeypatch, tmp_path):
+    monkeypatch.setattr(killswitch.config, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(killswitch, "is_enabled", lambda: False)
+    calls = []
+    monkeypatch.setattr(
+        killswitch, "_sudo", lambda *args: calls.append(args) or ActionResult(True, "ok")
+    )
+
+    assert killswitch.set_mode(True).success
+    assert calls == [("detect",), ("on",)]  # enable re-detects Happ server IPs first
+    assert killswitch.mode() == "all"  # the menu toggle means "all providers"
+
+    calls.clear()
+    assert killswitch.set_mode(False).success
+    assert calls == [("off",)]
+    assert killswitch.mode() == "off"
+
+
+def test_enable_all_mode_merges_endpoints_and_ifaces(monkeypatch, tmp_path):
+    """'all' mode: resolved WG/OVPN IPs + tunnel ifaces reach the script as
+    'on <ips…> --iface <name>…' after the Happ detect."""
+    monkeypatch.setattr(killswitch.config, "CONFIG_PATH", tmp_path / "config.json")
+    calls = []
+    monkeypatch.setattr(
+        killswitch, "_sudo", lambda *args: calls.append(args) or ActionResult(True, "ok")
+    )
+
+    result = killswitch.enable(extra_ips=["1.2.3.4", "5.6.7.8"], ifaces=["wg0", "tun*"])
+    assert result.success
+    assert calls == [
+        ("detect",),
+        ("on", "1.2.3.4", "5.6.7.8", "--iface", "wg0", "--iface", "tun*"),
+    ]
+
+
+def test_enable_all_mode_tolerates_detect_failure(monkeypatch, tmp_path):
+    """Happ disconnected in 'all' mode: detect fails but 'on' still runs —
+    the WG/OVPN whitelist is enough. In happ-only mode (extra_ips=None) a
+    failed detect stays fatal."""
+    monkeypatch.setattr(killswitch.config, "CONFIG_PATH", tmp_path / "config.json")
+    calls = []
+    monkeypatch.setattr(
+        killswitch,
+        "_sudo",
+        lambda *args: (
+            calls.append(args)
+            or ActionResult(args[0] != "detect", "ok" if args[0] != "detect" else "no happ")
+        ),
+    )
+
+    assert killswitch.enable(extra_ips=["1.2.3.4"]).success
+    assert [c[0] for c in calls] == ["detect", "on"]
+
+    calls.clear()
+    failed = killswitch.enable()
+    assert not failed.success
+    assert calls == [("detect",)]  # never reached 'on'
+
+
+def test_resume_for_happ_enables_in_all_mode(monkeypatch, tmp_path):
+    monkeypatch.setattr(killswitch.config, "CONFIG_PATH", tmp_path / "config.json")
+    cfg = killswitch.config.load_config()
+    cfg.killswitch_mode = "all"
+    killswitch.config.save_config(cfg)
+    monkeypatch.setattr(killswitch, "is_enabled", lambda: False)
+    calls = []
+    monkeypatch.setattr(
+        killswitch, "enable", lambda **kw: calls.append(kw) or ActionResult(True, "ok")
+    )
+    assert killswitch.resume_for_happ().success
+    assert calls == [{}]
+
+
+def test_resolve_endpoint_ips(monkeypatch):
+    import socket
+
+    def fake_getaddrinfo(host, port, family):
+        if host == "dead.example":
+            raise OSError("NXDOMAIN")
+        if host == "v6-only.example":
+            return []  # no A record — the AF_INET query comes back empty
+        return [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(killswitch.socket, "getaddrinfo", fake_getaddrinfo)
+    targets = [("nl", "example.com", 51820), ("de", "example.com", 51820), ("x", "dead.example", 1)]
+    assert killswitch.resolve_endpoint_ips(targets) == ["93.184.216.34"]  # dedup + skip dead
+    assert killswitch.resolve_endpoint_ips([("v6", "v6-only.example", 1)]) == []
+
+
+def test_resume_for_happ_extra_ips_bypass_detect(monkeypatch, tmp_path):
+    """Happ connect under killswitch: the caller passes the resolved server
+    IP (detect can't see the session before connect); rules rebuild around
+    it whether the killswitch is already on or being enabled by mode."""
+    monkeypatch.setattr(killswitch.config, "CONFIG_PATH", tmp_path / "config.json")
+    calls = []
+    monkeypatch.setattr(
+        killswitch, "enable", lambda **kw: calls.append(kw) or ActionResult(True, "ok")
+    )
+    monkeypatch.setattr(killswitch, "is_enabled", lambda: True)
+    assert killswitch.resume_for_happ(extra_ips=["198.51.100.30"]).success
+    assert calls == [{"extra_ips": ["198.51.100.30"], "fresh": True}]
+
+    monkeypatch.setattr(killswitch, "is_enabled", lambda: False)
+    cfg = killswitch.config.load_config()
+    cfg.killswitch_mode = "all"
+    killswitch.config.save_config(cfg)
+    assert killswitch.resume_for_happ(extra_ips=["198.51.100.30"]).success
+    assert calls[-1] == {"extra_ips": ["198.51.100.30"], "fresh": True}
+
+    cfg.killswitch_mode = "off"
+    killswitch.config.save_config(cfg)
+    assert killswitch.resume_for_happ(extra_ips=["198.51.100.30"]) is None
+
+
+def test_suspend_for_keeps_preference(monkeypatch, tmp_path):
+    monkeypatch.setattr(killswitch.config, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(killswitch, "disable", lambda: ActionResult(True, "ok"))
+    result = killswitch.suspend_for("WireGuard")
+    assert result.success
+    assert "WireGuard" in result.message and "auto-resumes" in result.message
+    assert killswitch.mode() == "off"  # preference untouched
+
+
+def test_resume_for_happ_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(killswitch.config, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(killswitch, "is_enabled", lambda: True)
+    calls = []
+    monkeypatch.setattr(
+        killswitch, "redetect", lambda: calls.append("redetect") or ActionResult(True, "ok")
+    )
+    assert killswitch.resume_for_happ().success
+    assert calls == ["redetect"]
+
+
+def test_resume_for_happ_mode_off_noop(monkeypatch, tmp_path):
+    monkeypatch.setattr(killswitch.config, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(killswitch, "is_enabled", lambda: False)
+    assert killswitch.resume_for_happ() is None
+
+
+def test_enable_fresh_skips_detect_and_saved_ips(monkeypatch):
+    """Known server IPs: no `detect` (it scrapes every TCP session on the
+    physical NIC — direct-routed sites included) and no merging of the saved
+    conf (IPs of whatever server was detected last time)."""
+    calls = []
+    monkeypatch.setattr(killswitch, "_sudo", lambda *a: calls.append(a) or ActionResult(True, "ok"))
+    assert killswitch.enable(extra_ips=["1.2.3.4"], fresh=True).success
+    assert calls == [("on", "--no-conf", "1.2.3.4")]
+
+
+def test_resume_for_happ_unresolved_server_keeps_detect_path(monkeypatch, tmp_path):
+    # empty list = the caller couldn't resolve the server: nothing to be fresh with
+    monkeypatch.setattr(killswitch.config, "CONFIG_PATH", tmp_path / "config.json")
+    calls = []
+    monkeypatch.setattr(
+        killswitch, "enable", lambda **kw: calls.append(kw) or ActionResult(True, "ok")
+    )
+    monkeypatch.setattr(killswitch, "is_enabled", lambda: True)
+    killswitch.resume_for_happ(extra_ips=[])
+    assert calls == [{"extra_ips": []}]
+
+
+def test_script_accepts_xray_mark_and_no_conf():
+    """The nft ruleset must accept exactly the mark build_runtime_config puts
+    on xray's proxy outbounds, and `on` must support --no-conf."""
+    from pathlib import Path
+
+    import happmeta
+
+    script = (Path(__file__).resolve().parent.parent / "scripts/happ-killswitch").read_text()
+    assert f"XRAY_MARK={happmeta.KILLSWITCH_MARK:#x}\n" in script
+    assert "meta mark $XRAY_MARK accept" in script
+    assert "--no-conf)" in script

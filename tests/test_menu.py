@@ -270,8 +270,8 @@ def _happ_menu_rows(monkeypatch, servers, has_headers):
 
 
 def test_happ_menu_explains_missing_headers(monkeypatch):
-    """Fresh machine: no captured headers -> no subscription is ever fetched.
-    Say so instead of an empty list that looks like lost providers."""
+    """Empty list without captured headers: the panel may reject the default
+    Happ UA. Say so instead of an empty list that looks like lost providers."""
     rows = _happ_menu_rows(monkeypatch, [], has_headers=False)
     assert vpn_manager.HAPP_NO_HEADERS_LABEL in rows
 

@@ -1,7 +1,10 @@
 import email.message
 import hashlib
 import json
+import subprocess
 import time
+
+import pytest
 
 import happmeta
 
@@ -1120,3 +1123,78 @@ def test_a_real_balancer_strategy_is_left_alone():
     }
     plain = {"tag": "F", "selector": ["a"]}
     assert _runtime_balancers([dict(real), dict(plain)]) == [real, plain]
+
+
+def _sent_headers(tmp_path, monkeypatch, captured):
+    """Headers fetch_subscription() sends, with/without a captured file."""
+    monkeypatch.setattr(happmeta, "SUB_CACHE_DIR", tmp_path)
+    headers_file = tmp_path / "headers.json"
+    if captured is not None:
+        headers_file.write_text(json.dumps(captured))
+    monkeypatch.setattr(happmeta, "HEADERS_FILE", headers_file)
+    sent = []
+
+    class FakeResp:
+        def read(self):
+            return json.dumps([{"remarks": "S", "outbounds": [{}]}]).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def urlopen(req, timeout):
+        sent.append(dict(req.header_items()))
+        return FakeResp()
+
+    monkeypatch.setattr(happmeta.urllib.request, "urlopen", urlopen)
+    servers = happmeta.fetch_subscription("1", "https://x/1")
+    assert [s["remarks"] for s in servers] == ["S"]
+    return sent[0]
+
+
+def test_fetch_subscription_defaults_to_happ_user_agent(tmp_path, monkeypatch):
+    """No captured headers must still fetch: panels key the full JSON on the
+    Happ UA, a plain urllib UA gets a text stub."""
+    monkeypatch.setattr(happmeta, "happ_version", lambda: "4.6.0")
+    sent = _sent_headers(tmp_path, monkeypatch, None)
+    assert sent == {"User-agent": "Happ/4.6.0"}
+    assert not happmeta.has_headers()
+
+
+def test_fetch_subscription_prefers_captured_headers(tmp_path, monkeypatch):
+    sent = _sent_headers(tmp_path, monkeypatch, {"User-Agent": "Happ/9.9", "X-Hwid": "abc"})
+    assert sent == {"User-agent": "Happ/9.9", "X-hwid": "abc"}
+    assert happmeta.has_headers()
+
+
+@pytest.mark.parametrize(
+    ("stdout", "version"),
+    [
+        ("/usr/bin/happ is owned by happ-desktop-bin 4.5.2-1\n", "4.5.2"),
+        ("/usr/bin/happ is owned by happ-bin 1:4.6.0.1-3\n", "4.6.0.1"),  # epoch
+        ("", happmeta.HAPP_VERSION_FALLBACK),  # not owned / no pacman output
+        ("error: No package owns /usr/bin/happ\n", happmeta.HAPP_VERSION_FALLBACK),
+    ],
+)
+def test_happ_version_from_owning_package(monkeypatch, stdout, version):
+    happmeta.happ_version.cache_clear()
+    monkeypatch.setattr(
+        happmeta.subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(a, 0, stdout=stdout, stderr=""),
+    )
+    assert happmeta.happ_version() == version
+    happmeta.happ_version.cache_clear()
+
+
+def test_happ_version_without_pacman(monkeypatch):
+    happmeta.happ_version.cache_clear()
+
+    def missing(*a, **kw):
+        raise FileNotFoundError("pacman")
+
+    monkeypatch.setattr(happmeta.subprocess, "run", missing)
+    assert happmeta.happ_version() == happmeta.HAPP_VERSION_FALLBACK
+    happmeta.happ_version.cache_clear()

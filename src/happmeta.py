@@ -1,8 +1,9 @@
 """Happ subscription metadata: providers, servers, config generation, ping.
 
 The full server list comes from the provider's subscription endpoint, fetched
-directly with the app's own headers (captured once via scripts/sub-intercept-*;
-Happ answers plain curl with a stub). Subscription configs are merged into
+directly with Happ's User-Agent (panels answer plain curl with a stub) — or with
+the app's full request headers when captured via scripts/sub-intercept-*, for
+providers that also demand the device headers. Subscription configs are merged into
 runnable xray configs the same way the GUI does it (local inbounds + dns-in +
 dns-out + local routing rules), so any server can be connected headless.
 
@@ -14,6 +15,7 @@ on the network.
 import base64
 import contextlib
 import copy
+import functools
 import hashlib
 import ipaddress
 import json
@@ -41,6 +43,12 @@ CAPTURED_PROVIDERS = Path.home() / ".config/happ-capture/xray-providers.json"
 XRAY_CONFIGS = Path.home() / ".config/happ-capture/xray-configs.json"
 HEADERS_FILE = Path.home() / ".config/happ-capture/headers.json"
 SUB_CACHE_DIR = Path.home() / ".cache/vpn-manager"
+# What a panel keys the full xray JSON on is a "Happ/<version>" User-Agent:
+# without it (plain curl/urllib UA) Unlock VPN answers a text/plain link list
+# instead; X-Hwid & co. are only needed by panels with a device limit, and
+# those need the captured file. The version is the installed package's.
+HAPP_GUI_BIN = "/usr/bin/happ"
+HAPP_VERSION_FALLBACK = "4.5.2"
 
 PING_MAX_AGE = 1800  # seconds — also the sweep cadence; 5 min of TCP
 # connects to every server every cycle likely tripped server-side rate
@@ -245,7 +253,7 @@ def captured_providers() -> dict[str, str]:
 # ── Subscription fetching ─────────────────────────────────────────────────────
 
 
-def _headers() -> dict[str, str] | None:
+def _captured_headers() -> dict[str, str] | None:
     """Captured Happ request headers (see scripts/sub-intercept-*)."""
     try:
         data = json.loads(HEADERS_FILE.read_text())
@@ -254,10 +262,37 @@ def _headers() -> dict[str, str] | None:
     return data if isinstance(data, dict) and data else None
 
 
+@functools.cache
+def happ_version() -> str:
+    """Installed Happ's version from the package owning its binary
+    ("/usr/bin/happ is owned by happ-desktop-bin 1:4.5.2-1" -> "4.5.2"),
+    whatever the AUR package is called. Only paid on a real fetch."""
+    try:
+        out = subprocess.run(
+            ["pacman", "-Qo", HAPP_GUI_BIN],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,  # "not owned" exits 1; the regex below handles it
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    m = re.search(r" is owned by \S+ (?:\d+:)?([0-9][\w.+]*)-[\w.]+$", out.strip())
+    return m.group(1) if m else HAPP_VERSION_FALLBACK
+
+
+def default_headers() -> dict[str, str]:
+    return {"User-Agent": f"Happ/{happ_version()}"}
+
+
+def _headers() -> dict[str, str]:
+    return _captured_headers() or default_headers()
+
+
 def has_headers() -> bool:
-    """Whether subscriptions can be fetched at all: without the captured
-    headers fetch_subscription() silently keeps whatever cache there is."""
-    return _headers() is not None
+    """Whether the device headers were captured — an empty server list
+    without them may be a panel that rejects DEFAULT_HEADERS."""
+    return _captured_headers() is not None
 
 
 def _sub_cache_path(sub_id: str) -> Path:
@@ -294,10 +329,9 @@ def fetch_subscription(sub_id: str, url: str, force: bool = False) -> list[dict]
     ):
         return cached.get("servers", [])
 
-    headers = _headers()
     # the url comes from Happ's log: never let it open file:// or other schemes
-    if headers and url.startswith(("https://", "http://")):
-        req = urllib.request.Request(url, headers=headers)  # noqa: S310 — scheme checked
+    if url.startswith(("https://", "http://")):
+        req = urllib.request.Request(url, headers=_headers())  # noqa: S310 — scheme checked
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 — scheme checked
                 data = json.loads(resp.read().decode())

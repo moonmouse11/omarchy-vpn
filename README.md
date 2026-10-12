@@ -115,12 +115,16 @@ Widget settings (`bar.layout.right[]` entry in `~/.config/omarchy/shell.json`, o
 `omarchy bar set omarchy-vpn <key> <value>`): `interval` (seconds, default 3),
 `showLabel` (`false` = icon only). Clicks: left = menu, middle = refresh.
 
-### Happ setup (one-time, for headless)
+### Happ setup (only if no servers show up)
 
-Happ subscriptions are fetched directly with the app's own request headers —
-providers answer a plain `curl` with a stub. Capture them once from your own
-machine with a short-lived local CA and HTTPS server (nothing leaves the
-machine):
+Happ subscriptions are fetched directly with Happ's User-Agent — panels answer
+a plain `curl` with a stub, but give the full server list to `Happ/<version>`.
+That is enough for most providers: nothing to set up, needs no sudo.
+
+A provider with a device limit also wants the device headers (`X-Hwid` & co.);
+the Happ menu then shows `⚠️ No servers`. Capture Happ's request headers once
+from your own machine with a short-lived local CA and HTTPS server (nothing
+leaves the machine; needs sudo):
 
 1. Take the subscription host from its URL in Happ (`https://<host>/...`) and
    run `bash scripts/sub-intercept-ca.sh <host>`. It creates the CA (valid

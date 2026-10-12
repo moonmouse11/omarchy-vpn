@@ -1038,16 +1038,18 @@ def happ_menu(provider) -> ActionResult:
     return ActionResult(True, "")
 
 
-HAPP_NO_HEADERS_LABEL = "⚠️ No servers: Happ request headers not captured"
+HAPP_NO_HEADERS_LABEL = "⚠️ No servers: provider may need captured Happ headers"
 
 
 def _happ_no_headers() -> ActionResult:
-    """A fresh machine has no ~/.config/happ-capture/headers.json, so no
-    subscription is ever fetched and only a GUI-started server shows up —
-    which looked like the menu had lost every provider."""
+    """Subscriptions are fetched with happmeta.default_headers() until
+    ~/.config/happ-capture/headers.json exists; a panel with a device limit
+    rejects those, and an empty list looked like the menu had lost every
+    provider."""
     notify(
-        "Happ — one-time setup",
-        "Subscriptions are fetched with Happ's own request headers. Capture them once:\n"
+        "Happ — no servers",
+        "The provider didn't return servers for Happ's default headers.\n"
+        "Refresh subscriptions; if still empty, capture the device headers once:\n"
         'omarchy-vpn README → "Happ setup (one-time, for headless)"\n'
         f"(writes {happmeta.HEADERS_FILE})",
     )

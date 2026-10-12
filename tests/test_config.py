@@ -107,3 +107,11 @@ def test_dns_mode_invalid_value_ignored(tmp_path, monkeypatch):
     p.write_text('{"dns_mode": "direct"}')
     monkeypatch.setattr(config, "CONFIG_PATH", p)
     assert load_config().dns_mode == "tunnel"
+
+
+def test_dns_autotest_is_off_by_default_and_roundtrips(tmp_path, monkeypatch):
+    """Opt-in: every connect would otherwise send ~30 lookups to bash.ws."""
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    assert load_config().dns_autotest is False
+    save_config(Config(dns_autotest=True))
+    assert load_config().dns_autotest is True

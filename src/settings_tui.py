@@ -71,6 +71,9 @@ def build_rows(
     def toggle_exit_ip(d):
         d.exit_ip_enabled = not d.exit_ip_enabled
 
+    def toggle_dns_autotest(d):
+        d.dns_autotest = not d.dns_autotest
+
     def toggle_gui(d):
         d.happ_gui_fallback = not d.happ_gui_fallback
 
@@ -87,6 +90,11 @@ def build_rows(
             toggle_dns,
         ),
         Row(f"{_checkbox(draft.exit_ip_enabled)} Exit IP in the tooltip", "toggle", toggle_exit_ip),
+        Row(
+            f"{_checkbox(draft.dns_autotest)} Run the DNS leak test after every connect",
+            "toggle",
+            toggle_dns_autotest,
+        ),
         Row(
             f"{_checkbox(draft.happ_gui_fallback)} Open the Happ app if headless connect fails",
             "toggle",

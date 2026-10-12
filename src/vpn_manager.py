@@ -15,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
@@ -23,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import config
 import dnsleak
+import fsutil
 import happmeta
 import ipinfo
 import ipsources
@@ -85,8 +87,13 @@ def get_status() -> dict:
             "text": " VPN",
             "tooltip": "VPN: not connected",
             "class": "vpn-disconnected",
+            "panel": panel_state(active, cfg),
         }
 
+    # before the tooltip loop: it saves a fresh traffic sample, and a rate
+    # read after that compares against itself (~0 s apart) — the panel's
+    # speed came out empty
+    panel = panel_state(active, cfg)
     extra = f" (+{len(active) - 1})" if len(active) > 1 else ""
     classes = ["vpn-connected"]
     tooltip = []
@@ -117,6 +124,113 @@ def get_status() -> dict:
         "text": f" {first.label}{extra}",
         "tooltip": "\n".join(tooltip),
         "class": classes,
+        "panel": panel,
+    }
+
+
+def _badge(badge_id: str, label: str, state: str, hint: str) -> dict:
+    """One protection badge. state: "ok" | "bad" | "unknown"."""
+    return {"id": badge_id, "label": label, "state": state, "hint": hint}
+
+
+def _exit_badge(conn: VPNConnection, max_age: int) -> dict:
+    """Does the exit IP sit where the server says it is? Cache-only (the
+    tooltip path schedules the lookup); expected country as in the DNS
+    leak test: the flag in the name, else the sweep's entry country."""
+    cache = ipinfo.read_cache()
+    if cache is None or not ipinfo.is_fresh(cache, conn.name, max_age):
+        return _badge("exit", "Exit: checking", "unknown", "Looking up the public exit IP")
+    country = (cache.get("country_code") or "").upper()
+    flag = ipinfo.flag_emoji(country)
+    ip = cache.get("ip") or "?"
+    expected = _name_flag_country(conn.name) or reputation.country_of(conn.name)
+    if not expected or not country:
+        return _badge(
+            "exit", f"Exit {flag}".strip(), "unknown", f"Exit IP {ip}; nothing to compare"
+        )
+    if _exit_fits(expected, country):
+        return _badge("exit", f"Exit {flag}", "ok", f"Exit IP {ip} is where the server says")
+    return _badge(
+        "exit",
+        f"Exit {flag} ≠ {ipinfo.flag_emoji(expected)}",
+        "bad",
+        f"Exit IP {ip} is not in the server's country — geo databases can disagree; "
+        "run the DNS leak test for a second opinion",
+    )
+
+
+def _dns_badge(conn: VPNConnection) -> dict:
+    record = _read_dns_verdict(conn.name)
+    if record is None or record.get("leaked") is None:
+        return _badge("dns", "DNS: untested", "unknown", "Run the DNS leak test for this server")
+    if record["leaked"]:
+        return _badge("dns", "DNS leaks", "bad", str(record.get("summary") or ""))
+    return _badge("dns", "DNS private", "ok", str(record.get("summary") or ""))
+
+
+PROTECTION_CHECKS = ("exit", "dns", "ipv6")
+
+
+def panel_state(active: list[VPNConnection], cfg) -> dict:
+    """What the bar panel draws: a hero (state, connection, exit) and the
+    protection badges. Built from caches and cheap probes only — it rides
+    on the 3 s --status tick (the kill switch via its 30 s state cache)."""
+    ks_on = killswitch.cached_is_enabled()
+    ipv6_off = ipv6guard.is_disabled()
+    ks_badge = (
+        _badge("killswitch", "Kill switch on", "ok", "Traffic outside the tunnel is blocked")
+        if ks_on
+        else _badge(
+            "killswitch", "Kill switch off", "unknown", "Nothing stops a leak if the tunnel drops"
+        )
+    )
+    if not active:
+        return {
+            "connected": False,
+            "state": "blocked" if ks_on else "off",
+            "title": "Traffic blocked" if ks_on else "Not protected",
+            "meta": "Kill switch holds traffic until a VPN connects" if ks_on else "VPN is off",
+            "detail": "",
+            "exit_ip": "",
+            "rate": "",
+            "total": "",
+            "badges": [ks_badge],
+        }
+    first = active[0]
+    badges = [
+        _exit_badge(first, cfg.exit_ip_max_age),
+        _dns_badge(first),
+        _badge("ipv6", "IPv6 blocked", "ok", "IPv6 is off while the VPN is up")
+        if ipv6_off
+        else _badge("ipv6", "IPv6 leaks", "bad", "IPv6 is on and bypasses the tunnel"),
+        ks_badge,
+    ]
+    # the pill names the provider: "Happ · ARTEMIDA: 🇩🇪 X" / "WireGuard: nl" -> the rest
+    meta = first.label.removeprefix(f"{first.provider} · ").removeprefix(f"{first.provider}: ")
+    cache = ipinfo.read_cache()
+    exit_ip = ""
+    if cache and ipinfo.is_fresh(cache, first.name, cfg.exit_ip_max_age):
+        exit_ip = f"{cache.get('ip')} {ipinfo.flag_emoji(cache.get('country_code'))}".strip()
+    detail = first.provider + (f" +{len(active) - 1}" if len(active) > 1 else "")
+    # "Protected" is earned, not assumed: every check (not the kill switch,
+    # a preference) must have passed — an untested DNS keeps it "Unverified"
+    checks = [b["state"] for b in badges if b["id"] in PROTECTION_CHECKS]
+    if "bad" in checks:
+        state, title = "at_risk", "At risk"
+    elif all(c == "ok" for c in checks):
+        state, title = "protected", "Protected"
+    else:
+        state, title = "unverified", "Unverified"
+    return {
+        "connected": True,
+        "state": state,
+        "title": title,
+        "meta": meta,
+        "detail": detail,
+        "exit_ip": exit_ip,
+        "rate": (iface_rate(first.interface) or "") if first.interface else "",
+        "total": (iface_traffic(first.interface) or "") if first.interface else "",
+        "badges": badges,
     }
 
 
@@ -193,6 +307,8 @@ def guarded_connect(provider, connection: VPNConnection) -> ActionResult:
     if ks_result and not ks_result.success:
         notify("Killswitch — warning", ks_result.message)
     if result.success:
+        if config.load_config().dns_autotest:
+            request_dns_autotest()
         # don't re-probe: Happ reports success on happd's start ack, before
         # xray has created its TUN (and happd's process list may be the
         # cached pre-switch one) — a probe then sees nothing up and turned
@@ -455,6 +571,75 @@ def _failure_hint(reason: str) -> str:
     return ""
 
 
+DNS_VERDICT_CACHE = Path.home() / ".cache/vpn-manager/dns-leak.json"
+DNS_VERDICT_MAX_AGE = 24 * 3600  # a verdict outlives neither a day nor a server switch
+
+
+def _save_dns_verdict(active: list[VPNConnection], verdict: str | None) -> None:
+    """The last test's resolver verdict, for the panel's DNS badge — keyed
+    to the connection it ran under; None (no data to judge) is kept too."""
+    record = {
+        "at": time.time(),
+        "connection": active[0].name if active else None,
+        "leaked": None if verdict is None else verdict.startswith("Leaked"),
+        "summary": verdict,
+    }
+    with contextlib.suppress(OSError):
+        fsutil.write_json_atomic(DNS_VERDICT_CACHE, record)
+
+
+def _read_dns_verdict(connection: str) -> dict | None:
+    try:
+        record = json.loads(DNS_VERDICT_CACHE.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or record.get("connection") != connection:
+        return None
+    if time.time() - record.get("at", 0) > DNS_VERDICT_MAX_AGE:
+        return None
+    return record
+
+
+DNS_AUTOTEST_WAIT = 20  # s for the tunnel to show up (Happ acks before xray's TUN exists)
+DNS_AUTOTEST_SETTLE = 3  # s more for routes and DNS to settle
+
+
+def request_dns_autotest() -> None:
+    """Fire-and-forget --dns-autotest after a connect (config dns_autotest)."""
+    subprocess.Popen(
+        [sys.executable, str(Path(__file__)), "--dns-autotest"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def run_dns_autotest() -> None:
+    """The DNS leak test without a menu or progress bubbles: wait for the
+    tunnel, test, store the verdict for the panel's DNS badge (which is
+    what turns "Unverified" into "Protected"). Only a leak is announced."""
+    deadline = time.monotonic() + DNS_AUTOTEST_WAIT
+    active = active_connections()
+    while not active and time.monotonic() < deadline:
+        time.sleep(1)
+        active = active_connections()
+    if not active:
+        logutil.log("dns autotest: no tunnel came up, skipped")
+        return
+    time.sleep(DNS_AUTOTEST_SETTLE)
+    try:
+        result = dnsleak.run()
+    except dnsleak.LeakTestError as e:
+        logutil.log(f"dns autotest: {e}")
+        return
+    verdict = _dns_leak_verdict_row(result)
+    _save_dns_verdict(active, verdict)
+    logutil.log(f"dns autotest: {active[0].name}: {verdict}")
+    if verdict and verdict.startswith("Leaked"):
+        notify("DNS leak detected", f"{active[0].label}\n{verdict}", urgent=True)
+    refresh_bar()
+
+
 def dns_leak_test_menu() -> ActionResult:
     """DNS leak test — same backend (bash.ws) as dnsleaktest.com. Runs
     synchronously (a few seconds of DNS probes) and shows the result as a
@@ -482,6 +667,7 @@ def dns_leak_test_menu() -> ActionResult:
     else:
         items.append(("No DNS servers found", lambda: ActionResult(True, "")))
     verdict = _dns_leak_verdict_row(result)
+    _save_dns_verdict(active, verdict)
     if verdict:
         items.append((verdict, lambda: ActionResult(True, "")))
     if result["conclusion"]:
@@ -1369,6 +1555,17 @@ def main():
     group.add_argument("--status", action="store_true", help="Print JSON status for the bar widget")
     group.add_argument("--menu", action="store_true", help="Open interactive menu")
     group.add_argument(
+        "--disconnect-all", action="store_true", help="Disconnect every VPN (the panel's switch)"
+    )
+    group.add_argument(
+        "--dns-leak-test", action="store_true", help="Run the DNS leak test (the panel's DNS badge)"
+    )
+    group.add_argument(
+        "--dns-autotest",
+        action="store_true",
+        help="Silent DNS leak test after a connect (internal, config dns_autotest)",
+    )
+    group.add_argument(
         "--update-ip",
         metavar="CONN_NAME",
         help="Refresh exit-IP cache in the background (internal)",
@@ -1424,6 +1621,15 @@ def main():
         print(json.dumps(get_status()))
     elif args.menu:
         run_menu()
+    elif args.disconnect_all:
+        result = disconnect_all()
+        notify("VPN", result.message, urgent=not result.success)
+        refresh_bar()
+    elif args.dns_leak_test:
+        dns_leak_test_menu()
+        refresh_bar()
+    elif args.dns_autotest:
+        run_dns_autotest()
     elif args.update_ip:
         ipinfo.update(args.update_ip)
     elif args.update_ping:

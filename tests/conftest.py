@@ -44,3 +44,15 @@ def _no_real_reputation_subprocess(monkeypatch):
     test run. test_reputation.py re-patches Popen itself per case, which
     layers on top of this."""
     monkeypatch.setattr(reputation.subprocess, "Popen", lambda *a, **k: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_panel_caches(monkeypatch, tmp_path):
+    """--status now builds the bar panel too, which keeps a kill-switch
+    state cache and reads the last DNS-test verdict under ~/.cache — never
+    the real ones from a test run."""
+    import killswitch
+    import vpn_manager
+
+    monkeypatch.setattr(killswitch, "STATE_CACHE", tmp_path / "killswitch-state.json")
+    monkeypatch.setattr(vpn_manager, "DNS_VERDICT_CACHE", tmp_path / "dns-leak.json")

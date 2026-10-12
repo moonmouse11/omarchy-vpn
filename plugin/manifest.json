@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "VPN",
-    "description": "Active VPN connection; click for the VPN menu.",
+    "description": "Active VPN connection; click for the protection panel, right click for the VPN menu.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",

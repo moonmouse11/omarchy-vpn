@@ -19,10 +19,15 @@ Three modes (persisted in the user config):
            WireGuard/OpenVPN/Happ connect.
 """
 
+import contextlib
+import json
 import socket
 import subprocess
+import time
+from pathlib import Path
 
 import config
+import fsutil
 import logutil
 from providers.base import ActionResult
 
@@ -40,6 +45,28 @@ def is_enabled() -> bool:
         check=False,
     )
     return result.returncode == 0
+
+
+STATE_CACHE = Path.home() / ".cache/vpn-manager/killswitch-state.json"
+STATE_MAX_AGE = 30  # seconds; every change through _sudo() drops the cache
+
+
+def cached_is_enabled() -> bool:
+    """is_enabled() for the 3 s --status tick: the probe is a sudo
+    subprocess, so its answer is kept for STATE_MAX_AGE. Anything that
+    changes the rules goes through _sudo(), which deletes the cache —
+    toggles show at once, only an outside change (`sudo happ-killswitch
+    on` by hand) can lag by up to STATE_MAX_AGE."""
+    try:
+        state = json.loads(STATE_CACHE.read_text())
+        if time.time() - state["at"] < STATE_MAX_AGE:
+            return bool(state["on"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    on = is_enabled()
+    with contextlib.suppress(OSError):
+        fsutil.write_json_atomic(STATE_CACHE, {"at": time.time(), "on": on})
+    return on
 
 
 def mode() -> str:
@@ -152,6 +179,8 @@ def resolve_endpoint_ips(targets: list[tuple[str, str, int]]) -> list[str]:
 
 
 def _sudo(*args: str) -> ActionResult:
+    with contextlib.suppress(OSError):
+        STATE_CACHE.unlink(missing_ok=True)  # the rules may change: re-probe next tick
     result = subprocess.run(
         ["sudo", "-n", SCRIPT, *args],
         capture_output=True,

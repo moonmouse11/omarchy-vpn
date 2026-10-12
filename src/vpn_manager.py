@@ -1029,7 +1029,9 @@ def happ_menu(provider) -> ActionResult:
         if suffixes:
             label += "  (" + " · ".join(suffixes) + ")"
         items.append((label, lambda p=pname, g=group: happ_provider_menu(provider, p, g)))
-    if not servers and not happmeta.has_headers():
+    rejected = _happ_rejected_rows(set(groups))
+    items.extend(rejected)
+    if not servers and not rejected and not happmeta.has_headers():
         items.append((HAPP_NO_HEADERS_LABEL, _happ_no_headers))
     items.append(("  Refresh subscriptions", _refresh_subscriptions))
     items.append((BACK_LABEL, back_to_main))
@@ -1038,16 +1040,41 @@ def happ_menu(provider) -> ActionResult:
     return ActionResult(True, "")
 
 
-HAPP_NO_HEADERS_LABEL = "⚠️ No servers: Happ request headers not captured"
+HAPP_NO_HEADERS_LABEL = "⚠️ No servers: provider may need captured Happ headers"
+
+
+def _happ_rejected_rows(shown: set[str]) -> list[tuple[str, Callable]]:
+    """Subscriptions whose panel answered stub rows instead of servers
+    (device limit reached, client not supported) — say why in the panel's
+    own words instead of silently missing from the list."""
+    rows: list[tuple[str, Callable]] = []
+    for sub_id, prov in happmeta.providers().items():
+        if prov["name"] in shown or not (reasons := happmeta.subscription_rejection(sub_id)):
+            continue
+        name = prov["name"]
+        rows.append(
+            (
+                f"⚠️ {name}: {reasons[0].removeprefix('⚠️').strip()}",
+                lambda n=name, r=reasons: _happ_rejected(n, r),
+            )
+        )
+    return rows
+
+
+def _happ_rejected(name: str, reasons: list[str]) -> ActionResult:
+    notify(f"Happ — {name} sent no servers", "\n".join(reasons))
+    return ActionResult(True, "")
 
 
 def _happ_no_headers() -> ActionResult:
-    """A fresh machine has no ~/.config/happ-capture/headers.json, so no
-    subscription is ever fetched and only a GUI-started server shows up —
-    which looked like the menu had lost every provider."""
+    """Subscriptions are fetched with happmeta.default_headers() until
+    ~/.config/happ-capture/headers.json exists; a panel with a device limit
+    rejects those, and an empty list looked like the menu had lost every
+    provider."""
     notify(
-        "Happ — one-time setup",
-        "Subscriptions are fetched with Happ's own request headers. Capture them once:\n"
+        "Happ — no servers",
+        "The provider didn't return servers for Happ's default headers.\n"
+        "Refresh subscriptions; if still empty, capture the device headers once:\n"
         'omarchy-vpn README → "Happ setup (one-time, for headless)"\n'
         f"(writes {happmeta.HEADERS_FILE})",
     )
@@ -1056,15 +1083,62 @@ def _happ_no_headers() -> ActionResult:
 
 def _refresh_subscriptions() -> ActionResult:
     """Manual Happ subscription refresh — fire-and-forget (fetches can take
-    tens of seconds); the menu rebuilds with fresh servers on next open."""
+    tens of seconds); the menu rebuilds with fresh servers on next open.
+    Forced like Refresh All: the gated --update-subs skipped every cache
+    younger than SUB_MAX_AGE, so a click right after a fetch did nothing
+    (a freed device slot stayed "device limit reached" for up to an hour)."""
     subprocess.Popen(
-        [sys.executable, str(Path(__file__)), "--update-subs"],
+        [sys.executable, str(Path(__file__)), "--update-subs-force"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
     notify("Happ", "Subscription refresh started — reopen the menu in a few seconds")
     return ActionResult(True, "")
+
+
+def _traffic_summary(info: dict | None) -> str | None:
+    """'6.5 GB / ∞ · until 20.10.2026' from the panel's userinfo headers."""
+    if not info:
+        return None
+    parts = []
+    traffic = happmeta.fmt_traffic(info.get("download"))
+    limit = happmeta.fmt_limit(info.get("total"))
+    if traffic != "?" or limit != "∞":
+        parts.append(f"{traffic} / {limit}")
+    expire = happmeta.fmt_expire(info.get("expire"))
+    if expire != "?":
+        parts.append(f"until {expire}")
+    return " · ".join(parts) or None
+
+
+def subscription_report(failed: dict[str, str]) -> tuple[str, str]:
+    """(title, body) after a manual refresh: per Happ provider its ping
+    summary (cached sweep, like the menu row) and the panel's traffic;
+    a provider that didn't update gets ⚠️ and why — its old list stays."""
+    names_by_sub: dict[str, list[str]] = {}
+    for server in happmeta.all_servers(allow_fetch=False):
+        names_by_sub.setdefault(server["provider_id"], []).append(server["name"])
+    lines = []
+    for sub_id, prov in happmeta.providers().items():
+        if not prov.get("url"):
+            continue
+        name = prov["name"]
+        names = names_by_sub.get(sub_id, [])
+        details = [
+            happmeta.provider_ping_summary(names) or f"{len(names)} servers, no ping yet",
+            _traffic_summary(happmeta.subscription_info(sub_id)),
+        ]
+        line = f"{name}: " + " · ".join(d for d in details if d)
+        if name in failed:
+            line = f"⚠️ {line}\n    not updated: {failed[name]}"
+        lines.append(line)
+    title = (
+        f"Happ — {len(failed)} subscription(s) not updated"
+        if failed
+        else "Happ — subscriptions updated"
+    )
+    return title, "\n".join(lines) or "No Happ subscriptions"
 
 
 def happ_provider_menu(provider, pname: str, entries: list) -> ActionResult:
@@ -1353,13 +1427,22 @@ def main():
     elif args.update_ip:
         ipinfo.update(args.update_ip)
     elif args.update_ping:
-        happmeta.write_pings(_collect_ping_targets())
+        # pings go straight out the NIC (happmeta.measure_ping), which the
+        # killswitch drops: a sweep now would mark every server unreachable —
+        # keep the last real values and let them age out instead
+        if killswitch.is_enabled():
+            logutil.log("ping sweep skipped: killswitch is on")
+        else:
+            happmeta.write_pings(_collect_ping_targets())
     elif args.update_reputation:
         reputation.write_reputations(_collect_ping_targets())
     elif args.update_subs:
         happmeta.update_subscriptions()
     elif args.update_subs_force:
-        happmeta.update_subscriptions(force=True)
+        # a manual refresh (menu or Refresh All) runs in the background:
+        # report every provider — a silent failure looked like success
+        failed = happmeta.update_subscriptions(force=True)
+        notify(*subscription_report(failed))
     elif args.happ_keeper is not None:
         run_happ_keeper(*args.happ_keeper[:2])
     elif args.keys_keeper is not None:

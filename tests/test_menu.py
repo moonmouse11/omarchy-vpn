@@ -270,10 +270,34 @@ def _happ_menu_rows(monkeypatch, servers, has_headers):
 
 
 def test_happ_menu_explains_missing_headers(monkeypatch):
-    """Fresh machine: no captured headers -> no subscription is ever fetched.
-    Say so instead of an empty list that looks like lost providers."""
+    """Empty list without captured headers: the panel may reject the default
+    Happ UA. Say so instead of an empty list that looks like lost providers."""
     rows = _happ_menu_rows(monkeypatch, [], has_headers=False)
     assert vpn_manager.HAPP_NO_HEADERS_LABEL in rows
+
+
+def test_happ_menu_says_why_a_provider_sent_no_servers(monkeypatch):
+    """A panel that answered stub rows (device limit) gets a row with its own
+    reason; the generic no-headers hint is then redundant."""
+    monkeypatch.setattr(
+        vpn_manager.happmeta,
+        "providers",
+        lambda: {
+            "1": {"name": "ARTEMIDA", "url": "https://x/1"},
+            "2": {"name": "OK", "url": "https://x/2"},
+        },
+    )
+    monkeypatch.setattr(
+        vpn_manager.happmeta,
+        "subscription_rejection",
+        lambda sub_id: (
+            ["⚠️ Достигнут лимит устройств: 4", "Удалите устройство"] if sub_id == "1" else []
+        ),
+    )
+    rows = _happ_menu_rows(monkeypatch, [], has_headers=False)
+    assert "⚠️ ARTEMIDA: Достигнут лимит устройств: 4" in rows
+    assert not any(r.startswith("⚠️ OK") for r in rows)
+    assert vpn_manager.HAPP_NO_HEADERS_LABEL not in rows
 
 
 def test_happ_menu_no_header_hint_once_servers_exist(monkeypatch):
@@ -1735,3 +1759,89 @@ def test_failure_hint_without_vpn_and_killswitch_adds_nothing_to_a_plain_error(m
     monkeypatch.setattr(vpn_manager, "active_connections", list)
     monkeypatch.setattr(vpn_manager.killswitch, "is_enabled", lambda: False)
     assert vpn_manager._failure_hint("HTTP 502") == ""
+
+
+def test_refresh_subscriptions_forces_a_refetch(monkeypatch):
+    """The menu's Refresh must bypass the SUB_MAX_AGE gate: the gated
+    --update-subs ignored a click within an hour of the last fetch."""
+    spawned = []
+    monkeypatch.setattr(vpn_manager.subprocess, "Popen", lambda argv, **kw: spawned.append(argv))
+    monkeypatch.setattr(vpn_manager, "notify", lambda *a, **kw: None)
+    vpn_manager._refresh_subscriptions()
+    assert [argv[-1] for argv in spawned] == ["--update-subs-force"]
+
+
+def _fake_report_data(monkeypatch):
+    monkeypatch.setattr(
+        vpn_manager.happmeta,
+        "providers",
+        lambda: {
+            "1": {"name": "Unlock VPN", "url": "https://x/1"},
+            "2": {"name": "OK", "url": "https://x/2"},
+            "0": {"name": "routing only", "url": None},
+        },
+    )
+    monkeypatch.setattr(
+        vpn_manager.happmeta,
+        "all_servers",
+        lambda allow_fetch=True: [
+            {"name": "DE", "provider_id": "1"},
+            {"name": "NL", "provider_id": "1"},
+            {"name": "PL", "provider_id": "2"},
+        ],
+    )
+    monkeypatch.setattr(
+        vpn_manager.happmeta,
+        "provider_ping_summary",
+        lambda names: "✓ 2/2 · ⌀45ms" if names == ["DE", "NL"] else None,
+    )
+    monkeypatch.setattr(
+        vpn_manager.happmeta,
+        "subscription_info",
+        lambda sub_id: (
+            {"download": 6.5 * 2**30, "total": 0, "expire": 1797232846} if sub_id == "1" else None
+        ),
+    )
+
+
+def test_subscription_report_lists_ping_and_traffic_per_provider(monkeypatch):
+    _fake_report_data(monkeypatch)
+    title, body = vpn_manager.subscription_report({})
+    assert title == "Happ — subscriptions updated"
+    assert body.splitlines() == [
+        "Unlock VPN: ✓ 2/2 · ⌀45ms · 6.5 GB / ∞ · until 14.12.2026",
+        "OK: 1 servers, no ping yet",
+    ]
+
+
+def test_subscription_report_marks_what_did_not_update(monkeypatch):
+    _fake_report_data(monkeypatch)
+    title, body = vpn_manager.subscription_report({"OK": "timed out"})
+    assert title == "Happ — 1 subscription(s) not updated"
+    assert "⚠️ OK: 1 servers, no ping yet\n    not updated: timed out" in body
+
+
+def test_manual_subscription_refresh_always_reports(monkeypatch):
+    """--update-subs-force runs detached from the menu: without a
+    notification a provider that didn't answer looked refreshed."""
+    monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", "--update-subs-force"])
+    monkeypatch.setattr(vpn_manager.happmeta, "update_subscriptions", lambda force: {})
+    monkeypatch.setattr(vpn_manager, "subscription_report", lambda failed: ("T", "B"))
+    sent = []
+    monkeypatch.setattr(vpn_manager, "notify", lambda title, msg, **kw: sent.append((title, msg)))
+    vpn_manager.main()
+    assert sent == [("T", "B")]
+
+
+@pytest.mark.parametrize(("killswitch_on", "swept"), [(True, False), (False, True)])
+def test_ping_sweep_skipped_under_the_killswitch(monkeypatch, killswitch_on, swept):
+    """Pings go straight out the NIC, which the killswitch drops: a sweep
+    then would mark every server unreachable."""
+    monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", "--update-ping"])
+    monkeypatch.setattr(vpn_manager.killswitch, "is_enabled", lambda: killswitch_on)
+    monkeypatch.setattr(vpn_manager, "_collect_ping_targets", lambda: [("s", "h", 1)])
+    writes = []
+    monkeypatch.setattr(vpn_manager.happmeta, "write_pings", writes.append)
+    monkeypatch.setattr(vpn_manager.logutil, "log", lambda msg: None)
+    vpn_manager.main()
+    assert bool(writes) is swept

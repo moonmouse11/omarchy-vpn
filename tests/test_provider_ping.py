@@ -260,7 +260,7 @@ def test_provider_menu_labels_show_ping(monkeypatch, tmp_path):
     patch_menu_env(monkeypatch, [wg], picks=[])
     monkeypatch.setattr(
         vpn_manager,
-        "walker_select",
+        "menu_select",
         lambda options, prompt="VPN": seen.append(list(options)) or None,
     )
     vpn_manager.provider_menu(wg)

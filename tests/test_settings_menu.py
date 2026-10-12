@@ -1,8 +1,6 @@
 """⚙ Settings: a list in a floating terminal. Space/Enter changes a row in
 place (cursor and order stay), `s` saves the draft, `q`/Esc drops it."""
 
-from types import SimpleNamespace
-
 import pytest
 
 import config
@@ -172,30 +170,13 @@ def test_settings_menu_reports_a_missing_terminal_launcher(monkeypatch):
 def test_settings_window_notifies_only_when_saved(monkeypatch):
     notes = []
     monkeypatch.setattr(vpn_manager, "notify", lambda *a, **k: notes.append(a))
-    monkeypatch.setattr(vpn_manager, "refresh_waybar", lambda: notes.append("refresh"))
+    monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: notes.append("refresh"))
     monkeypatch.setattr(vpn_manager.settings_tui, "main", lambda providers, tools: False)
     vpn_manager.run_settings_window()
     assert notes == []
     monkeypatch.setattr(vpn_manager.settings_tui, "main", lambda providers, tools: True)
     vpn_manager.run_settings_window()
     assert notes == [("VPN", "Settings saved"), "refresh"]
-
-
-def test_walker_select_pins_window_size(monkeypatch):
-    captured = {}
-    result = SimpleNamespace(stdout="a\n")
-    monkeypatch.setattr(
-        vpn_manager.subprocess, "run", lambda cmd, **kw: captured.update(cmd=cmd) or result
-    )
-    vpn_manager.walker_select(["a", "b"])
-    cmd = captured["cmd"]
-    for flag, value in [
-        ("--minwidth", vpn_manager.WALKER_MAXWIDTH),
-        ("--maxwidth", vpn_manager.WALKER_MAXWIDTH),
-        ("--minheight", vpn_manager.WALKER_LIST_HEIGHT),
-        ("--maxheight", vpn_manager.WALKER_LIST_HEIGHT),
-    ]:
-        assert cmd[cmd.index(flag) + 1] == str(value)
 
 
 # ── curses front end, driven through a fake window ───────────────────────────
@@ -257,8 +238,8 @@ PGDN, PGUP = settings_tui.curses.KEY_NPAGE, settings_tui.curses.KEY_PPAGE
 def test_tui_space_toggles_in_place_and_s_saves(state, tui):
     saved, win = tui(DOWN, DOWN, " ", "s")
     assert saved is True
-    assert config.load_config().show_empty_providers is True
-    assert "✅ Providers with no connections" in win.rows()
+    assert config.load_config().happ_gui_fallback is True
+    assert "✅ Open the Happ app if headless connect fails" in win.rows()
     assert win.screen[0].strip() == "VPN Settings • unsaved"  # last frame before save
 
 

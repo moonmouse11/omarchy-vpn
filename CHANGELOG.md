@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Ported to Omarchy 4: the Waybar `custom/vpn` module is now an omarchy-shell bar
+  widget plugin (`omarchy-vpn`, `plugin/`), the Walker menus run in omarchy.menu
+  (`omarchy-menu-select` / `omarchy-menu-input`), and the bar refreshes over the
+  shell's IPC (`omarchy-shell omarchy-vpn refresh`) instead of `pkill -RTMIN+11 waybar`.
+- The backend installs to `~/.local/share/omarchy-vpn/src/`, the SUPER+Shift+V
+  binding goes to `~/.config/hypr/bindings.lua`.
+
+### Removed
+
+- Waybar/Walker support and the `waybar/` wrapper scripts — Omarchy 3 stays on
+  waybar-vpn-manager.
+
 ## [0.1.0] - 2026-10-11
 
 First release: a fork of [waybar-vpn-manager](https://github.com/moonmouse11/waybar-vpn-manager)

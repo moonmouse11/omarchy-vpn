@@ -254,6 +254,12 @@ def _headers() -> dict[str, str] | None:
     return data if isinstance(data, dict) and data else None
 
 
+def has_headers() -> bool:
+    """Whether subscriptions can be fetched at all: without the captured
+    headers fetch_subscription() silently keeps whatever cache there is."""
+    return _headers() is not None
+
+
 def _sub_cache_path(sub_id: str) -> Path:
     # sub_id is usually a log-derived digit string or a sha1 hash (both
     # already safe), but a routing.json "subscriptionId" fallback is not
@@ -415,7 +421,7 @@ def _read_sub_cache(sub_id: str) -> object:
 
 def fetch_subscription_cached(sub_id: str) -> list[dict]:
     """Cache-only read: fresh or stale servers, never touches the network.
-    Used on the waybar --status path so a 3 s tick never blocks on I/O."""
+    Used on the bar widget's --status path so a 3 s tick never blocks on I/O."""
     cached = _read_sub_cache(sub_id)
     return cached.get("servers", []) if isinstance(cached, dict) else []
 
@@ -652,7 +658,7 @@ def all_servers(allow_fetch: bool = True) -> list[dict]:
     everything we can connect to, grouped per provider.
 
     With allow_fetch=False the subscription caches are read as-is (fresh or
-    stale) and the network is never touched — the waybar --status path.
+    stale) and the network is never touched — the bar widget's --status path.
     """
     servers = []
     for sub_id, prov in providers().items():

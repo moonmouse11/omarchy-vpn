@@ -247,7 +247,7 @@ def test_import_config_reads_key_from_file(store, tmp_path):
 
 
 def test_import_config_accepts_pasted_key(store):
-    """The walker input may be the key itself, not a file path."""
+    """The menu input may be the key itself, not a file path."""
     result = keys.KeysProvider("vless").import_config(
         "vless://3874802c-d7fb-43e3-aeed-d4413fe444b2@example.com:443#pasted"
     )

@@ -2,8 +2,18 @@
 set -e
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_DIR="$HOME/.config/waybar/vpn-manager"
-WAYBAR_SCRIPTS="$HOME/.config/waybar/scripts"
+# Backend lives outside the plugin dir: omarchy-shell hot-reloads plugins on
+# any write under ~/.config/omarchy/plugins (python's __pycache__ included).
+INSTALL_DIR="$HOME/.local/share/omarchy-vpn"
+PLUGIN_ID="omarchy-vpn"
+PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
+LEGACY_DIR="$HOME/.config/waybar/vpn-manager"   # Omarchy 3 / waybar install
+
+if ! command -v omarchy-shell >/dev/null || ! command -v omarchy-menu-select >/dev/null; then
+    echo "error: omarchy-shell / omarchy-menu-select not found — this version needs Omarchy 4" >&2
+    echo "       (the Omarchy 3 / waybar version lives in its own repository)" >&2
+    exit 1
+fi
 
 echo "==> omarchy-vpn installer"
 echo ""
@@ -94,81 +104,65 @@ if [[ -L /etc/resolv.conf ]]; then
     sudo resolvconf -u
 fi
 
-# ── Omarchy integration: waybar module + keybinding ──────────────────────────
-# Edits the user's waybar config BEFORE any files are copied/sudoers written,
-# so a broken config.jsonc aborts the install without side effects.
+# ── Backend ───────────────────────────────────────────────────────────────────
 
-WAYBAR_CONFIG="$HOME/.config/waybar/config.jsonc"
-if [[ -f "$WAYBAR_CONFIG" ]] && ! grep -q '"custom/vpn"' "$WAYBAR_CONFIG"; then
-    echo "==> Adding custom/vpn module to $WAYBAR_CONFIG"
-    python3 - "$WAYBAR_CONFIG" <<'PY'
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-text = path.read_text()
-module = '''  "custom/vpn": {
-    "exec": "~/.config/waybar/scripts/vpn-status.sh",
-    "return-type": "json",
-    "interval": 3,
-    "signal": 11,
-    "on-click": "~/.config/waybar/scripts/vpn-menu.sh"
-  }'''
-lines = text.splitlines(keepends=True)
-for i, line in enumerate(lines):
-    if '"modules-right"' in line and '[' in line:
-        indent = line[: len(line) - len(line.lstrip())] + "  "
-        lines.insert(i + 1, f'{indent}"custom/vpn",\n')
-        break
-text = "".join(lines).rstrip()
-if not text.endswith("}"):
-    print(f"error: could not update {path}: expected a JSON object ending with '}}'", file=sys.stderr)
-    sys.exit(1)
-path.write_text(text[:-1] + f",\n{module}\n}}\n")
-PY
-    echo "==> Module inserted."
-else
-    echo "==> waybar module already present or config missing, skipping."
-fi
-
-BINDINGS="$HOME/.config/hypr/bindings.conf"
-if [[ -f "$BINDINGS" ]] && ! grep -q 'waybar-vpn-manager' "$BINDINGS"; then
-    echo "==> Adding SUPER+Shift+V binding to $BINDINGS"
-    cat >> "$BINDINGS" <<'EOF'
-
-# >>> waybar-vpn-manager
-bindd = SUPER SHIFT, V, VPN menu, exec, ~/.config/waybar/scripts/vpn-menu.sh
-# <<< waybar-vpn-manager
-EOF
-else
-    echo "==> keybinding already present or bindings.conf missing, skipping."
-fi
-
-# ── Copy files ────────────────────────────────────────────────────────────────
-
-echo "==> Installing to $INSTALL_DIR..."
+echo "==> Installing backend to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
+rm -rf "$INSTALL_DIR/src"
 cp -r "$REPO_DIR/src" "$INSTALL_DIR/"
 
-echo "==> Installing waybar scripts to $WAYBAR_SCRIPTS..."
-mkdir -p "$WAYBAR_SCRIPTS"
-cp "$REPO_DIR/waybar/vpn-status.sh" "$WAYBAR_SCRIPTS/vpn-status.sh"
-cp "$REPO_DIR/waybar/vpn-menu.sh"   "$WAYBAR_SCRIPTS/vpn-menu.sh"
-chmod +x "$WAYBAR_SCRIPTS/vpn-status.sh" "$WAYBAR_SCRIPTS/vpn-menu.sh"
+# ── omarchy-shell bar widget ──────────────────────────────────────────────────
+
+echo "==> Installing bar widget to $PLUGIN_DIR..."
+mkdir -p "$PLUGIN_DIR"
+cp "$REPO_DIR/plugin/manifest.json" "$REPO_DIR/plugin/Widget.qml" "$PLUGIN_DIR/"
+omarchy-shell -q shell rescanPlugins
+if ! omarchy plugin list | grep -qE "^$PLUGIN_ID[[:space:]]+enabled"; then
+    omarchy plugin enable "$PLUGIN_ID" --before omarchy.network \
+        || omarchy plugin enable "$PLUGIN_ID" --section right \
+        || echo "    could not enable it — run: omarchy plugin enable $PLUGIN_ID"
+fi
+
+# ── Keybinding (Hyprland Lua config) ──────────────────────────────────────────
+
+BINDINGS="$HOME/.config/hypr/bindings.lua"
+if [[ -f "$BINDINGS" ]] && ! grep -q '>>> omarchy-vpn' "$BINDINGS"; then
+    echo "==> Adding SUPER+Shift+V binding to $BINDINGS"
+    cat >> "$BINDINGS" <<EOF
+
+-- >>> omarchy-vpn
+o.bind("SUPER + SHIFT + V", "VPN menu", "python3 $INSTALL_DIR/src/vpn_manager.py --menu")
+-- <<< omarchy-vpn
+EOF
+else
+    echo "==> keybinding already present or bindings.lua missing, skipping."
+fi
+
+# ── Legacy waybar install ─────────────────────────────────────────────────────
+# A running Happ/Keys keeper was started from the old copy: leave it until
+# nothing runs from there (reconnect once, then re-run make install).
+
+if [[ -d "$LEGACY_DIR" ]]; then
+    if pgrep -f "$LEGACY_DIR/src/" >/dev/null; then
+        echo "==> $LEGACY_DIR is still in use by a running connection — kept."
+        echo "    Reconnect from the new menu, then run 'make install' again to remove it."
+    else
+        echo "==> Removing the old waybar install ($LEGACY_DIR)..."
+        rm -rf "$LEGACY_DIR"
+        rm -f "$HOME/.config/waybar/scripts/vpn-status.sh" "$HOME/.config/waybar/scripts/vpn-menu.sh"
+    fi
+fi
 
 # ── Final hints ───────────────────────────────────────────────────────────────
 
 echo ""
 echo "==> Done!"
-echo "    - waybar module:  inserted automatically (or already present)"
-echo "    - keybinding:     SUPER+Shift+V opens the VPN menu"
+echo "    - bar widget:  omarchy plugin enable/disable $PLUGIN_ID, move with omarchy bar move"
+echo "    - keybinding:  SUPER+Shift+V opens the VPN menu"
 echo ""
-echo "    Restart the components:"
-echo "      omarchy restart waybar"
-echo "      hyprctl reload   (or just log out/in)"
 
 # ── Interactive configuration ─────────────────────────────────────────────────
 
 echo ""
 echo "==> Configuration wizard"
-python3 "$REPO_DIR/src/vpn_manager.py" --configure
+python3 "$INSTALL_DIR/src/vpn_manager.py" --configure

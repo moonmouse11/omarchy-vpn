@@ -29,7 +29,7 @@ CHUNK = 64 * 1024
 # connection on a bare "Mozilla/5.0" (fake-browser filter). An honest
 # product UA passes both.
 USER_AGENT = "omarchy-vpn/0.1"
-ERROR_MAXLEN = 80  # keeps a failure row readable in the walker window
+ERROR_MAXLEN = 80  # keeps a failure row readable in the menu
 
 
 @dataclass(frozen=True)

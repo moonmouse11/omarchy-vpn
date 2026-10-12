@@ -2,8 +2,8 @@
 """
 omarchy-vpn — entry point
 Usage:
-  vpn_manager.py --status   Output JSON status for waybar
-  vpn_manager.py --menu     Open interactive walker menu
+  vpn_manager.py --status   Output JSON status for the omarchy-shell bar widget
+  vpn_manager.py --menu     Open the interactive menu (omarchy.menu)
 """
 
 import argparse
@@ -45,7 +45,7 @@ from providers.happ import run_keeper as run_happ_keeper
 from providers.keys import KeysProvider
 from providers.keys import run_keeper as run_keys_keeper
 
-WAYBAR_SIGNAL = 11
+PLUGIN_ID = "omarchy-vpn"  # omarchy-shell plugin id == its IPC target (plugin/manifest.json)
 
 
 def visible_providers() -> list:
@@ -73,7 +73,7 @@ BACK_LABEL = "‹ Back"
 def get_status() -> dict:
     """Aggregate ALL active connections across providers.
 
-    waybar CSS classes: "vpn-connected" + "vpn-<provider>" per active provider,
+    Waybar-style classes: "vpn-connected" + "vpn-<provider>" per active provider,
     "vpn-disconnected" when nothing is up. Tooltip lists every active
     connection with per-interface traffic stats.
     """
@@ -121,7 +121,7 @@ def get_status() -> dict:
 
 
 def request_ip_update(connection_name: str):
-    """Fire-and-forget background exit-IP refresh (never blocks waybar)."""
+    """Fire-and-forget background exit-IP refresh (never blocks the bar)."""
     subprocess.Popen(
         [sys.executable, str(Path(__file__)), "--update-ip", connection_name],
         stdout=subprocess.DEVNULL,
@@ -251,13 +251,13 @@ def disconnect_all() -> ActionResult:
 
 
 def manage_profiles(provider) -> ActionResult:
-    """Second-level walker menu: pick a profile, then autostart/delete."""
+    """Second-level menu: pick a profile, then autostart/delete."""
     conns = provider.connections()
     if not conns:
         return ActionResult(False, f"No {provider.name} profiles found")
 
     profile_labels = [f"{c.name}{'  (connected)' if c.active else ''}" for c in conns]
-    selected = walker_select(profile_labels, prompt=f"{provider.name} profile")
+    selected = menu_select(profile_labels, prompt=f"{provider.name} profile")
     if not selected:
         return ActionResult(True, "")
     conn = next((c for c in conns if selected.startswith(c.name)), None)
@@ -267,7 +267,7 @@ def manage_profiles(provider) -> ActionResult:
     action_labels = ["Toggle autostart", "Delete config"]
     if conn.active:
         action_labels.insert(0, "Disconnect")
-    selected = walker_select(action_labels, prompt=conn.name)
+    selected = menu_select(action_labels, prompt=conn.name)
     if selected == "Toggle autostart":
         return provider.toggle_autostart(conn)
     if selected == "Delete config":
@@ -345,8 +345,8 @@ def _killswitch_item() -> tuple[str, Callable]:
 def _dns_leak_server_row(
     server: dict, ip_country: str = "", ip_asn: int | None = None
 ) -> tuple[str, Callable]:
-    """One row per detected resolver — the wider walker window (see
-    WALKER_WIDTH) is the actual fix for these getting truncated; no need to
+    """One row per detected resolver — the wider menu card (see
+    MENU_WIDTH) is the actual fix for these getting truncated; no need to
     collapse the list to make it fit. 'Leaked' when dnsleak.server_tags()
     finds the resolver is neither the VPN's nor a public one (ASN) or sits in
     another country than the exit IP (GEO) — wherever that country is."""
@@ -533,7 +533,7 @@ def ip_info_menu() -> ActionResult:
     return ActionResult(True, "")
 
 
-SPEED_TEST_TITLE = "Speed Test"  # walker prompt + progress notification title
+SPEED_TEST_TITLE = "Speed Test"  # menu prompt + progress notification title
 SPEED_TEST_ALL_LABEL = "🌍 All services"
 SPEED_TEST_CUSTOM_LABEL = "✏️ Custom URL…"
 SPEED_TEST_MAX_URLS = 5  # remembered custom URLs, newest first
@@ -546,7 +546,7 @@ SPEED_TEST_ALL_DURATION = 5.0
 def speed_test_menu() -> ActionResult:
     """Pick a service (or all of them), then measure download throughput
     through whatever the current route is (tunnel or, with no VPN up, the
-    plain uplink). Results open in their own walker window, like the DNS
+    plain uplink). Results open in their own menu, like the DNS
     leak test — a multi-service comparison doesn't fit a notify bubble."""
     # public presets, then custom URLs remembered in config.json
     # (`speed_test_urls` — e.g. a test stand's own file server)
@@ -572,7 +572,7 @@ def speed_test_menu() -> ActionResult:
 
 
 def _speed_test_custom_url() -> ActionResult:
-    url = walker_input("Speed test URL (http/https, large file)")
+    url = menu_input("Speed test URL (http/https, large file)")
     if not url:
         return ActionResult(False, "No URL entered")
     if not speedtest.is_valid_url(url):
@@ -587,7 +587,7 @@ def _run_speed_tests(
     targets: list[tuple[str, str]], duration: float = speedtest.DURATION
 ) -> ActionResult:
     """Measure each target in turn (progress in one notification replaced
-    step by step — the walker window can't update while a test runs), then
+    step by step — the menu can't update while a test runs), then
     show every result in one window."""
     steps = len(targets) if len(targets) > 1 else None
     progress = notifyutil.Progress(SPEED_TEST_TITLE, steps=steps)
@@ -745,7 +745,7 @@ def run_configure_wizard(prompter: Prompter) -> bool:
     return True
 
 
-# ── ⚙ Settings: a list in a small floating terminal (settings_tui.py) — walker
+# ── ⚙ Settings: a list in a small floating terminal (settings_tui.py) — omarchy.menu
 # can't change a row in place or keep the cursor where it was.
 
 SETTINGS_WINDOW_CLASS = "TUI.float"  # omarchy floats + centres this class (875×600)
@@ -794,7 +794,7 @@ def run_settings_window() -> None:
     """--settings, inside the terminal settings_menu() opened."""
     if settings_tui.main([p.name for p in ALL_PROVIDERS], _settings_tool_keys()):
         notify("VPN", "Settings saved")
-        refresh_waybar()
+        refresh_bar()
 
 
 # single source of truth for both tools_menu()'s rows and the configure
@@ -862,29 +862,13 @@ def menu_loop() -> ActionResult:
         if ip_row:
             items.append(ip_row)
 
+    # every provider not hidden in ⚙ Settings, empty ones too: their submenu
+    # is where the Import/Manage rows live (Happ's explains missing headers)
     for provider in visible_providers():
         conns = provider.connections()
-        if not conns:
-            continue
         active = sum(1 for c in conns if c.active)
         label = f"{provider.name}  ({active}/{len(conns)})"
         items.append((label, lambda p=provider: provider_menu(p)))
-
-    # Empty providers are hidden (level 1 lists providers with connections);
-    # the empty key-provider import rows below are opt-in via
-    # show_empty_providers (a key of either kind lands under its protocol).
-    cfg = config.load_config()
-    for keys_prov in visible_providers():
-        if keys_prov.name not in ("VLESS", "Shadowsocks") or keys_prov.connections():
-            continue
-        if not cfg.show_empty_providers:
-            break
-        items.append(
-            (
-                f"{keys_prov.name}  (no servers — click to import)",
-                lambda p=keys_prov: import_config_file(p, p.name),
-            )
-        )
 
     if all_active:
         if len(all_active) == 1:
@@ -901,7 +885,7 @@ def _current_connection_items(conn: VPNConnection) -> list[tuple[str, Callable]]
     """First menu rows: what is connected + live metrics. Row 1 reconnects
     the server; row 2 (metrics, indented) shows the full detail card.
     dmenu rows are single-line, so the metrics get their own row instead
-    of being truncated by the walker window width."""
+    of being truncated by the menu width."""
     cfg = config.load_config()
     metrics = []
     rate = iface_rate(conn.interface)
@@ -1045,10 +1029,28 @@ def happ_menu(provider) -> ActionResult:
         if suffixes:
             label += "  (" + " · ".join(suffixes) + ")"
         items.append((label, lambda p=pname, g=group: happ_provider_menu(provider, p, g)))
+    if not servers and not happmeta.has_headers():
+        items.append((HAPP_NO_HEADERS_LABEL, _happ_no_headers))
     items.append(("  Refresh subscriptions", _refresh_subscriptions))
     items.append((BACK_LABEL, back_to_main))
     run_items(items, prompt="Happ")
     # the submenu already notified; returning None crashed the caller's result.success
+    return ActionResult(True, "")
+
+
+HAPP_NO_HEADERS_LABEL = "⚠️ No servers: Happ request headers not captured"
+
+
+def _happ_no_headers() -> ActionResult:
+    """A fresh machine has no ~/.config/happ-capture/headers.json, so no
+    subscription is ever fetched and only a GUI-started server shows up —
+    which looked like the menu had lost every provider."""
+    notify(
+        "Happ — one-time setup",
+        "Subscriptions are fetched with Happ's own request headers. Capture them once:\n"
+        'omarchy-vpn README → "Happ setup (one-time, for headless)"\n'
+        f"(writes {happmeta.HEADERS_FILE})",
+    )
     return ActionResult(True, "")
 
 
@@ -1128,8 +1130,8 @@ def _unique_labels(items: list[tuple[str, Callable]]) -> list[tuple[str, Callabl
     """Disambiguate repeated labels so every menu entry stays reachable.
 
     Two servers can render identically (same remarks + same info suffix) and
-    walker picks by label text — without this the later entry could never be
-    selected. First occurrence keeps its label; repeats get " (2)", " (3)"…"""
+    the menu returns the picked label text — without this the later entry could never
+    be selected. First occurrence keeps its label; repeats get " (2)", " (3)"…"""
     seen: set[str] = set()
     counts: dict[str, int] = {}
     unique = []
@@ -1152,20 +1154,21 @@ def _unique_labels(items: list[tuple[str, Callable]]) -> list[tuple[str, Callabl
 
 
 def run_items(items: list[tuple[str, Callable]], prompt: str) -> ActionResult:
-    """Show one walker menu, run the chosen action, notify + refresh waybar."""
+    """Show one menu, run the chosen action, notify + refresh the bar widget."""
     if not items:
         notify("VPN", "Nothing available")
         return ActionResult(False, "nothing available")
 
-    selected = walker_select([label for label, _ in items], prompt=prompt)
+    selected = menu_select([label for label, _ in items], prompt=prompt)
     if not selected:
         return ActionResult(True, "")
 
-    # walker returns the selected line with surrounding whitespace trimmed
-    # (labels like "  Killswitch: …" keep their indent for display only),
-    # so match stripped-to-stripped — no two labels may differ only in
-    # surrounding whitespace.
-    action = next((fn for label, fn in items if label.strip() == selected), None)
+    # match the label as menu_select() sent it (TAB/newlines flattened),
+    # stripped-to-stripped: labels like "  Import …" keep their indent for
+    # display only, so no two labels may differ only in surrounding
+    # whitespace.
+    selected = selected.strip()
+    action = next((fn for label, fn in items if _menu_option(label).strip() == selected), None)
     if action is None:
         logutil.log(f"menu [{prompt}]: no action matches [{selected!r}]")
         return ActionResult(True, "")
@@ -1178,106 +1181,66 @@ def run_items(items: list[tuple[str, Callable]], prompt: str) -> ActionResult:
         else:
             notify("VPN — Error", result.message, urgent=True)
 
-    refresh_waybar()
+    refresh_bar()
     return result
 
 
-WALKER_TIMEOUT = 120  # seconds — a wedged walker service must not hang the menu forever
-# The default theme's window is 644px — comfortably wide labels here (DNS
-# leak test / server names + ASN info) get truncated with no wrapping.
-# Long-form flags only: walker's own --help warns the -w/-h shorthand
-# clashes with GOption parsing ("DONT USE SHORTHAND").
-WALKER_WIDTH = 900
-WALKER_MAXWIDTH = 860  # content area, a bit narrower than the box for padding
-# The theme's list propagates its natural size: the window grew whenever a
-# wider row scrolled into view and shrank with every row filtered out. Equal
-# min/max content sizes pin it — one big fixed window for every menu.
-WALKER_LIST_HEIGHT = 560  # ~14 rows; the box adds the search field + padding
-WALKER_SIZE_FLAGS = [
-    "--width",
-    str(WALKER_WIDTH),
-    "--minwidth",
-    str(WALKER_MAXWIDTH),
-    "--maxwidth",
-    str(WALKER_MAXWIDTH),
-]
-WALKER_LIST_FLAGS = [
-    "--minheight",
-    str(WALKER_LIST_HEIGHT),
-    "--maxheight",
-    str(WALKER_LIST_HEIGHT),
-]
+MENU_TIMEOUT = 300  # seconds — omarchy-menu-select waits for its done-file forever
+# omarchy.menu's dmenu card is 300 units wide by default — server names with
+# ping/protocol info and DNS-leak resolver rows get cut off at that width.
+MENU_WIDTH = 640
+MENU_MAX_HEIGHT = 560
+MENU_SIZE_ARGS = ["--", "--width", str(MENU_WIDTH), "--maxheight", str(MENU_MAX_HEIGHT)]
+_MENU_UNSAFE = re.compile(r"[\t\r\n]+")
 
 
-def walker_select(options: list[str], prompt: str = "VPN") -> str | None:
+def _menu_option(label: str) -> str:
+    """omarchy.menu splits an option on TAB into glyph/label/subtext, and a
+    subscription can name a server anything — flatten TAB/newlines so a
+    label is always shown (and returned) as one plain label."""
+    return _MENU_UNSAFE.sub(" ", label)
+
+
+def _run_menu_cmd(cmd: list[str], what: str) -> str | None:
     try:
         result = subprocess.run(
-            [
-                "walker",
-                "-d",
-                "-p",
-                prompt,
-                *WALKER_SIZE_FLAGS,
-                *WALKER_LIST_FLAGS,
-            ],
-            input="\n".join(options),
-            capture_output=True,
-            text=True,
-            timeout=WALKER_TIMEOUT,
-            check=False,
+            cmd, capture_output=True, text=True, timeout=MENU_TIMEOUT, check=False
         )
     except subprocess.TimeoutExpired:
-        # the walker gapplication-service occasionally wedges: no window and
-        # the client hangs forever. SIGKILL the service (it ignores SIGTERM)
-        # — dbus activation brings up a fresh one on the next invocation.
-        logutil.log(f"walker timed out after {WALKER_TIMEOUT}s — restarting the service")
-        subprocess.run(
-            ["pkill", "-9", "-f", "walker --gapplication-service"], capture_output=True, check=False
-        )
-        subprocess.run(["pkill", "-f", "walker -d"], capture_output=True, check=False)
-        notify(
-            "VPN — Error",
-            "walker hung — service restarted, open the menu again",
-            urgent=True,
-        )
+        logutil.log(f"{cmd[0]} timed out after {MENU_TIMEOUT}s")
+        subprocess.run(["omarchy-shell", "-q", "shell", "hide", "omarchy.menu"], check=False)
         return None
     except FileNotFoundError:
-        notify("Error", "walker not found", urgent=True)
+        notify("VPN — Error", f"{cmd[0]} not found — omarchy-vpn needs Omarchy 4", urgent=True)
         return None
-    # rstrip('\n') only: the trailing newline is walker's, the rest of
-    # the line is the user's selection.
-    selected = result.stdout.rstrip("\n")
+    # exit 1 = dismissed (Esc / click outside); stdout is the picked label only
+    selected = result.stdout.rstrip("\n") if result.returncode == 0 else ""
     if not selected:
-        logutil.log("walker returned no selection")
-    return selected if selected else None
+        logutil.log(f"menu {what}: no selection")
+    return selected or None
 
 
-def walker_input(prompt: str) -> str | None:
-    """Single-field text input via walker (-I, dmenu-only), same widened
-    window as walker_select(). None on any failure or empty input."""
-    try:
-        result = subprocess.run(
-            [
-                "walker",
-                "-d",
-                "-I",
-                "-p",
-                prompt,
-                *WALKER_SIZE_FLAGS,
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        notify("Error", "walker not found", urgent=True)
+def menu_select(options: list[str], prompt: str = "VPN") -> str | None:
+    """One omarchy.menu list (omarchy-menu-select); the picked label or None."""
+    if not options:
         return None
-    text = result.stdout.strip()
-    return text or None
+    return _run_menu_cmd(
+        ["omarchy-menu-select", prompt, *map(_menu_option, options), *MENU_SIZE_ARGS],
+        f"[{prompt}]",
+    )
+
+
+def menu_input(prompt: str) -> str | None:
+    """Single-field text input (omarchy-menu-input). None on any failure or
+    empty input."""
+    text = _run_menu_cmd(
+        ["omarchy-menu-input", prompt, "--width", str(MENU_WIDTH)], f"input [{prompt}]"
+    )
+    return text.strip() or None if text else None
 
 
 def import_config_file(provider, title: str) -> ActionResult:
-    path = walker_input(f"{title} config path")
+    path = menu_input(f"{title} config path")
     if not path:
         return ActionResult(success=False, message="No path entered")
     return provider.import_config(path)
@@ -1311,8 +1274,16 @@ def notify(title: str, message: str, urgent: bool = False):
     notifyutil.send(title, message, urgent=urgent)
 
 
-def refresh_waybar():
-    subprocess.run(["pkill", f"-RTMIN+{WAYBAR_SIGNAL}", "waybar"], capture_output=True, check=False)
+def refresh_bar():
+    """Re-run the bar widget's --status now instead of on its next tick.
+    -q: best effort — no shell running, or the widget not on the bar, is fine."""
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run(
+            ["omarchy-shell", "-q", PLUGIN_ID, "refresh"],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -1321,7 +1292,7 @@ def refresh_waybar():
 def main():
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--status", action="store_true", help="Print waybar JSON status")
+    group.add_argument("--status", action="store_true", help="Print JSON status for the bar widget")
     group.add_argument("--menu", action="store_true", help="Open interactive menu")
     group.add_argument(
         "--update-ip",

@@ -1,8 +1,8 @@
 """⚙ Settings window: one list in a small floating terminal.
 
-walker can't do this: it shows a list, returns the picked line and closes —
+omarchy.menu can't do this: it shows a list, returns the picked line and closes —
 no way to change a row while it's open or reopen with the cursor on a given
-row (2.17's -c only marks one, by index). So the list jumped on every Enter.
+row. So the list jumped on every Enter.
 Here a row changes in place, the way omarchy's own TUIs (bluetui, impala,
 wiremix) work — keys, not buttons, with the keys listed on the bottom line:
 ↑/↓ (j/k) move, Space/Enter toggles a ✅/⬜ row, cycles the killswitch mode
@@ -71,9 +71,6 @@ def build_rows(
     def toggle_exit_ip(d):
         d.exit_ip_enabled = not d.exit_ip_enabled
 
-    def toggle_empty(d):
-        d.show_empty_providers = not d.show_empty_providers
-
     def toggle_gui(d):
         d.happ_gui_fallback = not d.happ_gui_fallback
 
@@ -90,11 +87,6 @@ def build_rows(
             toggle_dns,
         ),
         Row(f"{_checkbox(draft.exit_ip_enabled)} Exit IP in the tooltip", "toggle", toggle_exit_ip),
-        Row(
-            f"{_checkbox(draft.show_empty_providers)} Providers with no connections",
-            "toggle",
-            toggle_empty,
-        ),
         Row(
             f"{_checkbox(draft.happ_gui_fallback)} Open the Happ app if headless connect fails",
             "toggle",

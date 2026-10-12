@@ -687,7 +687,7 @@ class KeysProvider(VPNProvider):
         return ActionResult(success=True, message=f"Disconnected: {self.name}")
 
     def import_config(self, path: str) -> ActionResult:
-        # the walker input may be a pasted key itself, not a file path
+        # the menu input may be a pasted key itself, not a file path
         text = path.strip()
         if text.lower().startswith(("ss://", "vless://")):
             try:

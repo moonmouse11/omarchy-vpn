@@ -5,7 +5,6 @@ All keys optional; missing file means defaults:
 {
   "providers": {"openvpn": false},      // hide providers from menu/status
   "killswitch_mode": "all",             // "off" | "happ" | "all" — auto-manage killswitch
-  "show_empty_providers": false,        // show providers without connections (import rows)
   "happ_gui_fallback": false,           // launch the Happ window when headless connect fails
   "exit_ip": {"enabled": true, "max_age_seconds": 600},
   "ip_sources": {"abuseipdb": {"api_key": "secret"}},  // IP source configurations
@@ -30,7 +29,6 @@ DNS_MODES = ("tunnel", "subscription")
 class Config:
     providers: dict[str, bool] = field(default_factory=dict)
     killswitch_mode: str = "off"  # "off" | "happ" | "all"
-    show_empty_providers: bool = False
     happ_gui_fallback: bool = False  # launch the Happ window when headless connect fails
     exit_ip_enabled: bool = True
     exit_ip_max_age: int = 600
@@ -64,9 +62,6 @@ def load_config() -> Config:
     if raw.get("killswitch_mode") in ("off", "happ", "all"):
         cfg.killswitch_mode = raw["killswitch_mode"]
 
-    if "show_empty_providers" in raw:
-        cfg.show_empty_providers = bool(raw["show_empty_providers"])
-
     if "happ_gui_fallback" in raw:
         cfg.happ_gui_fallback = bool(raw["happ_gui_fallback"])
 
@@ -97,7 +92,6 @@ def save_config(cfg: Config) -> None:
     raw = {
         "providers": cfg.providers,
         "killswitch_mode": cfg.killswitch_mode,
-        "show_empty_providers": cfg.show_empty_providers,
         "happ_gui_fallback": cfg.happ_gui_fallback,
         "exit_ip": {
             "enabled": cfg.exit_ip_enabled,

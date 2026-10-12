@@ -1,22 +1,22 @@
 # omarchy-vpn
 
-> **Status:** works on **Omarchy 3** (Waybar + Walker) today; the port to
-> **Omarchy 4** (its own shell and plugin system) is in progress. Continues
+> **Status:** built for **Omarchy 4** (omarchy-shell bar + omarchy.menu). The
+> Omarchy 3 (Waybar + Walker) version lives in its own repository —
 > [waybar-vpn-manager](https://github.com/moonmouse11/waybar-vpn-manager)
 > (archived at v0.3.0).
 
-A VPN manager plugin for [Waybar](https://github.com/Alexays/Waybar) with support for
+A VPN manager plugin for the [Omarchy](https://omarchy.org/) shell with support for
 **WireGuard, AmneziaWG, OpenVPN, Shadowsocks (ss://), VLESS (vless://), Happ** and any VPN managed by **NetworkManager**.
 Built for Arch Linux with Hyprland / [Omarchy](https://omarchy.org/).
 
-Two-level walker menu (omarchy-style): pick a provider → pick a connection.
-Opens with a **SUPER+Shift+V** shortcut or a waybar click.
+Two-level menu in omarchy.menu: pick a provider → pick a connection.
+Opens with a **SUPER+Shift+V** shortcut or a click on the bar widget.
 
 ## Features
 
-- **Status module** — active provider/connection in the bar, per-provider CSS classes
-  (`vpn-wireguard`, `vpn-happ`, …), tooltip with per-interface traffic stats and
-  exit IP + country flag
+- **Bar widget** — an omarchy-shell plugin (`omarchy-vpn`): lock icon + active
+  connection, dimmed when nothing is up, tooltip with per-interface traffic stats
+  and exit IP + country flag; updates the moment a connect/disconnect finishes
 - **Two-level menu** — providers with `(active/total)` counters → connections;
   `Disconnect ALL`, killswitch toggle and import/manage actions where supported
 - **Happ headless** — full server list straight from the provider subscriptions,
@@ -65,10 +65,9 @@ Opens with a **SUPER+Shift+V** shortcut or a waybar click.
 
 **Core (menu, status, WireGuard/OpenVPN):**
 
-- Arch Linux with Hyprland, [Omarchy](https://omarchy.org/) conventions
+- [Omarchy](https://omarchy.org/) 4 — `omarchy-shell` (bar widget plugin) and
+  `omarchy-menu-select`/`omarchy-menu-input` (the menus)
 - `python` (stdlib only, no pip packages)
-- `waybar` — status bar module (exec `vpn-status.sh` on a 3 s interval)
-- `walker` — dmenu picker for the menus
 - `wireguard-tools` (`wg-quick`), `openvpn`, `openresolv`
 - `iproute2` (`ip`, `ss`), `nftables` (killswitch), `sudo` (NOPASSWD rules from `install.sh`)
 - `libnotify` (`notify-send`; progress is updated in place with `-p`/`-r`, an
@@ -97,21 +96,24 @@ The installer:
 2. Writes a narrowed `sudoers` rule (commands used by the providers only, validated
    with `visudo -cf`)
 3. Installs the `happ-killswitch` script root-owned to `/usr/local/bin`
-4. Copies sources to `~/.config/waybar/vpn-manager/`, wrappers to `~/.config/waybar/scripts/`
-5. Inserts the `custom/vpn` module into `~/.config/waybar/config.jsonc` (skipped if present)
-6. Appends a `SUPER+Shift+V` binding to `~/.config/hypr/bindings.conf` (idempotent)
-7. Runs the interactive configuration wizard (`--configure`) — pick which providers,
+4. Copies the backend to `~/.local/share/omarchy-vpn/src/`
+5. Installs the bar widget plugin to `~/.config/omarchy/plugins/omarchy-vpn/` and
+   enables it right before `omarchy.network` (move it with `omarchy bar move omarchy-vpn …`,
+   remove it with `omarchy plugin disable omarchy-vpn`)
+6. Appends a `SUPER+Shift+V` binding to `~/.config/hypr/bindings.lua` (idempotent)
+7. Removes an old Omarchy 3 install (`~/.config/waybar/vpn-manager`) unless a running
+   connection still uses it
+8. Runs the interactive configuration wizard (`--configure`) — pick which providers,
    tools and IP sources to show, and optionally set IP-source API keys; safe to
    Ctrl-C or skip (e.g. non-interactive installs), re-run any time with:
-   `python3 ~/.config/waybar/vpn-manager/vpn_manager.py --configure`, or via the
+   `python3 ~/.local/share/omarchy-vpn/src/vpn_manager.py --configure`, or via the
    in-menu ⚙ Settings action
 
-Then restart:
+The shell and Hyprland pick everything up live — no restart needed.
 
-```bash
-omarchy restart waybar
-hyprctl reload
-```
+Widget settings (`bar.layout.right[]` entry in `~/.config/omarchy/shell.json`, or
+`omarchy bar set omarchy-vpn <key> <value>`): `interval` (seconds, default 3),
+`showLabel` (`false` = icon only). Clicks: left = menu, middle = refresh.
 
 ### Happ setup (one-time, for headless)
 
@@ -144,7 +146,7 @@ automatically.
 
 ## Usage
 
-- **SUPER+Shift+V** or waybar click → menu
+- **SUPER+Shift+V** or a click on the bar widget → menu
 - Status tooltip: traffic, exit IP + country
 - Logs: `~/.local/state/vpn-manager/vpn-manager.log`
 - Caches: `~/.cache/vpn-manager/` (exit IP, pings, subscriptions)
@@ -157,7 +159,6 @@ automatically.
 {
   "providers": {"openvpn": false},      // hide providers from menu/status
   "killswitch_mode": "happ",            // "off" | "happ" | "all" — auto-manage killswitch
-  "show_empty_providers": false,        // show providers without connections (import rows)
   "happ_gui_fallback": false,           // open the Happ window when headless connect fails
   "exit_ip": {"enabled": true, "max_age_seconds": 600},
   "dns_mode": "tunnel",                 // "tunnel" | "subscription" — who routes xray's DNS
@@ -197,8 +198,10 @@ Rollback: `happ-killswitch off` (rules don't survive reboot anyway).
 ## Architecture
 
 ```
-waybar --(3 s)--> vpn_manager.py --status --> JSON (aggregated, cached exit IP)
-waybar click --> vpn_manager.py --menu --> walker (2-level) --> provider actions
+omarchy-shell widget (plugin/Widget.qml)
+  --(3 s)--> vpn_manager.py --status --> JSON (aggregated, cached exit IP)
+  click   --> vpn_manager.py --menu --> omarchy-menu-select (2-level) --> provider actions
+  <-- omarchy-shell omarchy-vpn refresh (after every action)
 Happ connect --> --happ-keeper (long-lived happd session owning xray)
               --> happd (root daemon) --> xray (TUN)
 
@@ -304,8 +307,9 @@ sweep — a present `api_key` in config *is* "enabled", no separate flag needed.
 make uninstall
 ```
 
-Removes installed files and the sudoers rule. The waybar module block and the
-SUPER+Shift+V bindings are left in place (remove manually if wanted).
+Disables and removes the bar widget plugin, the backend, the SUPER+Shift+V
+binding block in `bindings.lua` and the sudoers rule. `/usr/local/bin/happ-killswitch`,
+`openvpn-dns-updown` and `~/.config/vpn-manager` (keys, settings) are kept.
 
 ## License
 

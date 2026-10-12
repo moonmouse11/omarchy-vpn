@@ -63,7 +63,7 @@ class _NotifySend:
 
 
 def test_progress_updates_one_notification_in_place(monkeypatch):
-    """walker -d can't redraw while a tool runs, so progress is one
+    """the menu can't redraw while a tool runs, so progress is one
     notification replaced step by step (-p prints its id, -r reuses it)."""
     ns = _NotifySend()
     monkeypatch.setattr(subprocess, "run", ns)

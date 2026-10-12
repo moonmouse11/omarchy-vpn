@@ -89,7 +89,7 @@ DONE_EXPIRE_MS = 3000  # a finished tool's last word; its results window takes o
 
 class Progress:
     """One notification per long-running tool, replaced step by step — the
-    walker window can't redraw while a tool runs, so this is the spinner.
+    menu can't redraw while a tool runs, so this is the spinner.
     Steps stay up until replaced (-t 0); done() expires, fail() is critical
     and carries the reason."""
 

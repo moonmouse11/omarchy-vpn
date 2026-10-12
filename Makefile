@@ -2,11 +2,13 @@ install:
 	@bash install.sh
 
 uninstall:
-	rm -rf ~/.config/waybar/vpn-manager
-	rm -f ~/.config/waybar/scripts/vpn-status.sh
-	rm -f ~/.config/waybar/scripts/vpn-menu.sh
+	-omarchy plugin disable omarchy-vpn
+	rm -rf ~/.config/omarchy/plugins/omarchy-vpn
+	-omarchy-shell -q shell rescanPlugins
+	rm -rf ~/.local/share/omarchy-vpn
+	sed -i '/^-- >>> omarchy-vpn$$/,/^-- <<< omarchy-vpn$$/d' ~/.config/hypr/bindings.lua 2>/dev/null || true
 	sudo rm -f /etc/sudoers.d/vpn-manager
-	@echo "Uninstalled. Remove the custom/vpn block from your waybar config manually."
+	@echo "Uninstalled."
 
 # Lint + test in a container: no host /tmp, /run, /etc/wireguard mounts and
 # no network — see Dockerfile.test for why (real happd socket / VPN state

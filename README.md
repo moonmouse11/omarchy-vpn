@@ -10,13 +10,19 @@ A VPN manager plugin for the [Omarchy](https://omarchy.org/) shell with support 
 Built for Arch Linux with Hyprland / [Omarchy](https://omarchy.org/).
 
 Two-level menu in omarchy.menu: pick a provider → pick a connection.
-Opens with a **SUPER+Shift+V** shortcut or a click on the bar widget.
+Opens with a **SUPER+Shift+V** shortcut, a right click on the bar widget, or from its panel.
 
 ## Features
 
-- **Bar widget** — an omarchy-shell plugin (`omarchy-vpn`): lock icon + active
-  connection, dimmed when nothing is up, tooltip with per-interface traffic stats
-  and exit IP + country flag; updates the moment a connect/disconnect finishes
+- **Bar widget + panel** — an omarchy-shell plugin (`omarchy-vpn`): lock icon + active
+  connection, dimmed when nothing is up; updates the moment a connect/disconnect
+  finishes. A left click opens a panel: Protected / At risk / Not protected, the
+  connection, exit IP and speed, a switch to disconnect, and protection badges —
+  exit country vs the server's flag, DNS (last leak test for this server; click to
+  run one), IPv6, kill switch (✓ confirmed, ? unchecked, ⚠ problem). The lock and
+  "Protected" show only once exit, DNS and IPv6 have all passed — until then
+  "Unverified". ⚙ Settings → "Run the DNS leak test after every connect" (off by
+  default) runs that test silently in the background and only notifies on a leak
 - **Two-level menu** — providers with `(active/total)` counters → connections;
   `Disconnect ALL`, killswitch toggle and import/manage actions where supported
 - **Happ headless** — full server list straight from the provider subscriptions,
@@ -113,7 +119,8 @@ The shell and Hyprland pick everything up live — no restart needed.
 
 Widget settings (`bar.layout.right[]` entry in `~/.config/omarchy/shell.json`, or
 `omarchy bar set omarchy-vpn <key> <value>`): `interval` (seconds, default 3),
-`showLabel` (`false` = icon only). Clicks: left = menu, middle = refresh.
+`showLabel` (`false` = icon only). Clicks: left = panel, right = menu, middle = refresh.
+Panel keys: `t` toggle, `m` menu, `d` DNS leak test, `r` refresh, `Esc` close.
 
 ### Happ setup (only if no servers show up)
 
@@ -154,7 +161,8 @@ automatically.
 
 ## Usage
 
-- **SUPER+Shift+V** or a click on the bar widget → menu
+- **SUPER+Shift+V** or a right click on the bar widget → menu
+- Left click on the bar widget → panel (state, exit IP, protection badges)
 - Status tooltip: traffic, exit IP + country
 - Logs: `~/.local/state/vpn-manager/vpn-manager.log`
 - Caches: `~/.cache/vpn-manager/` (exit IP, pings, subscriptions)

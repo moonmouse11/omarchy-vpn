@@ -10,7 +10,8 @@ All keys optional; missing file means defaults:
   "ip_sources": {"abuseipdb": {"api_key": "secret"}},  // IP source configurations
   "tools_visible": {"dns_leak_test": false},          // hide tools from menu
   "speed_test_urls": ["http://10.0.0.5/100MB.bin"],    // extra Speed Test targets
-  "dns_mode": "tunnel"                  // "tunnel" | "subscription": who routes xray's DNS
+  "dns_mode": "tunnel",                 // "tunnel" | "subscription": who routes xray's DNS
+  "dns_autotest": false                 // run the DNS leak test in the background after a connect
 }
 """
 
@@ -38,6 +39,8 @@ class Config:
     # "tunnel": xray's DNS always follows the tunnel, overriding subscription
     # rules that pin resolvers direct (a leak); "subscription": as shipped
     dns_mode: str = "tunnel"
+    # off by default: it sends ~30 lookups to bash.ws after every connect
+    dns_autotest: bool = False
 
     def provider_visible(self, name: str) -> bool:
         return self.providers.get(name.lower(), True)
@@ -85,6 +88,9 @@ def load_config() -> Config:
 
     if raw.get("dns_mode") in DNS_MODES:
         cfg.dns_mode = raw["dns_mode"]
+
+    if "dns_autotest" in raw:
+        cfg.dns_autotest = bool(raw["dns_autotest"])
     return cfg
 
 
@@ -101,5 +107,6 @@ def save_config(cfg: Config) -> None:
         "tools_visible": cfg.tools_visible,
         "speed_test_urls": cfg.speed_test_urls,
         "dns_mode": cfg.dns_mode,
+        "dns_autotest": cfg.dns_autotest,
     }
     fsutil.write_json_atomic(CONFIG_PATH, raw, indent=2)

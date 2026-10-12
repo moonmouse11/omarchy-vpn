@@ -236,7 +236,7 @@ PGDN, PGUP = settings_tui.curses.KEY_NPAGE, settings_tui.curses.KEY_PPAGE
 
 
 def test_tui_space_toggles_in_place_and_s_saves(state, tui):
-    saved, win = tui(DOWN, DOWN, " ", "s")
+    saved, win = tui(DOWN, DOWN, DOWN, " ", "s")
     assert saved is True
     assert config.load_config().happ_gui_fallback is True
     assert "✅ Open the Happ app if headless connect fails" in win.rows()
@@ -316,3 +316,10 @@ def test_main_runs_the_loop_in_curses_wrapper(tmp_path, monkeypatch):
     assert settings_tui.main(["WireGuard"], TOOLS) == "result"
     assert settings_tui.os.environ["ESCDELAY"] == "25"
     assert seen["state"].providers == ["WireGuard"]
+
+
+def test_dns_autotest_row_toggles_the_draft(state):
+    _go(state, "⬜ Run the DNS leak test after every connect")
+    state.activate()
+    assert state.current.text == "✅ Run the DNS leak test after every connect"
+    assert state.draft.dns_autotest is True

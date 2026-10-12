@@ -117,14 +117,18 @@ Widget settings (`bar.layout.right[]` entry in `~/.config/omarchy/shell.json`, o
 
 ### Happ setup (only if no servers show up)
 
-Happ subscriptions are fetched directly with Happ's User-Agent — panels answer
-a plain `curl` with a stub, but give the full server list to `Happ/<version>`.
-That is enough for most providers: nothing to set up, needs no sudo.
+Happ subscriptions are fetched directly the way Happ itself asks for them:
+`User-Agent: Happ/<installed version>` and `X-HWID` — Happ's device id, which
+is this machine's `/etc/machine-id`. Panels answer a plain `curl` with a stub,
+and device-limited ones want the HWID; sending Happ's own makes the plugin the
+same device as the app, so it never takes another slot. Nothing to set up, no
+sudo.
 
-A provider with a device limit also wants the device headers (`X-Hwid` & co.);
-the Happ menu then shows `⚠️ No servers`. Capture Happ's request headers once
-from your own machine with a short-lived local CA and HTTPS server (nothing
-leaves the machine; needs sudo):
+A provider that still refuses (device limit reached, unsupported client) shows
+up in the Happ menu as `⚠️ <provider>: <its message>`. Free a device slot in
+the provider's bot. Only if the panel checks more than these headers, capture
+Happ's full request once from your own machine with a short-lived local CA and
+HTTPS server (nothing leaves the machine; needs sudo):
 
 1. Take the subscription host from its URL in Happ (`https://<host>/...`) and
    run `bash scripts/sub-intercept-ca.sh <host>`. It creates the CA (valid

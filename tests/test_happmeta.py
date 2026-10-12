@@ -1,6 +1,7 @@
 import email.message
 import hashlib
 import json
+import socket
 import subprocess
 import time
 
@@ -428,8 +429,8 @@ def test_update_subscriptions_stamps_marker_even_on_failure(tmp_path, monkeypatc
     def boom(sub_id, url, force=False):
         raise OSError("network down")
 
-    monkeypatch.setattr(happmeta, "fetch_subscription", boom)
-    happmeta.update_subscriptions()  # must not raise, must still stamp
+    monkeypatch.setattr(happmeta, "_fetch_subscription", boom)
+    assert happmeta.update_subscriptions() == {"P": "network down"}  # must not raise
     state = json.loads((tmp_path / "subs-refresh.json").read_text())
     assert time.time() - state["at"] < 5
     assert happmeta._subs_refresh_in_progress()
@@ -514,8 +515,8 @@ def test_update_subscriptions_threads_force_through(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(
         happmeta,
-        "fetch_subscription",
-        lambda sub_id, url, force=False: seen.append(force) or [],
+        "_fetch_subscription",
+        lambda sub_id, url, force: seen.append(force) or ([], None),
     )
     happmeta.update_subscriptions(force=True)
     assert seen == [True]
@@ -1158,8 +1159,9 @@ def test_fetch_subscription_defaults_to_happ_user_agent(tmp_path, monkeypatch):
     """No captured headers must still fetch: panels key the full JSON on the
     Happ UA, a plain urllib UA gets a text stub."""
     monkeypatch.setattr(happmeta, "happ_version", lambda: "4.6.0")
+    monkeypatch.setattr(happmeta, "happ_hwid", lambda: "bf6fa2d1")
     sent = _sent_headers(tmp_path, monkeypatch, None)
-    assert sent == {"User-agent": "Happ/4.6.0"}
+    assert sent == {"User-agent": "Happ/4.6.0", "X-hwid": "bf6fa2d1"}
     assert not happmeta.has_headers()
 
 
@@ -1198,3 +1200,285 @@ def test_happ_version_without_pacman(monkeypatch):
     monkeypatch.setattr(happmeta.subprocess, "run", missing)
     assert happmeta.happ_version() == happmeta.HAPP_VERSION_FALLBACK
     happmeta.happ_version.cache_clear()
+
+
+def test_happ_hwid_is_the_machine_id(tmp_path, monkeypatch):
+    """Happ's X-HWID is QSysInfo::machineUniqueId() — the raw machine id
+    (checked against the HWID Happ's GUI shows) — so we stay the same device."""
+    machine_id = tmp_path / "machine-id"
+    machine_id.write_text("bf6fa2d1e07f4fbe8889c3e6b6e4f5ba\n")
+    monkeypatch.setattr(happmeta, "MACHINE_ID_FILES", (tmp_path / "missing", machine_id))
+    monkeypatch.setattr(happmeta, "happ_version", lambda: "4.5.2")
+    happmeta.happ_hwid.cache_clear()
+    try:
+        assert happmeta.default_headers() == {
+            "User-Agent": "Happ/4.5.2",
+            "X-HWID": "bf6fa2d1e07f4fbe8889c3e6b6e4f5ba",
+        }
+        monkeypatch.setattr(happmeta, "MACHINE_ID_FILES", (tmp_path / "missing",))
+        happmeta.happ_hwid.cache_clear()
+        assert happmeta.default_headers() == {"User-Agent": "Happ/4.5.2"}
+    finally:
+        happmeta.happ_hwid.cache_clear()
+
+
+def _vless(address):
+    return {"protocol": "vless", "settings": {"vnext": [{"address": address, "port": 443}]}}
+
+
+_FREEDOM = {"protocol": "freedom"}
+_BLACKHOLE = {"protocol": "blackhole"}
+
+
+@pytest.mark.parametrize(
+    ("outbounds", "stub"),
+    [
+        ([_FREEDOM, _BLACKHOLE], True),  # WireCat "Client not supported"
+        ([_vless("0.0.0.0"), _FREEDOM, _BLACKHOLE], True),  # ARTEMIDA device limit
+        ([_vless("198.18.0.1"), _FREEDOM], True),  # oplVPN
+        ([_vless("127.0.0.1")], False),  # a local test server is real
+        ([_vless("31.184.215.234"), _FREEDOM], False),
+        ([_vless("nl-t.creds.lol"), {"protocol": "dns"}], False),  # hostname
+        ([{"protocol": "hysteria", "settings": {"address": "1.2.3.4", "port": 8443}}], False),
+        ([{"protocol": "loopback"}, _vless("0.0.0.0"), _vless("5.6.7.8")], False),  # balancer
+        # a format we can't parse is never hidden
+        ([{"protocol": "wireguard", "settings": {"peers": [{"endpoint": "1.2.3.4:5"}]}}], False),
+    ],
+)
+def test_is_stub_server(outbounds, stub):
+    assert happmeta.is_stub_server({"remarks": "x", "outbounds": outbounds}) is stub
+
+
+def _fetch_with_response(tmp_path, monkeypatch, response, cached=None):
+    monkeypatch.setattr(happmeta, "SUB_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(happmeta, "HEADERS_FILE", tmp_path / "headers.json")
+    if cached is not None:
+        (tmp_path / "subscription-1.json").write_text(json.dumps(cached))
+
+    class FakeResp:
+        def read(self):
+            return json.dumps(response).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(happmeta.urllib.request, "urlopen", lambda req, timeout: FakeResp())
+    return happmeta.fetch_subscription("1", "https://x/1", force=True)
+
+
+_STUBS = [
+    {"remarks": "📱 Достигнут лимит устройств: 4", "outbounds": [_vless("0.0.0.0")]},
+    {"remarks": "💬 Удалите лишнее устройство", "outbounds": [_vless("0.0.0.0")]},
+]
+
+
+def test_stub_answer_keeps_last_servers_and_records_why(tmp_path, monkeypatch):
+    real = {"remarks": "🇩🇪 DE", "outbounds": [_vless("5.6.7.8")]}
+    cached = {"at": 1, "url": "https://x/1", "servers": [real]}
+    servers = _fetch_with_response(tmp_path, monkeypatch, _STUBS, cached)
+    assert [s["remarks"] for s in servers] == ["🇩🇪 DE"]
+    record = json.loads((tmp_path / "subscription-1.json").read_text())
+    assert [s["remarks"] for s in record["servers"]] == ["🇩🇪 DE"]
+    assert happmeta.subscription_rejection("1") == [s["remarks"] for s in _STUBS]
+
+
+def test_stub_answer_without_cache_lists_nothing(tmp_path, monkeypatch):
+    assert _fetch_with_response(tmp_path, monkeypatch, _STUBS) == []
+    assert happmeta.subscription_rejection("1")[0].startswith("📱")
+
+
+def test_stub_rows_dropped_from_a_real_answer(tmp_path, monkeypatch):
+    response = [
+        {"remarks": "ℹ️ Traffic 6 GB", "outbounds": [_FREEDOM]},
+        {"remarks": "🇩🇪 DE", "outbounds": [_vless("5.6.7.8")]},
+    ]
+    servers = _fetch_with_response(tmp_path, monkeypatch, response)
+    assert [s["remarks"] for s in servers] == ["🇩🇪 DE"]
+    assert happmeta.subscription_rejection("1") == []
+
+
+def test_all_servers_hides_stubs_from_old_caches(tmp_path, monkeypatch):
+    monkeypatch.setattr(happmeta, "SUB_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(happmeta, "XRAY_CONFIGS", tmp_path / "none.json")
+    monkeypatch.setattr(
+        happmeta, "providers", lambda: {"1": {"name": "WireCat", "url": "https://x/1"}}
+    )
+    (tmp_path / "subscription-1.json").write_text(
+        json.dumps(
+            {
+                "at": 1,
+                "url": "https://x/1",
+                "servers": [
+                    {"remarks": "⚠️ Клиент не поддерживается", "outbounds": [_FREEDOM]},
+                    {"remarks": "🇩🇪 DE", "outbounds": [_vless("5.6.7.8")]},
+                ],
+            }
+        )
+    )
+    names = [s["name"] for s in happmeta.all_servers(allow_fetch=False)]
+    assert names == ["🇩🇪 DE"]
+
+
+class _Resp:
+    def __init__(self, servers):
+        self._body = json.dumps(servers).encode()
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _scripted_urlopen(monkeypatch, tmp_path, answers, cached=None):
+    """urlopen that plays `answers` in order (an Exception is raised)."""
+    monkeypatch.setattr(happmeta, "SUB_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(happmeta, "HEADERS_FILE", tmp_path / "headers.json")
+    if cached is not None:
+        (tmp_path / "subscription-1.json").write_text(json.dumps(cached))
+    calls = []
+
+    def urlopen(req, timeout):
+        answer = answers[len(calls)]
+        calls.append(req)
+        if isinstance(answer, Exception):
+            raise answer
+        return _Resp(answer)
+
+    monkeypatch.setattr(happmeta.urllib.request, "urlopen", urlopen)
+    return calls
+
+
+_REAL = [{"remarks": "🇩🇪 DE", "outbounds": [_vless("5.6.7.8")]}]
+
+
+def test_fetch_retries_once_after_a_timeout(tmp_path, monkeypatch):
+    """OK's panel hung twice for 15-20 s, then answered in 0.4 s."""
+    calls = _scripted_urlopen(monkeypatch, tmp_path, [TimeoutError("timed out"), _REAL])
+    assert happmeta._fetch_subscription("1", "https://x/1", True) == (_REAL, None)
+    assert len(calls) == 2
+
+
+def test_fetch_gives_up_after_two_timeouts_and_keeps_the_cache(tmp_path, monkeypatch):
+    cached = {"at": 1, "url": "https://x/1", "servers": _REAL}
+    err = happmeta.urllib.request.URLError(TimeoutError("timed out"))
+    calls = _scripted_urlopen(monkeypatch, tmp_path, [err, err], cached)
+    assert happmeta._fetch_subscription("1", "https://x/1", True) == (_REAL, "timed out")
+    assert len(calls) == 2
+
+
+def test_fetch_does_not_retry_a_client_error(tmp_path, monkeypatch):
+    err = happmeta.urllib.request.HTTPError("https://x/1", 404, "Not Found", None, None)
+    calls = _scripted_urlopen(monkeypatch, tmp_path, [err, _REAL])
+    assert happmeta._fetch_subscription("1", "https://x/1", True) == ([], "HTTP 404")
+    assert len(calls) == 1
+
+
+def test_update_subscriptions_reports_what_did_not_update(tmp_path, monkeypatch):
+    _fake_providers(
+        monkeypatch,
+        tmp_path,
+        {
+            "1": {"name": "OK", "url": "https://x/1"},
+            "2": {"name": "ARTEMIDA", "url": "https://x/2"},
+            "3": {"name": "WireCat", "url": "https://x/3"},
+        },
+    )
+    timeout = TimeoutError("timed out")
+    _scripted_urlopen(monkeypatch, tmp_path, [timeout, timeout, _STUBS, _REAL])
+    assert happmeta.update_subscriptions(force=True) == {
+        "OK": "timed out",
+        "ARTEMIDA": "📱 Достигнут лимит устройств: 4",
+    }
+
+
+_ROUTES = """Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
+happ-xray\t00000000\t00000000\t0001\t0\t0\t1\t00000000\t0\t0\t0
+wlp5s0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0
+enp3s0\t00000000\t0101A8C0\t0002\t0\t0\t100\t00000000\t0\t0\t0
+wlp5s0\t0001A8C0\t00000000\t0001\t0\t0\t600\t00FFFFFF\t0\t0\t0
+"""
+
+
+def _fake_net(tmp_path, monkeypatch, routes=_ROUTES):
+    route = tmp_path / "route"
+    route.write_text(routes)
+    monkeypatch.setattr(happmeta, "ROUTE_TABLE", route)
+    for iface, link_type in (("happ-xray", "65534"), ("wlp5s0", "1"), ("enp3s0", "1")):
+        (tmp_path / "net" / iface).mkdir(parents=True)
+        (tmp_path / "net" / iface / "type").write_text(link_type + "\n")
+    monkeypatch.setattr(happmeta, "SYS_NET", tmp_path / "net")
+
+
+def test_uplink_interface_skips_the_tunnel_default_route(tmp_path, monkeypatch):
+    """happ-xray's metric-1 default wins the routing, but it's a tunnel
+    (ARPHRD_NONE); enp3s0's route is down (no RTF_UP) — wlp5s0 it is."""
+    _fake_net(tmp_path, monkeypatch)
+    assert happmeta.uplink_interface() == "wlp5s0"
+
+
+def test_uplink_interface_none_without_a_physical_default(tmp_path, monkeypatch):
+    _fake_net(tmp_path, monkeypatch, _ROUTES.splitlines()[0] + "\n" + _ROUTES.splitlines()[1])
+    assert happmeta.uplink_interface() is None
+    monkeypatch.setattr(happmeta, "ROUTE_TABLE", tmp_path / "missing")
+    assert happmeta.uplink_interface() is None
+
+
+class _FakeSock:
+    def __init__(self, log, fail=False):
+        self.log, self.fail = log, fail
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def settimeout(self, t):
+        pass
+
+    def setsockopt(self, level, opt, value):
+        self.log.append(("bind", value))
+
+    def connect(self, addr):
+        self.log.append(("connect", addr))
+        if self.fail:
+            raise TimeoutError
+
+
+def _fake_ping_socket(monkeypatch, ip, fail=False):
+    log = []
+    monkeypatch.setattr(
+        happmeta.socket,
+        "getaddrinfo",
+        lambda host, port, type: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port))],
+    )
+    monkeypatch.setattr(happmeta.socket, "socket", lambda *a: _FakeSock(log, fail))
+    return log
+
+
+def test_measure_ping_goes_out_the_uplink_not_the_tunnel(monkeypatch):
+    monkeypatch.setattr(happmeta, "uplink_interface", lambda: "wlp5s0")
+    log = _fake_ping_socket(monkeypatch, "5.6.7.8")
+    assert happmeta.measure_ping("srv.example", 443) is not None
+    assert log == [("bind", b"wlp5s0"), ("connect", ("5.6.7.8", 443))] * 2
+
+
+def test_measure_ping_unbound_without_uplink_and_none_on_failure(monkeypatch):
+    monkeypatch.setattr(happmeta, "uplink_interface", lambda: None)
+    log = _fake_ping_socket(monkeypatch, "5.6.7.8", fail=True)
+    assert happmeta.measure_ping("5.6.7.8", 443) is None
+    assert log == [("connect", ("5.6.7.8", 443))]
+
+
+def test_measure_ping_ignores_a_fake_dns_answer(monkeypatch):
+    """A hostname resolved by the tunnel's fake DNS has no real address."""
+    log = _fake_ping_socket(monkeypatch, "198.18.0.7")
+    assert happmeta.measure_ping("srv.example", 443) is None
+    assert log == []

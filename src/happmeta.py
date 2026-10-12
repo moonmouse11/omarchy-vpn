@@ -1,9 +1,9 @@
 """Happ subscription metadata: providers, servers, config generation, ping.
 
 The full server list comes from the provider's subscription endpoint, fetched
-directly with Happ's User-Agent (panels answer plain curl with a stub) — or with
-the app's full request headers when captured via scripts/sub-intercept-*, for
-providers that also demand the device headers. Subscription configs are merged into
+directly with Happ's User-Agent and HWID (panels answer plain curl with a stub;
+device-limited ones want the HWID too) — or with the app's full request headers
+when captured via scripts/sub-intercept-*. Subscription configs are merged into
 runnable xray configs the same way the GUI does it (local inbounds + dns-in +
 dns-out + local routing rules), so any server can be connected headless.
 
@@ -45,10 +45,13 @@ HEADERS_FILE = Path.home() / ".config/happ-capture/headers.json"
 SUB_CACHE_DIR = Path.home() / ".cache/vpn-manager"
 # What a panel keys the full xray JSON on is a "Happ/<version>" User-Agent:
 # without it (plain curl/urllib UA) Unlock VPN answers a text/plain link list
-# instead; X-Hwid & co. are only needed by panels with a device limit, and
-# those need the captured file. The version is the installed package's.
+# instead. Device-limited panels (WireCat, oplVPN) also want X-HWID, else they
+# answer stub "servers" ("Client not supported"). Happ's HWID is the raw
+# machine id (QSysInfo::machineUniqueId), so sending it makes us the same
+# device as the GUI, not one more against the limit.
 HAPP_GUI_BIN = "/usr/bin/happ"
 HAPP_VERSION_FALLBACK = "4.5.2"
+MACHINE_ID_FILES = (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id"))
 
 PING_MAX_AGE = 1800  # seconds — also the sweep cadence; 5 min of TCP
 # connects to every server every cycle likely tripped server-side rate
@@ -281,8 +284,21 @@ def happ_version() -> str:
     return m.group(1) if m else HAPP_VERSION_FALLBACK
 
 
+@functools.cache
+def happ_hwid() -> str | None:
+    """Happ's X-HWID: the machine id as QSysInfo::machineUniqueId() reads it."""
+    for path in MACHINE_ID_FILES:
+        with contextlib.suppress(OSError):
+            if machine_id := path.read_text().strip():
+                return machine_id
+    return None
+
+
 def default_headers() -> dict[str, str]:
-    return {"User-Agent": f"Happ/{happ_version()}"}
+    headers = {"User-Agent": f"Happ/{happ_version()}"}
+    if hwid := happ_hwid():
+        headers["X-HWID"] = hwid
+    return headers
 
 
 def _headers() -> dict[str, str]:
@@ -290,9 +306,42 @@ def _headers() -> dict[str, str]:
 
 
 def has_headers() -> bool:
-    """Whether the device headers were captured — an empty server list
-    without them may be a panel that rejects DEFAULT_HEADERS."""
+    """Whether the request headers were captured — an empty server list
+    without them may be a panel that rejects default_headers()."""
     return _captured_headers() is not None
+
+
+# Outbounds that never reach a server, and addresses a panel's stub "server"
+# points at (ARTEMIDA: 0.0.0.0, oplVPN: 198.18.0.1).
+_STUB_IGNORED_PROTOCOLS = (*NON_PROXY_PROTOCOLS, "loopback")
+_PLACEHOLDER_NETS = tuple(ipaddress.ip_network(n) for n in ("0.0.0.0/8", "198.18.0.0/15"))
+
+
+def _is_placeholder_host(host: object) -> bool:
+    if not isinstance(host, str) or not host:
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False  # a hostname is a real server
+    return addr.version == 4 and any(addr in net for net in _PLACEHOLDER_NETS)
+
+
+def is_stub_server(cfg: dict) -> bool:
+    """A panel's notice dressed as a server ("⚠️ Client not supported",
+    "Device limit reached: 4"): no proxy outbound at all, or every one points
+    at a placeholder address. An outbound whose target can't be parsed counts
+    as real — never hide a server over a format we don't know."""
+    proxies = [
+        o
+        for o in cfg.get("outbounds") or []
+        if isinstance(o, dict) and o.get("protocol") not in _STUB_IGNORED_PROTOCOLS
+    ]
+    for outbound in proxies:
+        target = _outbound_target({"outbounds": [outbound]})
+        if target is None or not _is_placeholder_host(target[0]):
+            return False
+    return True
 
 
 def _sub_cache_path(sub_id: str) -> Path:
@@ -312,11 +361,54 @@ def fetch_subscription(sub_id: str, url: str, force: bool = False) -> list[dict]
     return (the Refresh All menu action); the default keeps the SUB_MAX_AGE
     gate the --status path relies on.
     """
+    return _fetch_subscription(sub_id, url, force)[0]
+
+
+SUB_FETCH_TIMEOUT = 15  # seconds per attempt
+SUB_FETCH_ATTEMPTS = 2  # OK's panel sometimes hangs, then answers in 0.4 s
+
+
+def _download_subscription(url: str) -> tuple[object, dict | None]:
+    """(parsed JSON, panel info) — retried once on a network failure; a 4xx
+    or a non-JSON answer is the panel's final word and isn't."""
+    req = urllib.request.Request(url, headers=_headers())  # noqa: S310 — scheme checked by caller
+    for attempt in range(SUB_FETCH_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(req, timeout=SUB_FETCH_TIMEOUT) as resp:  # noqa: S310 — scheme checked by caller
+                data = json.loads(resp.read().decode())
+                return data, _parse_sub_info(resp)  # headers only readable while open
+        except urllib.request.HTTPError as e:
+            if e.code < 500 or attempt + 1 == SUB_FETCH_ATTEMPTS:
+                raise
+        except OSError:
+            if attempt + 1 == SUB_FETCH_ATTEMPTS:
+                raise
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _fetch_error_reason(e: Exception) -> str:
+    if isinstance(e, urllib.request.HTTPError):
+        return f"HTTP {e.code}"
+    reason = getattr(e, "reason", None)  # URLError wrapping the socket error
+    if isinstance(reason, Exception):
+        e = reason
+    if isinstance(e, TimeoutError):
+        return "timed out"
+    if isinstance(e, ValueError):
+        return "not a Happ subscription answer"
+    return str(e) or type(e).__name__
+
+
+def _fetch_subscription(sub_id: str, url: str, force: bool) -> tuple[list[dict], str | None]:
+    """fetch_subscription() plus why it didn't update: None when the servers
+    are fresh (fetched now or within SUB_MAX_AGE), else a short reason —
+    the network error, or the panel's own stub row (device limit)."""
     cache_path = _sub_cache_path(sub_id)
     try:
         cached = json.loads(cache_path.read_text())
     except (OSError, json.JSONDecodeError):
         cached = None
+    fallback = cached.get("servers", []) if isinstance(cached, dict) else []
 
     # Fresh only for THIS url: after a token rotation the record may hold a
     # fresh cache fetched with the old url. Records without "url" predate
@@ -327,35 +419,43 @@ def fetch_subscription(sub_id: str, url: str, force: bool = False) -> list[dict]
         and cached.get("url", url) == url
         and time.time() - cached.get("at", 0) < SUB_MAX_AGE
     ):
-        return cached.get("servers", [])
+        return fallback, None
 
     # the url comes from Happ's log: never let it open file:// or other schemes
-    if url.startswith(("https://", "http://")):
-        req = urllib.request.Request(url, headers=_headers())  # noqa: S310 — scheme checked
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 — scheme checked
-                data = json.loads(resp.read().decode())
-                info = _parse_sub_info(resp)  # headers only readable while open
-            if isinstance(data, list) and data and isinstance(data[0], dict):
-                servers = [s for s in data if s.get("outbounds")]
-                record = {"at": time.time(), "url": url, "servers": servers}
-                if info is not None:
-                    record["info"] = info
-                elif (
-                    isinstance(cached, dict)
-                    and cached.get("url") == url
-                    and isinstance(cached.get("info"), dict)
-                ):
-                    # panel answered without headers — keep the previous info
-                    record["info"] = cached["info"]
-                # configs carry UUIDs and reality keys — fsutil writes 0600
-                with contextlib.suppress(OSError):
-                    fsutil.write_json_atomic(cache_path, record, ensure_ascii=False)
-                return servers
-        except (OSError, ValueError):
-            pass
+    if not url.startswith(("https://", "http://")):
+        return fallback, "not an http(s) url"
+    try:
+        data, info = _download_subscription(url)
+    except (OSError, ValueError) as e:
+        return fallback, _fetch_error_reason(e)
+    if not (isinstance(data, list) and data and isinstance(data[0], dict)):
+        return fallback, "not a Happ subscription answer"
 
-    return cached.get("servers", []) if isinstance(cached, dict) else []
+    configs = [s for s in data if s.get("outbounds")]
+    servers = [s for s in configs if not is_stub_server(s)]
+    record: dict[str, Any] = {"at": time.time(), "url": url, "servers": servers}
+    error = None
+    if not servers:
+        # The panel turned us away (unsupported client, device
+        # limit): keep the last real servers, remember why.
+        record["rejected"] = [str(s.get("remarks") or "") for s in configs]
+        error = next((r for r in record["rejected"] if r), "no servers")
+        if isinstance(cached, dict) and cached.get("url") == url:
+            servers = [s for s in cached.get("servers", []) if not is_stub_server(s)]
+            record["servers"] = servers
+    if info is not None:
+        record["info"] = info
+    elif (
+        isinstance(cached, dict)
+        and cached.get("url") == url
+        and isinstance(cached.get("info"), dict)
+    ):
+        # panel answered without headers — keep the previous info
+        record["info"] = cached["info"]
+    # configs carry UUIDs and reality keys — fsutil writes 0600
+    with contextlib.suppress(OSError):
+        fsutil.write_json_atomic(cache_path, record, ensure_ascii=False)
+    return servers, error
 
 
 def _parse_sub_info(resp) -> dict | None:
@@ -460,6 +560,13 @@ def fetch_subscription_cached(sub_id: str) -> list[dict]:
     return cached.get("servers", []) if isinstance(cached, dict) else []
 
 
+def subscription_rejection(sub_id: str) -> list[str]:
+    """The stub rows the panel answered the last fetch with, [] if it served."""
+    cached = _read_sub_cache(sub_id)
+    rejected = cached.get("rejected") if isinstance(cached, dict) else None
+    return [r for r in rejected if isinstance(r, str) and r] if isinstance(rejected, list) else []
+
+
 def _sub_cache_fresh(sub_id: str, url: str) -> bool:
     cached = _read_sub_cache(sub_id)
     try:
@@ -507,18 +614,27 @@ def request_subscription_update() -> None:
             return
 
 
-def update_subscriptions(force: bool = False) -> None:
+def update_subscriptions(force: bool = False) -> dict[str, str]:
     """Background entry point: refresh every subscription cache.
     force=True (Refresh All's --update-subs-force) re-fetches even caches
-    younger than SUB_MAX_AGE; the default --update-subs run keeps the gate."""
+    younger than SUB_MAX_AGE; the default --update-subs run keeps the gate.
+    Returns {provider name: why it didn't update} for the manual refresh's
+    notification — the old caches stay in use either way."""
     # stamped first, even when fetches fail below: single-flight for the tick
     _stamp_subs_refresh()
+    failed: dict[str, str] = {}
     for sub_id, prov in providers().items():
         url = prov.get("url")
-        if url:
-            with contextlib.suppress(OSError, AttributeError, ValueError):
-                # one failing provider must not stop the others
-                fetch_subscription(sub_id, url, force=force)
+        if not url:
+            continue
+        try:
+            # one failing provider must not stop the others
+            error = _fetch_subscription(sub_id, url, force)[1]
+        except (OSError, AttributeError, ValueError) as e:
+            error = _fetch_error_reason(e)
+        if error:
+            failed[prov.get("name") or sub_id] = error
+    return failed
 
 
 # ── Config merge (subscription config -> runnable xray config) ────────────────
@@ -701,6 +817,8 @@ def all_servers(allow_fetch: bool = True) -> list[dict]:
             continue
         cfgs = fetch_subscription(sub_id, url) if allow_fetch else fetch_subscription_cached(sub_id)
         for cfg in cfgs:
+            if is_stub_server(cfg):  # caches written before stubs were filtered
+                continue
             name = cfg.get("remarks") or "?"
             servers.append(
                 {
@@ -926,17 +1044,62 @@ def request_ping_update() -> None:
     )
 
 
+ROUTE_TABLE = Path("/proc/net/route")
+SYS_NET = Path("/sys/class/net")
+ARPHRD_NONE = "65534"  # link type of tun/wireguard/amneziawg devices
+_FAKE_DNS_NET = ipaddress.ip_network("198.18.0.0/15")
+
+
+def uplink_interface() -> str | None:
+    """The physical NIC behind the default route, skipping tunnels.
+
+    A VPN puts its own default route on top (Happ: `default dev happ-xray
+    metric 1` over `default via … dev wlp5s0 metric 600`); xray's TUN then
+    completes every TCP handshake locally, so an unbound connect measured
+    0.2-3 ms to every server. None when there is no non-tunnel default route."""
+    try:
+        lines = ROUTE_TABLE.read_text().splitlines()[1:]
+    except OSError:
+        return None
+    routes = []
+    for line in lines:
+        f = line.split()
+        # Iface Destination Gateway Flags RefCnt Use Metric Mask …
+        if len(f) < 8 or f[1] != "00000000" or f[7] != "00000000" or not int(f[3], 16) & 1:
+            continue
+        try:
+            link_type = (SYS_NET / f[0] / "type").read_text().strip()
+        except OSError:
+            continue
+        if link_type != ARPHRD_NONE:
+            routes.append((int(f[6]), f[0]))
+    return min(routes)[1] if routes else None
+
+
 def measure_ping(host: str, port: int) -> float | None:
-    """TCP connect RTT (best of 2), None on failure."""
+    """TCP connect RTT (best of 2) to the server itself, None on failure.
+
+    The socket is bound to uplink_interface() (SO_BINDTODEVICE, unprivileged
+    since Linux 5.7) — the way xray reaches its own servers — so a running
+    tunnel doesn't answer for them. Under the killswitch these direct
+    connects are dropped; vpn_manager skips the sweep then."""
+    family, kind, proto, _, addr = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0]
+    if family == socket.AF_INET and ipaddress.ip_address(addr[0]) in _FAKE_DNS_NET:
+        return None  # the tunnel's fake DNS answered: no real address to time
+    iface = uplink_interface()
     best = None
     for _ in range(2):
-        start = time.perf_counter()
-        try:
-            with socket.create_connection((host, port), timeout=PING_TIMEOUT):
-                ms = (time.perf_counter() - start) * 1000
-                best = ms if best is None else min(best, ms)
-        except OSError:
-            return None
+        with socket.socket(family, kind, proto) as sock:
+            sock.settimeout(PING_TIMEOUT)
+            if iface:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, iface.encode())
+            start = time.perf_counter()
+            try:
+                sock.connect(addr)
+            except OSError:
+                return None
+            ms = (time.perf_counter() - start) * 1000
+            best = ms if best is None else min(best, ms)
     return round(best, 1) if best is not None else None
 
 

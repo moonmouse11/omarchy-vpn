@@ -205,7 +205,7 @@ def test_a_switch_aborts_the_checks_of_the_connection_being_left(env, monkeypatc
         "101": ["python3", script, "--dns-autotest"],
         "102": ["python3", script, "--update-ip", "🇩🇪 DE"],
         "103": ["python3", script, "--dns-leak-test"],
-        "104": ["python3", script, "--update-ping"],
+        "104": ["python3", script, "--ping-now"],  # tied to no connection
         "105": ["python3", script, "--happ-keeper", "🇩🇪 DE", "15"],  # the tunnel itself
         "106": ["python3", script, "--update-subs"],
         "107": ["python3", "other.py", "--update-ip", "x"],
@@ -222,4 +222,4 @@ def test_a_switch_aborts_the_checks_of_the_connection_being_left(env, monkeypatc
     )
     with vpn_manager.switch_lock("connecting to x"):
         pass
-    assert sorted(killed) == [101, 102, 103, 104]
+    assert sorted(killed) == [101, 102, 103]

@@ -34,7 +34,6 @@ def env(monkeypatch, tmp_path):
     pings = {}
     monkeypatch.setattr(happmeta, "_read_pings", lambda: pings)
     monkeypatch.setattr(happmeta, "request_subscription_update", lambda: None)
-    monkeypatch.setattr(happmeta, "request_ping_update", lambda: None)
     monkeypatch.setattr(vpn_manager.config, "load_config", config.Config)
     return pings
 
@@ -54,7 +53,7 @@ def test_ping_status_fresh_stale_none(env):
     ("entry", "ping", "stale"),
     [
         ({"ms": 46.6, "fresh": True}, "47 ms", False),
-        ({"ms": 46.6, "fresh": False}, "~47 ms", True),  # killswitch on: no sweep, old value
+        ({"ms": 46.6, "fresh": False}, "~47 ms", True),  # older than PING_MAX_AGE
         ({"ms": None, "fresh": True}, "timeout", False),
         ({"ms": None, "fresh": False}, "timeout", True),  # an old timeout is just dimmed
         (None, "", False),  # never swept: say nothing
@@ -70,8 +69,8 @@ def test_server_row_ping(env, entry, ping, stale):
 
 
 def test_server_list_groups_happ_per_subscription_and_other_providers(env, monkeypatch):
-    env["🇩🇪 DE"] = {"ms": 40.0, "at": time.time()}
-    env["🇳🇱 NL"] = {"ms": 60.0, "at": time.time()}
+    env["15\t🇩🇪 DE"] = {"ms": 40.0, "at": time.time()}  # happmeta.ping_key()
+    env["15\t🇳🇱 NL"] = {"ms": 60.0, "at": time.time()}
     happ = FakeProvider("Happ", [])
     wg = FakeProvider("WireGuard", [VPNConnection(name="home", provider="WireGuard", active=True)])
     empty = FakeProvider("OpenVPN", [])
@@ -197,3 +196,10 @@ def test_panel_cli_connect_rejects_wrong_arity(monkeypatch):
     monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", "--connect", "Happ"])
     with pytest.raises(SystemExit):
         vpn_manager.main()
+
+
+def test_server_row_marks_a_ping_skipped_under_the_killswitch(env):
+    env["home"] = {"ms": None, "at": time.time(), "skipped": True}
+    row = vpn_manager._server_row({"name": "home", "active": False})
+    assert (row["ping"], row["ping_ms"]) == ("—", None)
+    assert happmeta.ping_mark("home") == ""

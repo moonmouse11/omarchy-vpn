@@ -81,6 +81,9 @@ def build_rows(
     def toggle_lockdown(d):
         d.killswitch_lockdown = not d.killswitch_lockdown
 
+    def toggle_key_hints(d):
+        d.panel_key_hints = not d.panel_key_hints
+
     mode = draft.killswitch_mode
     rows = [
         Row("── General ──", "header"),
@@ -104,6 +107,11 @@ def build_rows(
             f"{_checkbox(draft.killswitch_lockdown)} Lockdown: block traffic while no VPN is up",
             "toggle",
             toggle_lockdown,
+        ),
+        Row(
+            f"{_checkbox(draft.panel_key_hints)} Show key hints in the panel",
+            "toggle",
+            toggle_key_hints,
         ),
         Row("── Providers ──", "header"),
     ]

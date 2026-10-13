@@ -62,6 +62,10 @@ def _no_real_panel_caches(monkeypatch, tmp_path):
     monkeypatch.setattr(vpn_manager, "DNS_VERDICT_CACHE", tmp_path / "dns-leak.json")
     monkeypatch.setattr(vpn_manager, "SWITCH_LOCK", tmp_path / "switch.lock")
     monkeypatch.setattr(vpn_manager, "PING_LOCK", tmp_path / "ping.lock")
+    # the bar's {activity}: never a real Ping run's progress
+    monkeypatch.setattr(vpn_manager.delayping, "PROGRESS", tmp_path / "ping-progress.json")
+    monkeypatch.setattr(vpn_manager.delayping, "QUEUE", tmp_path / "ping-queue.json")
+    monkeypatch.setattr(vpn_manager.delayping, "QUEUE_LOCK", tmp_path / "ping-queue.lock")
     monkeypatch.setattr(vpn_manager, "PROC", tmp_path / "proc")  # never signal real processes
     # whose Happ connection it is (panel badge) — never the live keeper's state
     monkeypatch.setattr(vpn_manager.happ_provider, "KEEPER_STATE", tmp_path / "happ-keeper.json")

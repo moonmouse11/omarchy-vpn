@@ -92,12 +92,19 @@ def test_move_skips_headers_and_stops_at_the_ends(state):
     state.move(-1)
     assert state.current.text.startswith("✅ DNS always")  # top: no wrap
     _go(state, "⬜ Run the DNS leak test")
-    state.move(3)  # killswitch mode, Lockdown, then over "── Providers ──"
+    state.move(4)  # killswitch mode, Lockdown, key hints, then over "── Providers ──"
     assert state.current.text == "✅ WireGuard"
     state.move(100)
     assert state.current.text == "🔑 IPQualityScore: no API key"  # bottom: no wrap
     state.move(-1)
     assert state.current.text == "🔑 AbuseIPDB: no API key"
+
+
+def test_key_hints_toggle(state):
+    _go(state, "✅ Show key hints in the panel")
+    state.activate()
+    state.save()
+    assert config.load_config().panel_key_hints is False
 
 
 def test_keyless_source_toggles(state):

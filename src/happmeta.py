@@ -53,9 +53,10 @@ HAPP_GUI_BIN = "/usr/bin/happ"
 HAPP_VERSION_FALLBACK = "4.5.2"
 MACHINE_ID_FILES = (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id"))
 
-PING_MAX_AGE = 1800  # seconds — also the sweep cadence; 5 min of TCP
-# connects to every server every cycle likely tripped server-side rate
-# limits (the ARTEMIDA IP ban), and menu marks tolerate 30 min of staleness
+PING_MAX_AGE = 86400  # seconds; older pings show with "~" — they are
+# measured only on the panel's Ping button (delayping), so they can be
+# any age. (The old 30-min background TCP sweep likely tripped server-side
+# rate limits — the ARTEMIDA IP ban.)
 SUB_MAX_AGE = 3600  # seconds
 SUBS_REFRESH_RETRY = 60  # seconds, avoid spawning a worker per status tick when the tunnel is down
 PING_TIMEOUT = 3.0
@@ -993,6 +994,13 @@ def server_params(
 # ── Ping cache ────────────────────────────────────────────────────────────────
 
 
+def ping_key(name: str, subscription_id: str | None = None) -> str:
+    """The ping cache key: Happ server names are unique only within one
+    subscription (two often both ship a "🇩🇪 Germany"), so a subscription
+    server is keyed by (subscription id, name); everything else by name."""
+    return f"{subscription_id}\t{name}" if subscription_id else name
+
+
 def _read_pings() -> dict:
     try:
         data = json.loads(PING_CACHE.read_text())
@@ -1029,19 +1037,6 @@ def provider_ping_summary(names: list[str]) -> str | None:
     if not fresh_ms:
         return None
     return f"✓ {len(fresh_ms)}/{len(names)} · ⌀{round(statistics.median(fresh_ms))}ms"
-
-
-def request_ping_update() -> None:
-    """Fire-and-forget background ping refresh if the cache is stale."""
-    pings = _read_pings()
-    if time.time() - pings.get("updated_at", 0) < PING_MAX_AGE:
-        return
-    subprocess.Popen(
-        [sys.executable, str(MANAGER), "--update-ping"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
 
 
 ROUTE_TABLE = Path("/proc/net/route")
@@ -1081,8 +1076,9 @@ def measure_ping(host: str, port: int) -> float | None:
 
     The socket is bound to uplink_interface() (SO_BINDTODEVICE, unprivileged
     since Linux 5.7) — the way xray reaches its own servers — so a running
-    tunnel doesn't answer for them. Under the killswitch these direct
-    connects are dropped; vpn_manager skips the sweep then."""
+    tunnel doesn't answer for them. Used for WireGuard/OpenVPN only (Happ
+    and Keys go through xray, see delayping); under the kill switch these
+    direct connects are dropped, so the Ping button skips them then."""
     family, kind, proto, _, addr = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0]
     if family == socket.AF_INET and ipaddress.ip_address(addr[0]) in _FAKE_DNS_NET:
         return None  # the tunnel's fake DNS answered: no real address to time
@@ -1103,13 +1099,6 @@ def measure_ping(host: str, port: int) -> float | None:
     return round(best, 1) if best is not None else None
 
 
-def update_pings() -> None:
-    """Background entry point: refresh the ping cache for Happ servers.
-    vpn_manager's --update-ping combines these with the other providers'
-    ping_targets() into a single write_pings() call (one cache writer)."""
-    write_pings(ping_targets())
-
-
 def ping_targets() -> list[tuple[str, str, int]]:
     """(name, host, port) for every known Happ server."""
     targets = []
@@ -1120,20 +1109,6 @@ def ping_targets() -> list[tuple[str, str, int]]:
     return targets
 
 
-def write_pings(targets: list[tuple[str, str, int]]) -> None:
-    """Measure and write the ping cache (single writer, fixed format)."""
-    pings: dict[str, Any] = {}  # name -> {ms, at}, plus updated_at
-    for name, host, port in targets:
-        try:
-            ms = measure_ping(host, port)
-        except OSError, OverflowError, ValueError, TypeError:
-            ms = None  # one bad target must not abort the whole sweep
-        pings[name] = {"ms": ms, "at": time.time()}
-    pings["updated_at"] = time.time()
-    with contextlib.suppress(OSError):
-        fsutil.write_json_atomic(PING_CACHE, pings, ensure_ascii=False)
-
-
 def _fresh_ping_entry(name: str) -> dict | None:
     """Fresh ping-cache entry for a server, or None when stale/absent."""
     entry = _read_pings().get(name)
@@ -1142,14 +1117,23 @@ def _fresh_ping_entry(name: str) -> dict | None:
     return entry
 
 
+def ping_at(name: str) -> float:
+    """When the cached ping for a key was measured (0 when never)."""
+    entry = _read_pings().get(name)
+    at = entry.get("at") if isinstance(entry, dict) else None
+    return float(at) if isinstance(at, (int, float)) else 0.0
+
+
 def ping_status(name: str) -> tuple[str, float | None]:
-    """("fresh" | "stale" | "none", ms). ms None = measured, didn't answer.
-    "stale": older than PING_MAX_AGE — e.g. under the killswitch, which
-    drops the sweep's direct connects so vpn_manager stops sweeping; the
-    last value is still worth showing, marked as old."""
+    """("fresh" | "stale" | "skipped" | "none", ms). ms None = measured,
+    didn't answer. "stale": older than PING_MAX_AGE — still worth showing,
+    marked as old. "skipped": the last Ping run couldn't measure it
+    (a direct ping under the kill switch)."""
     entry = _read_pings().get(name)
     if not isinstance(entry, dict) or "at" not in entry:
         return "none", None
+    if entry.get("skipped"):
+        return "skipped", None
     fresh = time.time() - entry.get("at", 0) <= PING_MAX_AGE
     return ("fresh" if fresh else "stale"), entry.get("ms")
 
@@ -1158,7 +1142,7 @@ def ping_mark(name: str) -> str:
     """'✓ 42 ms' / '⛔' / '' — the Happ GUI availability metaphor for any
     connection name in the shared ping cache (Happ, WireGuard, OpenVPN)."""
     entry = _fresh_ping_entry(name)
-    if entry is None:
+    if entry is None or entry.get("skipped"):
         return ""
     if entry.get("ms") is None:
         return "⛔"

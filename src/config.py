@@ -11,7 +11,8 @@ All keys optional; missing file means defaults:
   "tools_visible": {"dns_leak_test": false},          // hide tools from menu
   "speed_test_urls": ["http://10.0.0.5/100MB.bin"],    // extra Speed Test targets
   "dns_mode": "tunnel",                 // "tunnel" | "subscription": who routes xray's DNS
-  "dns_autotest": false                 // run the DNS leak test in the background after a connect
+  "dns_autotest": false,                // run the DNS leak test in the background after a connect
+  "panel_key_hints": true               // the key line at the bottom of the bar panel
 }
 """
 
@@ -43,6 +44,7 @@ class Config:
     dns_mode: str = "tunnel"
     # off by default: it sends ~30 lookups to bash.ws after every connect
     dns_autotest: bool = False
+    panel_key_hints: bool = True
 
     def provider_visible(self, name: str) -> bool:
         return self.providers.get(name.lower(), True)
@@ -93,6 +95,8 @@ def load_config() -> Config:
 
     if "dns_autotest" in raw:
         cfg.dns_autotest = bool(raw["dns_autotest"])
+    if "panel_key_hints" in raw:
+        cfg.panel_key_hints = bool(raw["panel_key_hints"])
     return cfg
 
 
@@ -110,5 +114,6 @@ def save_config(cfg: Config) -> None:
         "speed_test_urls": cfg.speed_test_urls,
         "dns_mode": cfg.dns_mode,
         "dns_autotest": cfg.dns_autotest,
+        "panel_key_hints": cfg.panel_key_hints,
     }
     fsutil.write_json_atomic(CONFIG_PATH, raw, indent=2)

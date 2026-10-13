@@ -38,7 +38,7 @@ def flag_emoji(country_code: str | None) -> str:
 def read_cache() -> dict | None:
     try:
         data = json.loads(CACHE_PATH.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) else None
 
@@ -109,7 +109,7 @@ def country_of_ip(ip: str) -> str | None:
         return cache["country_code"].upper()
     try:
         data = _fetch()
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
     if data.get("ip") != ip or not data.get("country_code"):
         return None
@@ -127,7 +127,7 @@ def _fetch() -> dict:
                 "country_code": data.get("country_code"),
                 "domain": conn.get("domain"),
             }
-    except (OSError, ValueError):
+    except OSError, ValueError:
         pass
     with urllib.request.urlopen(API_FALLBACK, timeout=6) as resp:
         return {"ip": resp.read().decode().strip(), "country_code": None}

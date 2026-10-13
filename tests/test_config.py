@@ -37,17 +37,17 @@ def test_partial_and_type_safety(tmp_path, monkeypatch):
     assert cfg.exit_ip_enabled is False
 
 
-def test_happ_gui_fallback_roundtrip(tmp_path, monkeypatch):
+def test_killswitch_lockdown_roundtrip(tmp_path, monkeypatch):
     from config import Config, load_config, save_config
 
     p = tmp_path / "config.json"
     monkeypatch.setattr(config, "CONFIG_PATH", p)
-    assert load_config().happ_gui_fallback is False  # default: no GUI window
+    assert load_config().killswitch_lockdown is True  # default: keep blocking
 
     cfg = Config()
-    cfg.happ_gui_fallback = True
+    cfg.killswitch_lockdown = False
     save_config(cfg)
-    assert load_config().happ_gui_fallback is True
+    assert load_config().killswitch_lockdown is False
 
 
 def test_ip_sources_and_tools_visible_defaults(tmp_path, monkeypatch):

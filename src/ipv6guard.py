@@ -29,7 +29,7 @@ def is_disabled() -> bool:
         result = subprocess.run(
             ["sysctl", "-n", _ALL_KEY], capture_output=True, text=True, timeout=5, check=False
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return False
     return result.returncode == 0 and result.stdout.strip() == "1"
 

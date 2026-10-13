@@ -94,7 +94,7 @@ def _loose_b64(text: str) -> bytes:
     padded = text + "=" * (-len(text) % 4)
     try:
         return base64.urlsafe_b64decode(padded)
-    except (binascii.Error, ValueError):
+    except binascii.Error, ValueError:
         return base64.b64decode(padded)
 
 
@@ -290,7 +290,7 @@ def parse_key(url: str) -> dict:
 def _load_servers() -> list[dict]:
     try:
         data = json.loads(STORE.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return []
     return [s for s in data if isinstance(s, dict) and s.get("host")]
 
@@ -455,7 +455,7 @@ def _write_keeper_state(state_path: Path, state: dict, own: bool = False) -> Non
 def _read_keeper_state(state_path: Path) -> dict | None:
     try:
         data = json.loads(state_path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) else None
 

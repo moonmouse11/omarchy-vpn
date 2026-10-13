@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "VPN manager for Omarchy: WireGuard, AmneziaWG, OpenVPN, NetworkManager, VLESS / Shadowsocks keys and Happ"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 
 [project.urls]
 Repository = "https://github.com/moonmouse11/omarchy-vpn"
@@ -14,7 +14,7 @@ Changelog = "https://github.com/moonmouse11/omarchy-vpn/blob/main/CHANGELOG.md"
 dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.10"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py314"
 line-length = 100
 
 [tool.ruff.lint]
@@ -41,7 +41,7 @@ allowed-confusables = ["‹", "ℹ", "×", "а", "б", "в", "В", "д", "о", "
 "tests/**" = ["S", "PLR", "PLC0415"]  # asserts, fixture-heavy signatures, imports inside tests
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 mypy_path = "src"
 explicit_package_bases = true
 ignore_missing_imports = true

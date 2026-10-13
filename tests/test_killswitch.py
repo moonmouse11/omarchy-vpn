@@ -1,5 +1,9 @@
 import json
+import subprocess
 import time
+from pathlib import Path
+
+import pytest
 
 import killswitch
 import providers.base as base
@@ -226,14 +230,14 @@ def test_resume_for_happ_extra_ips_bypass_detect(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(killswitch, "is_enabled", lambda: True)
     assert killswitch.resume_for_happ(extra_ips=["198.51.100.30"]).success
-    assert calls == [{"extra_ips": ["198.51.100.30"], "fresh": True}]
+    assert calls == [{"extra_ips": ["198.51.100.30"], "dns": None, "fresh": True}]
 
     monkeypatch.setattr(killswitch, "is_enabled", lambda: False)
     cfg = killswitch.config.load_config()
     cfg.killswitch_mode = "all"
     killswitch.config.save_config(cfg)
     assert killswitch.resume_for_happ(extra_ips=["198.51.100.30"]).success
-    assert calls[-1] == {"extra_ips": ["198.51.100.30"], "fresh": True}
+    assert calls[-1] == {"extra_ips": ["198.51.100.30"], "dns": None, "fresh": True}
 
     cfg.killswitch_mode = "off"
     killswitch.config.save_config(cfg)
@@ -285,7 +289,7 @@ def test_resume_for_happ_unresolved_server_keeps_detect_path(monkeypatch, tmp_pa
     )
     monkeypatch.setattr(killswitch, "is_enabled", lambda: True)
     killswitch.resume_for_happ(extra_ips=[])
-    assert calls == [{"extra_ips": []}]
+    assert calls == [{"extra_ips": [], "dns": None}]
 
 
 def test_script_accepts_xray_mark_and_no_conf():
@@ -299,3 +303,116 @@ def test_script_accepts_xray_mark_and_no_conf():
     assert f"XRAY_MARK={happmeta.KILLSWITCH_MARK:#x}\n" in script
     assert "meta mark $XRAY_MARK accept" in script
     assert "--no-conf)" in script
+
+
+# conftest swaps the shared subprocess.run for a fake once tests start; the
+# script tests below need the real one (bash only — `rules` applies nothing)
+_REAL_RUN = subprocess.run
+_REAL_POPEN = subprocess.Popen  # run() spawns through it; conftest sets it to None
+_SCRIPT = Path(__file__).resolve().parent.parent / "scripts/happ-killswitch"
+
+
+@pytest.fixture
+def real_subprocess(monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+
+
+def _rules(*args: str, home: str = "/nonexistent") -> str:
+    result = _REAL_RUN(
+        ["bash", str(_SCRIPT), "rules", *args],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "HOME": home},
+        check=True,
+    )
+    return result.stdout
+
+
+def test_ruleset_replaces_the_table_in_one_transaction(real_subprocess):
+    """add + delete + define in one `nft -f` file: a rebuild (every server
+    switch) never leaves a moment without rules, as the old delete-then-load
+    pair did."""
+    lines = _rules("198.51.100.30", "--no-conf").splitlines()
+    assert lines[:3] == [
+        "table inet happ-ks",
+        "delete table inet happ-ks",
+        "table inet happ-ks {",
+    ]
+
+
+def test_dns_leaves_only_to_the_given_resolvers(real_subprocess):
+    """No more port 53 to anywhere: only --dns resolvers (during a connect)."""
+    strict = _rules("198.51.100.30", "--no-conf")
+    assert "dport 53" not in strict
+    hole = _rules("198.51.100.30", "--no-conf", "--dns", "192.0.2.53", "--dns", "2001:db8::53")
+    assert "ip daddr 192.0.2.53 udp dport 53 accept" in hole
+    assert "ip daddr 192.0.2.53 tcp dport { 53, 853 } accept" in hole
+    assert "ip6 daddr 2001:db8::53 udp dport 53 accept" in hole
+    # nothing else opens DNS (the other dport is DHCP's 67)
+    assert hole.count("dport 53") + hole.count("dport { 53, 853 }") == 4
+
+
+def test_ruleset_rejects_what_is_not_an_address(real_subprocess):
+    for bad in (["1.2.3.4; flush ruleset", "--no-conf"], ["1.2.3.4", "--no-conf", "--dns", "x"]):
+        result = _REAL_RUN(
+            ["bash", str(_SCRIPT), "rules", *bad],
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin", "HOME": "/nonexistent"},
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "table" not in result.stdout
+
+
+def test_enable_passes_dns_resolvers_to_the_script(monkeypatch):
+    calls = []
+    monkeypatch.setattr(killswitch, "_sudo", lambda *a: calls.append(a) or ActionResult(True, ""))
+    killswitch.enable(extra_ips=["1.2.3.4"], ifaces=["wg0"], fresh=True, dns=["192.0.2.53"])
+    assert calls == [("on", "--no-conf", "1.2.3.4", "--iface", "wg0", "--dns", "192.0.2.53")]
+
+
+def test_system_resolvers_from_resolv_conf(monkeypatch, tmp_path):
+    conf = tmp_path / "resolv.conf"
+    conf.write_text(
+        "# generated\nnameserver 1.1.1.1\nnameserver 2606:4700:4700::1111\n"
+        "nameserver fe80::1%wlp5s0\noptions edns0\nnameserver 1.1.1.1\n"
+    )
+    monkeypatch.setattr(killswitch, "RESOLV_CONF", conf)
+    assert killswitch.system_resolvers() == ["1.1.1.1", "2606:4700:4700::1111", "fe80::1"]
+
+
+def test_system_resolvers_behind_the_systemd_stub(monkeypatch, tmp_path):
+    """resolv.conf -> 127.0.0.53: the real upstreams come from resolvectl."""
+    conf = tmp_path / "resolv.conf"
+    conf.write_text("nameserver 127.0.0.53\noptions edns0 trust-ad\n")
+    monkeypatch.setattr(killswitch, "RESOLV_CONF", conf)
+
+    class Out:
+        stdout = (
+            "Global: 1.1.1.1#cloudflare-dns.com 2606:4700:4700::1111#cloudflare-dns.com\n"
+            "Link 2 (enp3s0):\n"
+            "Link 3 (wlp5s0): 192.168.1.1\n"
+        )
+
+    ran = []
+    monkeypatch.setattr(killswitch.subprocess, "run", lambda cmd, **kw: ran.append(cmd) or Out())
+    assert killswitch.system_resolvers() == ["1.1.1.1", "2606:4700:4700::1111", "192.168.1.1"]
+    assert ran == [["resolvectl", "dns"]]
+
+
+def test_ruleset_accepts_wg_quick_interface_names(real_subprocess):
+    """Review: wg-quick allows `=` and `+` ([a-zA-Z0-9_=+.-]{1,15})."""
+    assert 'oifname "home+nl"' in _rules("1.2.3.4", "--no-conf", "--iface", "home+nl")
+
+
+def test_resolve_cached_only_never_looks_up(monkeypatch):
+    monkeypatch.setattr(
+        killswitch.socket, "getaddrinfo", lambda *a: (_ for _ in ()).throw(AssertionError("DNS"))
+    )
+    killswitch.fsutil.write_json_atomic(killswitch.RESOLVED_CACHE, {"a.example": "192.0.2.1"})
+    targets = [("a", "a.example", 1), ("b", "b.example", 1), ("c", "198.51.100.7", 1)]
+    assert killswitch.resolve_endpoint_ips(targets, cached_only=True) == [
+        "192.0.2.1",
+        "198.51.100.7",
+    ]

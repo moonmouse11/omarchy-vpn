@@ -169,7 +169,7 @@ def lookup_self(include_keyed: bool = True, on_step=None) -> list[IPFinding]:
 def _read() -> dict:
     try:
         data = json.loads(CACHE.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
 

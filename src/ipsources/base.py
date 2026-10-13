@@ -24,7 +24,7 @@ def fetch_json(url: str, headers: dict | None = None, timeout: int = 8) -> dict 
         req = urllib.request.Request(url, headers=headers or {})  # noqa: S310 — see below
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — sources' own https URLs
             data = json.loads(resp.read().decode())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
     return data if isinstance(data, dict) else None
 

@@ -81,11 +81,18 @@ def test_killswitch_mode_cycles(state):
     assert state.draft.killswitch_mode == "off"
 
 
+def test_lockdown_row_toggles_the_draft(state):
+    _go(state, "✅ Lockdown")
+    state.activate()
+    assert state.draft.killswitch_lockdown is False
+    assert state.current.text.startswith("⬜ Lockdown")
+
+
 def test_move_skips_headers_and_stops_at_the_ends(state):
     state.move(-1)
     assert state.current.text.startswith("✅ DNS always")  # top: no wrap
-    _go(state, "⬜ Open the Happ app")
-    state.move(2)  # killswitch mode, then over "── Providers ──"
+    _go(state, "⬜ Run the DNS leak test")
+    state.move(3)  # killswitch mode, Lockdown, then over "── Providers ──"
     assert state.current.text == "✅ WireGuard"
     state.move(100)
     assert state.current.text == "🔑 IPQualityScore: no API key"  # bottom: no wrap
@@ -236,10 +243,10 @@ PGDN, PGUP = settings_tui.curses.KEY_NPAGE, settings_tui.curses.KEY_PPAGE
 
 
 def test_tui_space_toggles_in_place_and_s_saves(state, tui):
-    saved, win = tui(DOWN, DOWN, DOWN, " ", "s")
+    saved, win = tui(DOWN, DOWN, " ", "s")
     assert saved is True
-    assert config.load_config().happ_gui_fallback is True
-    assert "✅ Open the Happ app if headless connect fails" in win.rows()
+    assert config.load_config().dns_autotest is True
+    assert "✅ Run the DNS leak test after every connect" in win.rows()
     assert win.screen[0].strip() == "VPN Settings • unsaved"  # last frame before save
 
 

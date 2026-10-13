@@ -74,12 +74,12 @@ def build_rows(
     def toggle_dns_autotest(d):
         d.dns_autotest = not d.dns_autotest
 
-    def toggle_gui(d):
-        d.happ_gui_fallback = not d.happ_gui_fallback
-
     def next_killswitch_mode(d):
         modes = list(KILLSWITCH_MODES)
         d.killswitch_mode = modes[(modes.index(d.killswitch_mode) + 1) % len(modes)]
+
+    def toggle_lockdown(d):
+        d.killswitch_lockdown = not d.killswitch_lockdown
 
     mode = draft.killswitch_mode
     rows = [
@@ -96,14 +96,14 @@ def build_rows(
             toggle_dns_autotest,
         ),
         Row(
-            f"{_checkbox(draft.happ_gui_fallback)} Open the Happ app if headless connect fails",
-            "toggle",
-            toggle_gui,
-        ),
-        Row(
             f"{KILLSWITCH_ICON} Killswitch mode: {mode} ({KILLSWITCH_MODES[mode]})",
             "toggle",
             next_killswitch_mode,
+        ),
+        Row(
+            f"{_checkbox(draft.killswitch_lockdown)} Lockdown: block traffic while no VPN is up",
+            "toggle",
+            toggle_lockdown,
         ),
         Row("── Providers ──", "header"),
     ]

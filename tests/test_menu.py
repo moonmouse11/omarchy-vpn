@@ -107,7 +107,7 @@ def test_happ_provider_menu_disambiguates_duplicate_labels(monkeypatch):
     monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
     monkeypatch.setattr(vpn_manager.happmeta, "server_info_suffix", lambda name, protocol="": "")
     monkeypatch.setattr(vpn_manager.happmeta, "server_params", lambda name, **kw: None)
-    monkeypatch.setattr(vpn_manager.killswitch, "resume_for_happ", lambda extra_ips=None: None)
+    monkeypatch.setattr(vpn_manager.killswitch, "resume_for_happ", lambda **kw: None)
     monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
     monkeypatch.setattr(vpn_manager, "notify", lambda *a, **k: None)
     picks = iter(["Same (2)"])
@@ -394,7 +394,7 @@ def test_killswitch_all_mode_arms_wg(monkeypatch, tmp_path):
     cfg.killswitch_mode = "all"
     vpn_manager.killswitch.config.save_config(cfg)
     monkeypatch.setattr(
-        vpn_manager, "_killswitch_all_targets", lambda: (["1.2.3.4"], ["nl", "tun*"])
+        vpn_manager, "_killswitch_all_targets", lambda **kw: (["1.2.3.4"], ["nl", "tun*"])
     )
     calls = []
     monkeypatch.setattr(
@@ -407,7 +407,99 @@ def test_killswitch_all_mode_arms_wg(monkeypatch, tmp_path):
     result = vpn_manager.guarded_connect(wg, wg.connections()[0])
     assert result.success
     assert wg.connected == ["nl"]
-    assert calls == [{"extra_ips": ["1.2.3.4"], "ifaces": ["nl", "tun*"]}]
+    assert calls == [{"extra_ips": ["1.2.3.4"], "ifaces": ["nl", "tun*"], "dns": []}]
+
+
+def test_killswitch_connect_opens_dns_only_for_the_connect(monkeypatch, tmp_path):
+    """Under the kill switch DNS leaves only through the tunnel — except while
+    a connect resolves its endpoints: first pass with port 53 to the system
+    resolvers, second pass (after the connect) without."""
+    monkeypatch.setattr(vpn_manager.killswitch.config, "CONFIG_PATH", tmp_path / "config.json")
+    cfg = vpn_manager.killswitch.config.load_config()
+    cfg.killswitch_mode = "all"
+    vpn_manager.killswitch.config.save_config(cfg)
+    monkeypatch.setattr(vpn_manager.killswitch, "system_resolvers", lambda: ["192.168.1.1"])
+    monkeypatch.setattr(vpn_manager, "_killswitch_all_targets", lambda **kw: (["1.2.3.4"], ["nl"]))
+    order = []
+    monkeypatch.setattr(
+        vpn_manager.killswitch,
+        "enable",
+        lambda **kw: order.append(("rules", kw["dns"])) or ActionResult(True, "on"),
+    )
+
+    class Wg(FakeProvider):
+        def connect(self, conn):
+            order.append(("connect", conn.name))
+            return super().connect(conn)
+
+    wg = Wg("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [wg])
+    assert vpn_manager.guarded_connect(wg, wg.connections()[0]).success
+    assert order == [("rules", ["192.168.1.1"]), ("connect", "nl"), ("rules", [])]
+
+
+@pytest.mark.parametrize(("lockdown", "expected"), [(True, ["rules"]), (False, ["off"])])
+def test_failed_connect_leaves_strict_rules_or_none(monkeypatch, tmp_path, lockdown, expected):
+    """A failed connect never keeps the DNS hole: Lockdown keeps the strict
+    rules, Lockdown off drops them (nothing is up to protect)."""
+    monkeypatch.setattr(vpn_manager.killswitch.config, "CONFIG_PATH", tmp_path / "config.json")
+    cfg = vpn_manager.killswitch.config.load_config()
+    cfg.killswitch_mode = "all"
+    cfg.killswitch_lockdown = lockdown
+    vpn_manager.killswitch.config.save_config(cfg)
+    monkeypatch.setattr(vpn_manager.killswitch, "system_resolvers", lambda: ["192.168.1.1"])
+    monkeypatch.setattr(vpn_manager.killswitch, "is_enabled", lambda: True)
+    monkeypatch.setattr(vpn_manager, "_killswitch_all_targets", lambda **kw: (["1.2.3.4"], ["nl"]))
+    after = []
+    connected = []
+    monkeypatch.setattr(
+        vpn_manager.killswitch,
+        "enable",
+        lambda **kw: (after.append("rules") if connected else None) or ActionResult(True, "on"),
+    )
+    monkeypatch.setattr(
+        vpn_manager.killswitch, "disable", lambda: after.append("off") or ActionResult(True, "")
+    )
+
+    class Broken(FakeProvider):
+        def connect(self, conn):
+            connected.append(conn.name)
+            return ActionResult(False, "handshake timed out")
+
+    wg = Broken("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [wg])
+    assert not vpn_manager.guarded_connect(wg, wg.connections()[0]).success
+    assert after == expected
+
+
+@pytest.mark.parametrize(("lockdown", "released"), [(True, False), (False, True)])
+def test_disconnect_drops_the_rules_only_without_lockdown(
+    monkeypatch, tmp_path, lockdown, released
+):
+    monkeypatch.setattr(vpn_manager.config, "CONFIG_PATH", tmp_path / "config.json")
+    cfg = vpn_manager.config.load_config()
+    cfg.killswitch_lockdown = lockdown
+    vpn_manager.config.save_config(cfg)
+    monkeypatch.setattr(vpn_manager.killswitch, "is_enabled", lambda: True)
+    dropped = []
+    monkeypatch.setattr(
+        vpn_manager.killswitch, "disable", lambda: dropped.append(1) or ActionResult(True, "")
+    )
+    conn = VPNConnection(name="nl", provider="WireGuard", active=True)
+    wg = FakeProvider("WireGuard", [conn])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [wg])
+    monkeypatch.setattr(vpn_manager, "_sync_ipv6_guard", lambda: None)
+    monkeypatch.setattr(vpn_manager, "active_connections", lambda providers=None: [])
+    vpn_manager.guarded_disconnect(wg, conn)
+    assert bool(dropped) is released
+
+
+def test_killswitch_is_not_offered_for_networkmanager():
+    nm = VPNConnection(name="office", provider="NetworkManager", active=True)
+    wg = VPNConnection(name="nl", provider="WireGuard", active=True)
+    assert vpn_manager._killswitch_unsupported([nm])
+    assert not vpn_manager._killswitch_unsupported([wg])
+    assert not vpn_manager._killswitch_unsupported([])
 
 
 def test_guarded_connect_all_mode_suspends_for_nm(monkeypatch, tmp_path):
@@ -475,7 +567,7 @@ def test_killswitch_all_targets_gathers_wg_and_ovpn_only(monkeypatch):
     monkeypatch.setattr(
         vpn_manager.killswitch,
         "resolve_endpoint_ips",
-        lambda targets: sorted(host for _, host, _ in targets),
+        lambda targets, **kw: sorted(host for _, host, _ in targets),
     )
     monkeypatch.setattr(
         vpn_manager.happmeta, "subscription_targets", lambda: [("P", "93.184.216.40", 443)]
@@ -503,14 +595,15 @@ def test_happ_connect_passes_resolved_server_ip(monkeypatch, tmp_path):
     monkeypatch.setattr(
         vpn_manager.killswitch,
         "resolve_endpoint_ips",
-        lambda t: resolved.append(t) or ["198.51.100.30", "3.3.3.3"],
+        lambda t, **kw: resolved.append(t) or ["198.51.100.30", "3.3.3.3"],
     )
     calls = []
     monkeypatch.setattr(
         vpn_manager.killswitch,
         "resume_for_happ",
-        lambda extra_ips=None: calls.append(extra_ips) or ActionResult(True, "ok"),
+        lambda extra_ips=None, dns=None: calls.append(extra_ips) or ActionResult(True, "ok"),
     )
+    monkeypatch.setattr(vpn_manager.killswitch, "mode", lambda: "all")
     result = vpn_manager.guarded_connect(happ, happ.connections()[0])
     assert result.success
     # every balancer member is whitelisted, not just the first one — plus the
@@ -1253,7 +1346,7 @@ def test_killswitch_item_toggle_gathers_targets(monkeypatch, tmp_path):
     """The OFF item enables 'all' mode with the gathered whitelist."""
     monkeypatch.setattr(vpn_manager.killswitch.config, "CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setattr(vpn_manager.killswitch, "is_enabled", lambda: False)
-    monkeypatch.setattr(vpn_manager, "_killswitch_all_targets", lambda: (["1.2.3.4"], ["nl"]))
+    monkeypatch.setattr(vpn_manager, "_killswitch_all_targets", lambda **kw: (["1.2.3.4"], ["nl"]))
     calls = []
     monkeypatch.setattr(
         vpn_manager.killswitch,
@@ -1845,3 +1938,141 @@ def test_ping_sweep_skipped_under_the_killswitch(monkeypatch, killswitch_on, swe
     monkeypatch.setattr(vpn_manager.logutil, "log", lambda msg: None)
     vpn_manager.main()
     assert bool(writes) is swept
+
+
+def _ks_env(monkeypatch, tmp_path, *, lockdown=True, enabled=True):
+    """Kill switch in "all" mode with one resolver; returns the dns arg of every rules load."""
+    monkeypatch.setattr(vpn_manager.killswitch.config, "CONFIG_PATH", tmp_path / "config.json")
+    cfg = vpn_manager.killswitch.config.load_config()
+    cfg.killswitch_mode = "all"
+    cfg.killswitch_lockdown = lockdown
+    vpn_manager.killswitch.config.save_config(cfg)
+    monkeypatch.setattr(vpn_manager.killswitch, "system_resolvers", lambda: ["192.168.1.1"])
+    monkeypatch.setattr(vpn_manager.killswitch, "is_enabled", lambda: enabled)
+    monkeypatch.setattr(vpn_manager, "_killswitch_all_targets", lambda **kw: (["1.2.3.4"], ["nl"]))
+    loads = []
+    monkeypatch.setattr(
+        vpn_manager.killswitch,
+        "enable",
+        lambda **kw: loads.append(kw["dns"]) or ActionResult(True, "on"),
+    )
+    monkeypatch.setattr(vpn_manager, "_sync_ipv6_guard", lambda: None)
+    return loads
+
+
+def test_dns_hole_closes_when_the_old_tunnel_wont_go_down(monkeypatch, tmp_path):
+    """Review: the early `return down` skipped the close — port 53 stayed open."""
+    loads = _ks_env(monkeypatch, tmp_path)
+
+    class Stuck(FakeProvider):
+        def disconnect(self, conn):
+            return ActionResult(False, "busy")
+
+    old = Stuck("OpenVPN", [VPNConnection(name="old", provider="OpenVPN", active=True)])
+    wg = FakeProvider("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [old, wg])
+    assert not vpn_manager.guarded_connect(wg, wg.connections()[0]).success
+    assert wg.connected == []
+    assert loads[-1] == []  # strict again
+
+
+def test_dns_hole_closes_when_connect_raises(monkeypatch, tmp_path):
+    loads = _ks_env(monkeypatch, tmp_path)
+
+    class Crashing(FakeProvider):
+        def connect(self, conn):
+            raise OSError("wg-quick vanished")
+
+    wg = Crashing("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [wg])
+    with pytest.raises(OSError):
+        vpn_manager.guarded_connect(wg, wg.connections()[0])
+    assert loads[-1] == []
+
+
+def test_dns_hole_closes_even_if_the_second_load_failed(monkeypatch, tmp_path):
+    """Review: a failed re-apply (fresh IPs) left the first load's hole in place."""
+    _ks_env(monkeypatch, tmp_path)
+    ips = iter([(["1.2.3.4"], ["nl"]), (["5.6.7.8"], ["nl"])])  # cached, then fresh
+    monkeypatch.setattr(vpn_manager, "_killswitch_all_targets", lambda **kw: next(ips))
+    results = iter([ActionResult(True, "on"), ActionResult(False, "nft: error"), None])
+    loads = []
+
+    def enable(**kw):
+        loads.append(kw["dns"])
+        return next(results) or ActionResult(True, "on")
+
+    monkeypatch.setattr(vpn_manager.killswitch, "enable", enable)
+    wg = FakeProvider("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [wg])
+    vpn_manager.guarded_connect(wg, wg.connections()[0])
+    assert loads == [["192.168.1.1"], ["192.168.1.1"], []]
+
+
+def test_failed_connect_without_lockdown_closes_the_hole_if_rules_stay(monkeypatch, tmp_path):
+    """Review: Lockdown off + something still looking up — the release declines,
+    and the hole must be closed instead of left open."""
+    loads = _ks_env(monkeypatch, tmp_path, lockdown=False)
+    still_up = VPNConnection(name="happ", provider="Happ", active=True)
+    monkeypatch.setattr(vpn_manager, "active_connections", lambda providers=None: [still_up])
+    monkeypatch.setattr(vpn_manager.happ_provider, "_invalidate_procs_cache", lambda: None)
+
+    class Broken(FakeProvider):
+        def connect(self, conn):
+            return ActionResult(False, "handshake timed out")
+
+    wg = Broken("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [wg])
+    monkeypatch.setattr(vpn_manager, "_disconnect_all", lambda: ActionResult(True, ""))
+    vpn_manager.guarded_connect(wg, wg.connections()[0])
+    assert loads[-1] == []
+
+
+def test_an_enabled_kill_switch_opens_the_hole_before_any_lookup(monkeypatch, tmp_path):
+    """The old rules block DNS: the first load uses last-known IPs (no lookup),
+    then one resolve runs with DNS open — not two waits of RESOLVE_TIMEOUT."""
+    _ks_env(monkeypatch, tmp_path)
+    order = []
+    monkeypatch.setattr(
+        vpn_manager,
+        "_killswitch_all_targets",
+        lambda cached_only=False: (
+            order.append("cached" if cached_only else "resolve") or (["1.2.3.4"], ["nl"])
+        ),
+    )
+    monkeypatch.setattr(
+        vpn_manager.killswitch,
+        "enable",
+        lambda **kw: order.append(f"rules dns={bool(kw['dns'])}") or ActionResult(True, "on"),
+    )
+    wg = FakeProvider("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [wg])
+    assert vpn_manager.guarded_connect(wg, wg.connections()[0]).success
+    assert order == ["cached", "rules dns=True", "resolve", "rules dns=False"]
+
+
+@pytest.mark.parametrize("appears", [True, False], ids=["tun-up", "never"])
+def test_openvpn_keeps_the_dns_hole_until_its_tun_exists(monkeypatch, tmp_path, appears):
+    """`openvpn --daemon` returns before it resolves `remote`: the hole closes
+    only once its tun device shows up — or the wait runs out."""
+    order = []
+    _ks_env(monkeypatch, tmp_path, enabled=False)
+    monkeypatch.setattr(
+        vpn_manager.killswitch,
+        "enable",
+        lambda **kw: order.append(f"rules dns={bool(kw['dns'])}") or ActionResult(True, "on"),
+    )
+    polls = iter([set(), set(), {"tun0"} if appears else set()])
+    monkeypatch.setattr(
+        vpn_manager,
+        "_tun_interfaces",
+        lambda: order.append("poll") or next(polls, {"tun0"} if appears else set()),
+    )
+    monkeypatch.setattr(vpn_manager, "OPENVPN_TUN_WAIT", 0.3)
+    monkeypatch.setattr(vpn_manager.time, "sleep", lambda s: None)
+    ovpn = FakeProvider("OpenVPN", [VPNConnection(name="de", provider="OpenVPN", active=False)])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [ovpn])
+    assert vpn_manager.guarded_connect(ovpn, ovpn.connections()[0]).success
+    assert order[0] == "rules dns=True"
+    assert order[-1] == "rules dns=False"
+    assert order.count("poll") >= 3  # before the connect + polled until tun0 / timeout

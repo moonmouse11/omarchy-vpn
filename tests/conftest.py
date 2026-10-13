@@ -56,7 +56,12 @@ def _no_real_panel_caches(monkeypatch, tmp_path):
 
     monkeypatch.setattr(killswitch, "STATE_CACHE", tmp_path / "killswitch-state.json")
     monkeypatch.setattr(killswitch, "RESOLVED_CACHE", tmp_path / "resolved-ips.json")
+    # no resolvers unless a test writes one: the host's/container's own
+    # resolv.conf would otherwise leak into kill switch rules under test
+    monkeypatch.setattr(killswitch, "RESOLV_CONF", tmp_path / "resolv.conf")
     monkeypatch.setattr(vpn_manager, "DNS_VERDICT_CACHE", tmp_path / "dns-leak.json")
     monkeypatch.setattr(vpn_manager, "SWITCH_LOCK", tmp_path / "switch.lock")
     monkeypatch.setattr(vpn_manager, "PING_LOCK", tmp_path / "ping.lock")
     monkeypatch.setattr(vpn_manager, "PROC", tmp_path / "proc")  # never signal real processes
+    # whose Happ connection it is (panel badge) — never the live keeper's state
+    monkeypatch.setattr(vpn_manager.happ_provider, "KEEPER_STATE", tmp_path / "happ-keeper.json")

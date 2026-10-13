@@ -35,6 +35,7 @@ import ipv6guard
 import killswitch
 import logutil
 import notifyutil
+import providers.happ as happ_provider
 import reputation
 import settings_tui
 import speedtest
@@ -246,6 +247,12 @@ def label_fields(
     return fields
 
 
+def _killswitch_unsupported(active: list[VPNConnection]) -> bool:
+    """A NetworkManager connection is up: the kill switch has no rules for
+    it (endpoints not parsed) and is suspended, so it isn't offered or shown."""
+    return any(c.provider not in ("Happ", *KILLSWITCH_PROVIDERS) for c in active)
+
+
 def panel_state(active: list[VPNConnection], cfg) -> dict:
     """What the bar panel draws: a hero (state, connection, exit) and the
     protection badges. Built from caches and cheap probes only — it rides
@@ -286,8 +293,18 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
         _badge("ipv6", "IPv6 blocked", "ok", "IPv6 is off while the VPN is up")
         if ipv6_off
         else _badge("ipv6", "IPv6 leaks", "bad", "IPv6 is on and bypasses the tunnel"),
-        ks_badge,
     ]
+    if not _killswitch_unsupported(active):
+        badges.append(ks_badge)
+    if first.provider == "Happ" and happ_provider.app_owns_connection():
+        badges.append(
+            _badge(
+                "happ_app",
+                "Happ app connection",
+                "unknown",
+                "Started in the Happ app, not by this plugin — use one or the other",
+            )
+        )
     # the pill names the provider: "Happ · ARTEMIDA: 🇩🇪 X" / "WireGuard: nl" -> the rest
     meta = first.label.removeprefix(f"{first.provider} · ").removeprefix(f"{first.provider}: ")
     cache = ipinfo.read_cache()
@@ -512,67 +529,117 @@ def guarded_connect(provider, connection: VPNConnection) -> ActionResult:
         return _cancelled(action)
 
 
+KILLSWITCH_PROVIDERS = ("WireGuard", "AmneziaWG", "OpenVPN", "VLESS", "Shadowsocks")
+
+
+def _killswitch_wanted(provider, enabled: bool) -> bool:
+    """Whether this connect runs under the kill switch's rules (the rest —
+    NetworkManager — suspends it: its endpoints aren't parsed)."""
+    mode = killswitch.mode()
+    if provider.name == "Happ":
+        return enabled or mode in ("happ", "all")
+    return provider.name in KILLSWITCH_PROVIDERS and mode == "all"
+
+
+def _killswitch_targets(
+    provider, connection: VPNConnection, cached_only: bool = False
+) -> tuple[list[str], list[str]]:
+    """(server IPs, tunnel interfaces) the rules must let through for this
+    connect. cached_only: no DNS lookups, last known addresses only."""
+    if provider.name != "Happ":
+        return _killswitch_all_targets(cached_only=cached_only)
+    # Under an enabled killswitch detect() finds nothing pre-connect (no
+    # established xray sessions yet), so resolve the target server up front
+    # and whitelist it explicitly — otherwise xray is blocked from reaching
+    # it and the tunnel comes up dead. Cache-only: a menu click must never
+    # block on a subscription fetch (the background --update-subs keeps the
+    # caches fresh). Every balancer member, not just the first: xray may
+    # dial any of them.
+    endpoints = happmeta.server_endpoints(
+        connection.name, allow_fetch=False, provider_id=connection.subscription_id
+    )
+    if not endpoints:
+        return [], []
+    # + subscription hosts: refreshing them goes through xray and is often
+    # routed `direct` (Russian-hosted), which the killswitch blocks
+    ips = killswitch.resolve_endpoint_ips(
+        [(connection.name, host, port) for host, port in endpoints]
+        + happmeta.subscription_targets(),
+        cached_only=cached_only,
+    )
+    return ips, []
+
+
+def _killswitch_apply(provider, ips: list[str], ifaces: list[str], dns: list[str]):
+    if provider.name == "Happ":
+        return killswitch.resume_for_happ(extra_ips=ips, dns=dns)
+    return killswitch.enable(extra_ips=ips, ifaces=ifaces, dns=dns)
+
+
 def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
     """Connect with killswitch interplay.
 
-    - Happ connect: refresh the Happ server-IP whitelist; enable when the
-      config asks for auto killswitch ("happ"/"all" mode).
-    - "all" mode + WireGuard/OpenVPN: resolve every configured endpoint
-      and rebuild the whitelist, keeping the killswitch on.
-    - otherwise: suspend an enabled killswitch for the duration.
+    Under the kill switch (_killswitch_wanted) the rules go in twice. Before
+    the connect: the server's addresses plus port 53 to the system resolvers
+    — the one hole, so endpoint hostnames resolve (ours, and wg-quick's
+    Endpoint). After it: the same rules without that hole, so DNS leaves only
+    through the tunnel, xray's mark or the LAN. The hole is closed in a
+    `finally`: an early return or an exception must never leave it open.
+    Other providers (NetworkManager) suspend an enabled kill switch.
     """
+    cfg = config.load_config()
+    enabled = killswitch.is_enabled()
+    wanted = _killswitch_wanted(provider, enabled)
     ks_result = None
-    if provider.name == "Happ":
-        # Under an enabled killswitch detect() finds nothing pre-connect
-        # (no established xray sessions yet), so resolve the target
-        # server up front and whitelist it explicitly — otherwise xray is
-        # blocked from reaching it and the tunnel comes up dead.
-        ips: list[str] = []
-        # cache-only: a menu click must never block on a subscription fetch
-        # (the background --update-subs keeps the caches fresh)
-        # every balancer member, not just the first: xray may dial any of them
-        endpoints = happmeta.server_endpoints(
-            connection.name, allow_fetch=False, provider_id=connection.subscription_id
-        )
-        if endpoints:
-            # + subscription hosts: refreshing them goes through xray and is
-            # often routed `direct` (Russian-hosted), which the killswitch blocks
-            ips = killswitch.resolve_endpoint_ips(
-                [(connection.name, host, port) for host, port in endpoints]
-                + happmeta.subscription_targets()
-            )
-        ks_result = killswitch.resume_for_happ(extra_ips=ips)
-    elif killswitch.mode() == "all" and provider.name in (
-        "WireGuard",
-        "AmneziaWG",
-        "OpenVPN",
-        "VLESS",
-        "Shadowsocks",
-    ):
-        ips, ifaces = _killswitch_all_targets()
-        ks_result = killswitch.enable(extra_ips=ips, ifaces=ifaces)
-    elif killswitch.is_enabled():
+    ips: list[str] = []
+    ifaces: list[str] = []
+    hole_open = False
+    if wanted:
+        resolvers = killswitch.system_resolvers()
+        if enabled and resolvers:
+            # the current rules have no DNS hole: open it with the last known
+            # addresses first, then resolve once with DNS working
+            ips, ifaces = _killswitch_targets(provider, connection, cached_only=True)
+            ks_result = _killswitch_apply(provider, ips, ifaces, resolvers)
+            hole_open = ks_result is not None and ks_result.success
+        fresh, ifaces = _killswitch_targets(provider, connection)
+        if ks_result is None or not ks_result.success or set(fresh) != set(ips):
+            ips = fresh
+            ks_result = _killswitch_apply(provider, ips, ifaces, resolvers)
+            hole_open = hole_open or bool(resolvers and ks_result and ks_result.success)
+    elif enabled:
         ks_result = killswitch.suspend_for(provider.name)
 
-    # one tunnel at a time: tear down anything else that is up before
-    # connecting (two VPNs fight over the default route and traffic splits
-    # unpredictably). Same-provider server switching is handled inside the
-    # providers themselves (Happ/Keys stop their previous xray first).
-    others = [
-        c
-        for c in active_connections(providers=list(ALL_PROVIDERS))
-        if not (c.provider == provider.name and c.name == connection.name)
-    ]
-    if others:
-        down = _disconnect_all()  # already under SWITCH_LOCK
-        if not down.success:
-            return down
-
-    result = provider.connect(connection)
+    result = ActionResult(False, "")
+    try:
+        # one tunnel at a time: tear down anything else that is up before
+        # connecting (two VPNs fight over the default route and traffic
+        # splits unpredictably). Same-provider server switching is handled
+        # inside the providers themselves (Happ/Keys stop their previous xray).
+        others = [
+            c
+            for c in active_connections(providers=list(ALL_PROVIDERS))
+            if not (c.provider == provider.name and c.name == connection.name)
+        ]
+        if others:
+            down = _disconnect_all()  # already under SWITCH_LOCK
+            if not down.success:
+                return down
+        tuns_before = _tun_interfaces()
+        result = provider.connect(connection)
+        if hole_open and result.success and provider.name == "OpenVPN":
+            # `openvpn --daemon` returns before it resolves `remote`: keep the
+            # DNS hole until its tun device exists (or the wait runs out)
+            _wait_for_new_tun(tuns_before, OPENVPN_TUN_WAIT)
+    finally:
+        if hole_open:
+            closed = _close_dns_hole(provider, ips, ifaces, result.success, cfg)
+            if closed is not None:
+                ks_result = closed
     if ks_result and not ks_result.success:
         notify("Killswitch — warning", ks_result.message)
     if result.success:
-        if config.load_config().dns_autotest:
+        if cfg.dns_autotest:
             request_dns_autotest()
         # don't re-probe: Happ reports success on happd's start ack, before
         # xray has created its TUN (and happd's process list may be the
@@ -581,6 +648,39 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
         _apply_ipv6_guard(ipv6guard.disable())
     else:
         _sync_ipv6_guard()
+    return result
+
+
+SYS_NET = Path("/sys/class/net")
+OPENVPN_TUN_WAIT = 20.0  # s the connect-time DNS hole stays open for OpenVPN
+
+
+def _tun_interfaces() -> set[str]:
+    try:
+        return {p.name for p in SYS_NET.iterdir() if p.name.startswith("tun")}
+    except OSError:
+        return set()
+
+
+def _wait_for_new_tun(before: set[str], timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while not _tun_interfaces() - before:
+        if time.monotonic() >= deadline:
+            logutil.log(f"openvpn: no tun device after {timeout:g} s, closing the DNS hole anyway")
+            return False
+        time.sleep(0.5)
+    return True
+
+
+def _close_dns_hole(provider, ips: list[str], ifaces: list[str], connected: bool, cfg):
+    """After a connect: the strict rules, without the connect-time DNS hole.
+    A failed connect with Lockdown off drops the rules instead — unless
+    something still looks up, then the strict rules all the same."""
+    if not connected and not cfg.killswitch_lockdown and _release_killswitch_if_unlocked(cfg):
+        return None
+    result = _killswitch_apply(provider, ips, ifaces, [])
+    if result is not None and not result.success:
+        result.message = f"could not close the connect-time DNS exception: {result.message}"
     return result
 
 
@@ -602,7 +702,26 @@ def _guarded_disconnect(provider, connection: VPNConnection) -> ActionResult:
     directly, so IPv6 gets restored as soon as nothing is left active."""
     result = provider.disconnect(connection)
     _sync_ipv6_guard()
+    _release_killswitch_if_unlocked()
     return result
+
+
+def _release_killswitch_if_unlocked(cfg=None) -> bool:
+    """Lockdown off: the rules exist only while a VPN is up. Lockdown on
+    (the default) keeps blocking until the user turns the kill switch off;
+    the preference itself stays, so the next connect sets the rules again.
+    True when the rules were dropped."""
+    if (cfg or config.load_config()).killswitch_lockdown:
+        return False
+    # happd may still be stopping, and --status ticks cache its process
+    # list for 3 s: a stale "Happ is up" kept the rules after a disconnect
+    happ_provider._invalidate_procs_cache()
+    if active_connections(providers=list(ALL_PROVIDERS)) or not killswitch.is_enabled():
+        return False
+    result = killswitch.disable()
+    if not result.success:
+        notify("Killswitch — warning", result.message)
+    return result.success
 
 
 def _sync_ipv6_guard() -> None:
@@ -624,7 +743,9 @@ def disconnect_all() -> ActionResult:
     """_disconnect_all() under SWITCH_LOCK."""
     try:
         with switch_lock("disconnecting everything"):
-            return _disconnect_all()
+            result = _disconnect_all()
+            _release_killswitch_if_unlocked()  # not in _disconnect_all: a connect reuses it
+            return result
     except SwitchBusy as e:
         return _busy(e)
     except SwitchCancelled:
@@ -687,7 +808,7 @@ def manage_profiles(provider) -> ActionResult:
 #   level 2 — connections of the chosen provider + its import/manage actions
 
 
-def _killswitch_all_targets() -> tuple[list[str], list[str]]:
+def _killswitch_all_targets(cached_only: bool = False) -> tuple[list[str], list[str]]:
     """'all' mode whitelist: IPv4 of every configured WireGuard/OpenVPN/
     Keys endpoint + the tunnel interface names to allow through.
 
@@ -721,12 +842,16 @@ def _killswitch_all_targets() -> tuple[list[str], list[str]]:
         elif isinstance(provider, KeysProvider) and pt:
             ifaces.append(provider.tunnel_iface)
     targets += happmeta.subscription_targets()  # refreshes must survive the killswitch
-    return killswitch.resolve_endpoint_ips(targets), sorted(set(ifaces))
+    return killswitch.resolve_endpoint_ips(targets, cached_only=cached_only), sorted(set(ifaces))
 
 
 def _killswitch_toggle(on: bool) -> ActionResult:
     if not on:
         return killswitch.set_mode(False)
+    if not config.load_config().killswitch_lockdown and not active_connections(
+        providers=list(ALL_PROVIDERS)
+    ):
+        return killswitch.set_mode(True, apply=False)  # nothing to protect yet
     ips, ifaces = _killswitch_all_targets()
     return killswitch.set_mode(True, extra_ips=ips, ifaces=ifaces)
 
@@ -879,7 +1004,7 @@ def _save_dns_verdict(active: list[VPNConnection], verdict: str | None) -> None:
 def _read_dns_verdict(connection: str) -> dict | None:
     try:
         record = json.loads(DNS_VERDICT_CACHE.read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
     if not isinstance(record, dict) or record.get("connection") != connection:
         return None
@@ -1179,14 +1304,14 @@ class TerminalPrompter(Prompter):
         suffix = "[Y/n]" if default else "[y/N]"
         try:
             answer = input(f"{question} {suffix} ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError, KeyboardInterrupt:
             return default
         return default if not answer else answer in ("y", "yes")
 
     def text(self, question: str) -> str:
         try:
             return getpass.getpass(f"{question}: ").strip()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError, KeyboardInterrupt:
             return ""
 
 
@@ -1301,7 +1426,7 @@ TOOLS = [
 def tools_menu() -> ActionResult:
     cfg = config.load_config()
     items = [(label, fn) for key, label, fn in TOOLS if cfg.tool_visible(key)]
-    if cfg.tool_visible("killswitch"):
+    if cfg.tool_visible("killswitch") and not _killswitch_unsupported(active_connections()):
         items.append(_killswitch_item())
     items.append((BACK_LABEL, back_to_main))
     run_items(_unique_labels(items), prompt="Tools")

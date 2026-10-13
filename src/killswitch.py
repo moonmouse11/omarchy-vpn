@@ -20,7 +20,9 @@ Three modes (persisted in the user config):
 """
 
 import contextlib
+import ipaddress
 import json
+import re
 import socket
 import subprocess
 import threading
@@ -62,7 +64,7 @@ def cached_is_enabled() -> bool:
         state = json.loads(STATE_CACHE.read_text())
         if time.time() - state["at"] < STATE_MAX_AGE:
             return bool(state["on"])
-    except (OSError, ValueError, KeyError, TypeError):
+    except OSError, ValueError, KeyError, TypeError:
         pass
     on = is_enabled()
     with contextlib.suppress(OSError):
@@ -75,7 +77,10 @@ def mode() -> str:
 
 
 def enable(
-    extra_ips: list[str] | None = None, ifaces: list[str] | None = None, fresh: bool = False
+    extra_ips: list[str] | None = None,
+    ifaces: list[str] | None = None,
+    fresh: bool = False,
+    dns: list[str] | None = None,
 ) -> ActionResult:
     """Enable the killswitch, re-detecting Happ server IPs first (they
     change when the user switches servers).
@@ -90,19 +95,22 @@ def enable(
     skip `detect` (it scrapes every established TCP session on the physical
     NIC — split-tunnel "direct" sites included, while UDP transports like
     hysteria never show up) and tell the script not to merge the saved conf
-    (whatever server was detected last time)."""
+    (whatever server was detected last time).
+
+    dns: resolvers allowed on port 53 — only while a connect resolves its
+    endpoints (system_resolvers()); without it DNS leaves only through the
+    tunnel, the xray mark or the LAN."""
+    tail: list[str] = []
+    for iface in ifaces or []:
+        tail += ["--iface", iface]
+    for server in dns or []:
+        tail += ["--dns", server]
     if fresh:
-        args = ["on", "--no-conf", *(extra_ips or [])]
-        for iface in ifaces or []:
-            args += ["--iface", iface]
-        return _sudo(*args)
+        return _sudo("on", "--no-conf", *(extra_ips or []), *tail)
     detect = _sudo("detect")
     if not detect.success and extra_ips is None:
         return detect
-    args = ["on", *(extra_ips or [])]
-    for iface in ifaces or []:
-        args += ["--iface", iface]
-    return _sudo(*args)
+    return _sudo("on", *(extra_ips or []), *tail)
 
 
 def disable() -> ActionResult:
@@ -118,13 +126,24 @@ def redetect() -> ActionResult:
 
 
 def set_mode(
-    on: bool, extra_ips: list[str] | None = None, ifaces: list[str] | None = None
+    on: bool,
+    extra_ips: list[str] | None = None,
+    ifaces: list[str] | None = None,
+    apply: bool = True,
 ) -> ActionResult:
-    """Menu toggle: persist the preference ("all" when on) and apply it."""
+    """Menu toggle: persist the preference ("all" when on) and apply it.
+    apply=False only saves it: with Lockdown off and no VPN up there is
+    nothing to protect yet — the next connect puts the rules in place."""
     cfg = config.load_config()
     cfg.killswitch_mode = "all" if on else "off"
     config.save_config(cfg)
-    return enable(extra_ips, ifaces) if on else disable()
+    if not on:
+        return disable()
+    if not apply:
+        return ActionResult(
+            True, "killswitch ON — rules apply with the next connect (Lockdown off)"
+        )
+    return enable(extra_ips, ifaces)
 
 
 def suspend_for(provider_name: str) -> ActionResult:
@@ -137,7 +156,9 @@ def suspend_for(provider_name: str) -> ActionResult:
     return result
 
 
-def resume_for_happ(extra_ips: list[str] | None = None) -> ActionResult | None:
+def resume_for_happ(
+    extra_ips: list[str] | None = None, dns: list[str] | None = None
+) -> ActionResult | None:
     """On Happ connect: refresh whitelist / re-enable if auto mode asks for it.
 
     extra_ips is the resolved address of the server being connected —
@@ -147,7 +168,7 @@ def resume_for_happ(extra_ips: list[str] | None = None) -> ActionResult | None:
     if extra_ips is not None:
         # rebuild the rules around the known server addresses; a non-empty
         # list is the complete set, so skip detect/saved IPs (fresh)
-        kwargs: dict = {"extra_ips": extra_ips}
+        kwargs: dict = {"extra_ips": extra_ips, "dns": dns}
         if extra_ips:
             kwargs["fresh"] = True
         if is_enabled() or mode() in ("happ", "all"):
@@ -160,12 +181,65 @@ def resume_for_happ(extra_ips: list[str] | None = None) -> ActionResult | None:
     return None
 
 
+RESOLV_CONF = Path("/etc/resolv.conf")
+_RESOLVECTL_ADDR = re.compile(r"(?<![\w:.])([0-9A-Fa-f:.]+)(?:%\S+)?(?:#\S+)?")
+
+
+def system_resolvers() -> list[str]:
+    """The resolvers the system sends DNS to — the connect-time exception
+    in the kill switch (enable(dns=...)) opens port 53 to these only.
+
+    resolv.conf's nameservers, unless it points at a local stub
+    (systemd-resolved's 127.0.0.53): then its upstreams from `resolvectl
+    dns` ("Link 3 (wlp5s0): 192.168.1.1", "Global: 1.1.1.1#cloudflare-dns.com")."""
+    found: list[str] = []
+    stub = False
+    try:
+        lines = RESOLV_CONF.read_text().splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "nameserver":
+            addr = _ip(parts[1].split("%")[0])
+            if addr is None:
+                continue
+            if addr.is_loopback:
+                stub = True
+            else:
+                found.append(str(addr))
+    if stub:
+        try:
+            out = subprocess.run(
+                ["resolvectl", "dns"], capture_output=True, text=True, timeout=5, check=False
+            ).stdout
+        except OSError, subprocess.SubprocessError:
+            out = ""
+        for line in out.splitlines():
+            _, _, servers = line.partition(":")
+            for token in servers.split():
+                match = _RESOLVECTL_ADDR.fullmatch(token)
+                addr = _ip(match.group(1)) if match else None
+                if addr is not None and not addr.is_loopback:
+                    found.append(str(addr))
+    return list(dict.fromkeys(found))
+
+
+def _ip(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(text)
+    except ValueError:
+        return None
+
+
 RESOLVE_TIMEOUT = 4.0  # seconds for all lookups together
 RESOLVED_CACHE = Path.home() / ".cache/vpn-manager/resolved-ips.json"
 
 
 def resolve_endpoint_ips(
-    targets: list[tuple[str, str, int]], timeout: float = RESOLVE_TIMEOUT
+    targets: list[tuple[str, str, int]],
+    timeout: float = RESOLVE_TIMEOUT,
+    cached_only: bool = False,
 ) -> list[str]:
     """IPv4 addresses for (name, host, port) targets, sorted, deduplicated.
 
@@ -184,6 +258,12 @@ def resolve_endpoint_ips(
     hosts: dict[str, str] = {}
     for name, host, _port in targets:
         hosts.setdefault(host, name)
+    if cached_only:
+        # no lookups: IP literals plus the last known addresses (opening the
+        # connect-time DNS hole must not wait on DNS the old rules block)
+        known = _read_resolved()
+        found = {str(a) for h in hosts if (a := _ip(h)) is not None and a.version == 4}
+        return sorted(found | {known[h] for h in hosts if h in known})
     answers: dict[str, str | OSError] = {}
 
     def lookup(host: str) -> None:
@@ -228,7 +308,7 @@ def resolve_endpoint_ips(
 def _read_resolved() -> dict[str, str]:
     try:
         data = json.loads(RESOLVED_CACHE.read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return {}
     if not isinstance(data, dict):
         return {}

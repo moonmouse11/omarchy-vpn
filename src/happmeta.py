@@ -214,7 +214,7 @@ def _parse_providers() -> dict[str, dict]:
             sub_id = str(r.get("subscriptionId", ""))
             if sub_id and sub_id not in providers and r.get("name"):
                 providers[sub_id] = {"name": r["name"], "url": None}
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         pass
     return providers
 
@@ -232,7 +232,7 @@ def providers() -> dict[str, dict]:
         cache = json.loads(PROVIDERS_CACHE.read_text())
         if cache.get("version") == PROVIDERS_CACHE_VERSION and cache.get("mtime") == mtime:
             return cache.get("providers", {})
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         pass
     result = _parse_providers()
     # subscription URLs carry access tokens — fsutil writes 0600
@@ -248,7 +248,7 @@ def captured_providers() -> dict[str, str]:
     """server name -> subscription id (sidecar written by the capture tool)."""
     try:
         data = json.loads(CAPTURED_PROVIDERS.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -260,7 +260,7 @@ def _captured_headers() -> dict[str, str] | None:
     """Captured Happ request headers (see scripts/sub-intercept-*)."""
     try:
         data = json.loads(HEADERS_FILE.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) and data else None
 
@@ -278,7 +278,7 @@ def happ_version() -> str:
             timeout=5,
             check=False,  # "not owned" exits 1; the regex below handles it
         ).stdout
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         out = ""
     m = re.search(r" is owned by \S+ (?:\d+:)?([0-9][\w.+]*)-[\w.]+$", out.strip())
     return m.group(1) if m else HAPP_VERSION_FALLBACK
@@ -406,7 +406,7 @@ def _fetch_subscription(sub_id: str, url: str, force: bool) -> tuple[list[dict],
     cache_path = _sub_cache_path(sub_id)
     try:
         cached = json.loads(cache_path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         cached = None
     fallback = cached.get("servers", []) if isinstance(cached, dict) else []
 
@@ -483,7 +483,7 @@ def _parse_sub_info(resp) -> dict | None:
         if title.startswith("base64:"):
             try:
                 title = base64.b64decode(title[len("base64:") :]).decode("utf-8", errors="replace")
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 title = None
         info["title"] = title or None
     return info if any(v is not None for v in info.values()) else None
@@ -494,7 +494,7 @@ def subscription_info(sub_id: str) -> dict | None:
     subscription; None when absent (older caches lack the "info" record)."""
     try:
         cached = json.loads(_sub_cache_path(sub_id).read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return None
     if not isinstance(cached, dict):
         return None
@@ -526,7 +526,7 @@ def fmt_expire(epoch: int | None) -> str:
         return "?"
     try:
         return datetime.fromtimestamp(epoch).strftime("%d.%m.%Y")
-    except (OverflowError, OSError, ValueError):
+    except OverflowError, OSError, ValueError:
         return "?"
 
 
@@ -547,7 +547,7 @@ def _read_sub_cache(sub_id: str) -> object:
         if memo and memo[0] == key:
             return memo[1]
         data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return None
     _SUB_CACHE_MEMO[path] = (key, data)
     return data
@@ -575,7 +575,7 @@ def _sub_cache_fresh(sub_id: str, url: str) -> bool:
             and cached.get("url", url) == url  # legacy records without url match
             and time.time() - cached.get("at", 0) < SUB_MAX_AGE
         )
-    except (AttributeError, TypeError):
+    except AttributeError, TypeError:
         return False
 
 
@@ -589,7 +589,7 @@ def _subs_refresh_in_progress() -> bool:
     try:
         state = json.loads(_subs_refresh_path().read_text())
         return time.time() - state.get("at", 0) < SUBS_REFRESH_RETRY
-    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+    except OSError, json.JSONDecodeError, AttributeError, TypeError:
         return False
 
 
@@ -798,7 +798,7 @@ def _set_mark(outbound: dict) -> dict:
 def _configs() -> dict:
     try:
         data = json.loads(XRAY_CONFIGS.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -924,7 +924,7 @@ def _outbound_target(cfg: dict) -> tuple[str, int] | None:
         else:
             return None
         return (target["address"], target["port"])
-    except (KeyError, IndexError, TypeError):
+    except KeyError, IndexError, TypeError:
         return None
 
 
@@ -986,7 +986,7 @@ def server_params(
             "network": stream.get("network", "tcp"),
             "security": stream.get("security", ""),
         }
-    except (KeyError, IndexError, TypeError):
+    except KeyError, IndexError, TypeError:
         return None
 
 
@@ -996,7 +996,7 @@ def server_params(
 def _read_pings() -> dict:
     try:
         data = json.loads(PING_CACHE.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -1126,7 +1126,7 @@ def write_pings(targets: list[tuple[str, str, int]]) -> None:
     for name, host, port in targets:
         try:
             ms = measure_ping(host, port)
-        except (OSError, OverflowError, ValueError, TypeError):
+        except OSError, OverflowError, ValueError, TypeError:
             ms = None  # one bad target must not abort the whole sweep
         pings[name] = {"ms": ms, "at": time.time()}
     pings["updated_at"] = time.time()

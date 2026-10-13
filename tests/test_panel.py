@@ -27,8 +27,12 @@ def env(monkeypatch):
         "ipv6_off": True,
         "exit": {"ip": "2.27.59.210", "country_code": "DE", "connection": DE_SERVER.name},
         "fresh": True,
+        "app_owned": False,  # the plugin's keeper holds the Happ connection
     }
     monkeypatch.setattr(vpn_manager.killswitch, "cached_is_enabled", lambda: state["ks_on"])
+    monkeypatch.setattr(
+        vpn_manager.happ_provider, "app_owns_connection", lambda: state["app_owned"]
+    )
     monkeypatch.setattr(vpn_manager.ipv6guard, "is_disabled", lambda: state["ipv6_off"])
     monkeypatch.setattr(vpn_manager.ipinfo, "read_cache", lambda: state["exit"])
     monkeypatch.setattr(vpn_manager.ipinfo, "is_fresh", lambda cache, conn, age: state["fresh"])
@@ -69,6 +73,25 @@ def test_untested_dns_is_unverified_not_protected(env):
         "ipv6": ("IPv6 blocked", "ok"),
         "killswitch": ("Kill switch off", "unknown"),
     }
+
+
+def test_a_connection_from_the_happ_app_is_called_out(env):
+    """Either the plugin or the Happ app: a tunnel the app started isn't the
+    plugin's to manage, and the panel says so."""
+    env["app_owned"] = True
+    assert _badges(_panel([DE_SERVER]))["happ_app"] == ("Happ app connection", "unknown")
+
+
+def test_app_owns_connection_follows_the_keeper(monkeypatch, tmp_path):
+    import os
+
+    happ = vpn_manager.happ_provider
+    monkeypatch.setattr(happ, "KEEPER_STATE", tmp_path / "happ-keeper.json")
+    assert happ.app_owns_connection()  # no keeper state at all
+    happ._write_keeper_state({"status": "connected", "pid": os.getpid()})
+    assert not happ.app_owns_connection()  # a live keeper: ours
+    happ._write_keeper_state({"status": "connected", "pid": 2**22 + 12345})
+    assert happ.app_owns_connection()  # the keeper is gone
 
 
 def test_ipv6_on_under_a_tunnel_is_at_risk(env):

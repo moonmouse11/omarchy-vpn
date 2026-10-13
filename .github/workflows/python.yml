@@ -13,13 +13,13 @@ jobs:
   tests:
 
     # Pinned, not "ubuntu-latest": GitHub is migrating that label from
-    # 24.04 to 26.04 starting 2026-10-19, and the matrix already covers
-    # the Python version spread — no need to also float the OS under it.
+    # 24.04 to 26.04 starting 2026-10-19. Python 3.14 only: what Arch (and so
+    # Omarchy 4, the only target) ships.
     runs-on: ubuntu-24.04
 
     strategy:
       matrix:
-        python-version: [ "3.11", "3.12", "3.13", "3.14" ]
+        python-version: [ "3.14" ]
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

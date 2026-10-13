@@ -25,7 +25,7 @@ def _is_running(profile: str) -> bool:
     try:
         pid = int(pid_file.read_text().strip())
         return Path(f"/proc/{pid}").exists()
-    except (ValueError, OSError):
+    except ValueError, OSError:
         return False
 
 
@@ -107,6 +107,10 @@ class OpenVPNProvider(VPNProvider):
                 f"{DNS_UPDOWN} up",
                 "--down",
                 f"{DNS_UPDOWN} down",
+                # a ping-restart reconnect keeps the resolved server IP: under
+                # the kill switch it couldn't resolve `remote` again (DNS only
+                # through the tunnel, which is the thing being restarted)
+                "--persist-remote-ip",
             ]
         )
         if code != 0:

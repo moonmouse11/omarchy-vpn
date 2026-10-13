@@ -59,4 +59,8 @@ Thumbs.db
 CLAUDE.md
 docs 
 .claude 
+.vibe-wise/
+.agents/
+skills-lock.json
 
+Backlog.md

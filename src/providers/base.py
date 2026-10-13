@@ -31,7 +31,7 @@ def read_config_text(path) -> str | None:
         )
         if result.returncode == 0:
             return result.stdout
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         pass
     return None
 
@@ -118,7 +118,7 @@ def sample_iface_traffic(iface: str) -> None:
     try:
         try:
             cache = json.loads(RATE_CACHE.read_text())
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             cache = {}
         if not isinstance(cache, dict):
             cache = {}
@@ -142,7 +142,7 @@ def iface_rate(iface: str | None) -> str | None:
         return None
     try:
         cache = json.loads(RATE_CACHE.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return None
     prev = cache.get(iface) if isinstance(cache, dict) else None
     if not isinstance(prev, dict):

@@ -207,7 +207,7 @@ automatically.
 {
   "providers": {"openvpn": false},      // hide providers from menu/status
   "killswitch_mode": "happ",            // "off" | "happ" | "all" — auto-manage killswitch
-  "happ_gui_fallback": false,           // open the Happ window when headless connect fails
+  "killswitch_lockdown": true,          // keep blocking while no VPN is up
   "exit_ip": {"enabled": true, "max_age_seconds": 600},
   "dns_mode": "tunnel",                 // "tunnel" | "subscription" — who routes xray's DNS
   "speed_test_urls": ["http://10.0.0.5/100MB.bin"],  // extra Speed Test targets
@@ -229,19 +229,31 @@ DNS privacy.
 
 ## Killswitch
 
-`happ-killswitch on` blocks all outbound traffic except the tunnel interface(s),
-DNS, local networks and the VPN server IPs (whitelist refreshed on connect via
-`happ-killswitch detect` plus any resolved endpoint IPs). Three modes
-(`killswitch_mode` in config, or the 🛠 Tools → Killswitch toggle):
+`happ-killswitch on` blocks all outbound traffic (IPv4 and IPv6) except the tunnel
+interface(s), xray's own marked connections, local networks and the VPN server IPs
+(whitelist refreshed on connect via `happ-killswitch detect` plus any resolved endpoint
+IPs). DNS leaves only through the tunnel or to the LAN: while a connect resolves its
+server's hostname, port 53 is opened to the system's resolvers only, and closed again
+once the connect is done. A rule change replaces the whole table in one `nft -f`
+transaction, so a server switch never leaves a moment without rules.
+
+**Lockdown** (⚙ Settings, `killswitch_lockdown`, on by default): with no VPN up the
+kill switch keeps blocking until you turn it off. With Lockdown off the rules exist only
+while a VPN is connected. Local networks stay reachable either way.
+
+Three modes (`killswitch_mode` in config, or the 🛠 Tools → Killswitch toggle):
 
 - **off** — managed manually from the menu, no auto behaviour
 - **happ** — auto-enabled alongside Happ only; suspended while any other
   provider is connected, re-arms on the next Happ connect
 - **all** — auto-enabled for every connect; WireGuard/AmneziaWG/OpenVPN/
   VLESS/Shadowsocks endpoints are resolved from their configs and
-  whitelisted too (NetworkManager isn't parsed yet — suspended for it)
+  whitelisted too (NetworkManager isn't parsed yet — suspended for it, and the
+  kill switch isn't shown while a NetworkManager connection is up)
 
 Rollback: `happ-killswitch off` (rules don't survive reboot anyway).
+`happ-killswitch rules [args]` prints the ruleset `on` would load, without applying it.
+The script is root-owned in `/usr/local/bin`: changes reach it only with `make install`.
 
 ## Architecture
 

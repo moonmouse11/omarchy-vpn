@@ -5,7 +5,9 @@
 #   - packets carrying xray's SO_MARK (Happ/Keys proxy outbounds, see
 #     happmeta.KILLSWITCH_MARK) — the tunnel itself, whatever its servers
 #   - VPN tunnels (happ-*, plus interfaces passed via --iface)
-#   - DNS (udp/tcp dport 53 — without it endpoint hostnames don't resolve)
+#   - DNS only to resolvers passed with --dns (during a connect, so endpoint
+#     hostnames resolve); otherwise DNS leaves through the tunnel, the xray
+#     mark or the LAN like everything else
 #   - local networks (LAN, router, DHCP)
 #   - VPN server IPs from the config + IPs passed as arguments (the Happ
 #     server from ~/.config/happ-killswitch.conf + resolved WG/OpenVPN endpoints)
@@ -14,9 +16,11 @@
 #
 # Usage:
 #   happ-killswitch detect                  # Happ server IPs (Happ must be connected)
-#   happ-killswitch on [IP…] [--iface NAME] [--no-conf]
+#   happ-killswitch on [IP…] [--iface NAME] [--dns IP] [--no-conf]
 #                                           # enable (args: extra server IPs, --iface: allowed
-#                                           # tunnel interfaces, --no-conf: ignore saved IPs)
+#                                           # tunnel interfaces, --dns: resolvers allowed on
+#                                           # port 53, --no-conf: ignore saved IPs)
+#   happ-killswitch rules [same args as on] # print the ruleset without applying it
 #   happ-killswitch off                     # disable (full rollback)
 #   happ-killswitch status                  # show the current rules
 #
@@ -63,14 +67,24 @@ detect() {
     echo "NOTE: if you switch servers in Happ, run detect again."
 }
 
-on() {
-    # Arguments: extra server IPs (positional) + --iface NAME
-    # (allowed tunnel egress interfaces, e.g. --iface wg0 --iface 'tun*').
-    local extra_ips=() ifaces=() use_conf=1
+# Prints the whole ruleset for `nft -f`: the table is created if missing,
+# deleted and defined again in ONE transaction, so a rebuild (every server
+# switch) never leaves a moment without rules. The old `nft delete table`
+# + `nft -f` pair let traffic through in between.
+#
+# Arguments: extra server IPs (positional), --iface NAME (allowed tunnel
+# egress interfaces, e.g. --iface wg0 --iface 'tun*'), --dns IP (resolvers
+# allowed on port 53 — only for the duration of a connect, so endpoint
+# hostnames resolve; otherwise DNS leaves only through the tunnel, the xray
+# mark or the LAN), --no-conf (ignore the saved Happ IPs).
+ruleset() {
+    local extra_ips=() ifaces=() dns=() use_conf=1
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --iface) [[ $# -ge 2 ]] || die "--iface needs an interface name"
                      ifaces+=("$2"); shift 2 ;;
+            --dns)   [[ $# -ge 2 ]] || die "--dns needs an address"
+                     dns+=("$2"); shift 2 ;;
             --no-conf) use_conf=0; shift ;;
             *)       extra_ips+=("$1"); shift ;;
         esac
@@ -94,20 +108,32 @@ on() {
 
     local addrs=""
     for ip in $ips; do
+        valid_ip "$ip" || die "not an IP address: $ip"
         addrs+="    ip daddr $ip accept
 "
     done
     local iface_rules=""
     local iface
     for iface in "${ifaces[@]}"; do
+        # wg-quick's own name rule ([a-zA-Z0-9_=+.-]{1,15}) + the OpenVPN 'tun*' glob
+        [[ $iface =~ ^[A-Za-z0-9_=+.*-]{1,15}$ ]] || die "bad interface name: $iface"
         iface_rules+="    oifname \"$iface\"    accept
 "
     done
+    local dns_rules=""
+    for ip in "${dns[@]}"; do
+        valid_ip "$ip" || valid_ip6 "$ip" || die "not an IP address: $ip"
+        local family=ip
+        [[ $ip == *:* ]] && family=ip6
+        # 853: DNS over TLS (systemd-resolved's DNSOverTLS=opportunistic)
+        dns_rules+="    $family daddr $ip udp dport 53 accept
+    $family daddr $ip tcp dport { 53, 853 } accept
+"
+    done
 
-    # Idempotent: recreate the whole table so a repeated call
-    # (server/provider switch) simply rebuilds the rules.
-    $SUDO nft delete table inet happ-ks 2>/dev/null || true
-    $SUDO nft -f - <<EOF
+    cat <<EOF
+table inet happ-ks
+delete table inet happ-ks
 table inet happ-ks {
   chain output {
     type filter hook output priority 0; policy drop;
@@ -115,17 +141,28 @@ table inet happ-ks {
     oifname "lo"        accept
     meta mark $XRAY_MARK accept
     oifname "happ-*"    accept
-$iface_rules    udp dport 53          accept
-    tcp dport 53          accept
-$addrs
-    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } accept
+$iface_rules$dns_rules$addrs    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } accept
     ip daddr 224.0.0.0/4 accept
     ip daddr 255.255.255.255 udp dport 67 accept
     ip6 daddr { fe80::/10, ff00::/8 } accept
   }
 }
 EOF
-    echo "killswitch ON (servers: $ips)"
+}
+
+valid_ip() { [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
+valid_ip6() { [[ $1 =~ ^[0-9A-Fa-f:]+$ && $1 == *:* ]]; }
+
+on() {
+    local rules
+    rules=$(ruleset "$@")
+    $SUDO nft -f - <<<"$rules"
+    echo "killswitch ON (servers: $(grep -oE 'ip daddr [0-9.]+ accept' <<<"$rules" | awk '{print $3}' | xargs))"
+}
+
+rules() {
+    # the ruleset `on` would load, without applying it (needs no root)
+    ruleset "$@"
 }
 
 off() {
@@ -155,6 +192,7 @@ case "${1:-}" in
     on)     shift; on "$@" ;;
     off)    shift; off "$@" ;;
     status) shift; status "$@" ;;
+    rules)  shift; rules "$@" ;;
     is-on)  shift; is_on "$@" ;;
     *)      awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0"; exit 1 ;;
 esac

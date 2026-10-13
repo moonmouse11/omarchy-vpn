@@ -48,7 +48,6 @@ import notifyutil
 from .base import ActionResult, VPNConnection, VPNProvider
 
 HAPPD_SOCK = Path("/tmp/happd.sock")  # noqa: S108 — happd's own path; see _sock_is_trusted()
-GUI_BIN = Path("/usr/bin/happ")
 GUI_CONFIG = Path.home() / ".config" / "Happ.conf"
 IFACE_PREFIX = "happ-"
 XRAY_BIN = Path("/opt/happ/bin/core/xray")
@@ -125,7 +124,7 @@ def _daemon_request(action: str, **params) -> dict | None:
             if "event" in resp and "status" not in resp:
                 continue
             return resp
-    except (TimeoutError, OSError):
+    except TimeoutError, OSError:
         return None
     finally:
         sock.close()
@@ -146,7 +145,7 @@ def _daemon_running_processes(fresh: bool = False) -> list[str]:
                 and time.time() - cached.get("at", 0) < PROCS_CACHE_TTL
             ):
                 return [str(p) for p in cached["procs"]]
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             pass
     resp = _daemon_request("list")
     if not resp or resp.get("status") != "success":
@@ -252,7 +251,7 @@ def xray_config_error(cfg: dict, asset_dir: Path | None) -> str | None:
             timeout=XRAY_TEST_TIMEOUT,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode == 0:
         return None
@@ -298,10 +297,28 @@ def _write_keeper_state(state: dict) -> None:
         fsutil.write_json_atomic(KEEPER_STATE, state)
 
 
+def app_owns_connection() -> bool:
+    """For an active Happ connection: True when no live plugin keeper owns
+    it — the Happ app started it. The plugin doesn't manage those (its
+    xray has no kill switch mark, no DNS routing of ours); the panel says
+    so instead of passing it off as its own."""
+    state = _read_keeper_state()
+    pid = state.get("pid") if state else None
+    if not isinstance(pid, int) or pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False  # alive, someone else's uid — not the app's either
+    return False
+
+
 def _read_keeper_state() -> dict | None:
     try:
         data = json.loads(KEEPER_STATE.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) else None
 
@@ -626,34 +643,16 @@ class HappProvider(VPNProvider):
             if result.success:
                 return result
             headless_error = result.message
-            logutil.log(f"happ headless connect failed, falling back to GUI: {result.message}")
+            logutil.log(f"happ headless connect failed: {result.message}")
 
-        if _gui_running():
-            detail = f" — {headless_error}" if headless_error else ""
+        # the plugin never starts the Happ app: either the plugin or the app
+        # owns the connection (a GUI fallback launched it here once)
+        if cfg is None:
             return ActionResult(
                 success=False,
-                message=f"No captured config / connect failed{detail} — press «Connect» in Happ",
+                message=f"No config for {connection.name} — refresh the subscriptions",
             )
-        if not GUI_BIN.exists():
-            return ActionResult(success=False, message=f"Happ not found at {GUI_BIN}")
-        if not config.load_config().happ_gui_fallback:
-            detail = f": {headless_error}" if headless_error else ""
-            return ActionResult(
-                success=False,
-                message=f"Headless connect failed{detail} "
-                '("happ_gui_fallback": true in the config launches the GUI instead)',
-            )
-
-        subprocess.Popen(
-            [str(GUI_BIN)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        return ActionResult(
-            success=True,
-            message="Happ started — connecting to last used server…",
-        )
+        return ActionResult(success=False, message=f"Headless connect failed: {headless_error}")
 
     def _stop_running(self) -> None:
         """Stop managed processes and wait for the tunnel to come down

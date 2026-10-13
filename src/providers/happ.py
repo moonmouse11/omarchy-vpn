@@ -170,14 +170,18 @@ def _invalidate_procs_cache() -> None:
 
 
 KEYS_PROCESS_PREFIX = "xray-keys-"
+PING_PROCESS_PREFIX = "xray-ping-"  # delayping's short-lived probes
 
 
 def _happ_processes(fresh: bool = False) -> list[str]:
-    """Happ's own managed processes. The keys providers run their xray
-    through the same happd — those must not count as 'Happ connected'
-    (phantom server in the menu) nor get stopped by a Happ disconnect."""
+    """Happ's own managed processes. The keys providers and the Ping
+    button's probes run their xray through the same happd — those must not
+    count as 'Happ connected' (phantom server in the menu) nor get stopped
+    by a Happ disconnect."""
     return [
-        p for p in _daemon_running_processes(fresh=fresh) if not p.startswith(KEYS_PROCESS_PREFIX)
+        p
+        for p in _daemon_running_processes(fresh=fresh)
+        if not p.startswith((KEYS_PROCESS_PREFIX, PING_PROCESS_PREFIX))
     ]
 
 

@@ -23,8 +23,12 @@ Opens with a **SUPER+Shift+V** shortcut, a right click on the bar widget, or fro
   server: Happ grouped per subscription (`✓ reachable/total · median ping`), WireGuard,
   AmneziaWG, OpenVPN and keys; the group holding the active server is open, each open group
   starts with "⚡ Auto — best ping". Click (or Enter) connects, on the active one disconnects;
-  `/` filters by name, protocol or the flag's country code (`pl` finds "Польша"). A `~` ping is
-  the last measured value — under the kill switch the sweep can't run. The lock and
+  `/` filters by name, protocol or the flag's country code (`pl` finds "Польша"). **Ping**
+  next to SERVERS measures every server's delay like the Happ app (a request through each
+  server, via xray under happd — works under the kill switch too; the bar shows `ping 23/150`
+  meanwhile); ⟳ on a group pings that subscription/provider, a click on a server's ping (or
+  `p` on the selected row) pings just that one — those queue up and show "…" until done. Pings are measured only then; a `~` ping is over a day old, `—` means a
+  WireGuard/OpenVPN server couldn't be pinged under the kill switch. The lock and
   "Protected" show only once exit, DNS and IPv6 have all passed — until then
   "Unverified". ⚙ Settings → "Run the DNS leak test after every connect" (off by
   default) runs that test silently in the background and only notifies on a leak
@@ -33,8 +37,8 @@ Opens with a **SUPER+Shift+V** shortcut, a right click on the bar widget, or fro
 - **Happ headless** — full server list straight from the provider subscriptions,
   configs generated like the GUI does; connect/switch any server **without opening
   the Happ GUI** (it keeps working in parallel, state is shared via happd)
-- **Ping + info in labels** — background-measured TCP ping, non-standard protocols
-  shown next to server names
+- **Ping + info in labels** — delay measured on demand (the panel's Ping button),
+  non-standard protocols shown next to server names
 - **Killswitch** — nftables rules: no tunnel → no internet at all; three modes
   (off / auto-with-Happ-only / auto-with-every-provider), see [Killswitch](#killswitch)
 - **IPv6 leak guard** — none of the providers tunnel IPv6, so a live IPv6 route
@@ -144,11 +148,12 @@ in the panel to cycle the presets — the choice is saved to `shell.json`.
 | `{exit_ip}` · `{exit_country}` · `{exit_flag}` | `31.77.129.6` · `DE` · `🇩🇪` |
 | `{rate}` · `{down}` · `{up}` | `↓ 260 B/s ↑ 321 B/s` · `260 B/s` · `321 B/s` |
 | `{total}` · `{total_down}` · `{total_up}` | session traffic of the tunnel interface |
-| `{ping}` | `47 ms` — TCP RTT to the server, measured around the tunnel |
+| `{ping}` | `312 ms` — delay through the server (Happ/keys; TCP RTT for WireGuard/OpenVPN), from the last Ping |
 | `{protocol}` | `vless/grpc/reality` (Happ), else the provider |
 | `{interface}` | `happ-xray` |
 | `{sub_traffic}` · `{sub_expire}` | `0 GB / 75 GB` · `20.10.2026` — the subscription panel's |
 | `{dns}` · `{ipv6}` · `{killswitch}` | the panel badges: `DNS private`, `IPv6 blocked`, `Kill switch on` |
+| `{activity}` | `ping 23/150` while a Ping runs — added after the label automatically unless the template places it |
 
 A placeholder with no value right now (no ping yet, no subscription for WireGuard) disappears
 with its separator: `{subscription}: {server}` → `nl`, `{server} ({ping})` → `🇩🇪 Germany`. When
@@ -234,7 +239,10 @@ interface(s), xray's own marked connections, local networks and the VPN server I
 (whitelist refreshed on connect via `happ-killswitch detect` plus any resolved endpoint
 IPs). DNS leaves only through the tunnel or to the LAN: while a connect resolves its
 server's hostname, port 53 is opened to the system's resolvers only, and closed again
-once the connect is done. A rule change replaces the whole table in one `nft -f`
+once the connect is done. The one standing exception is happd's own cgroup (happd and the
+xray it runs): it may reach the system resolvers on port 53, because xray resolves a
+hostname server that way — without it such servers can't connect under the kill switch.
+A rule change replaces the whole table in one `nft -f`
 transaction, so a server switch never leaves a moment without rules.
 
 **Lockdown** (⚙ Settings, `killswitch_lockdown`, on by default): with no VPN up the
@@ -273,6 +281,7 @@ src/
   fsutil.py           atomic 0600 JSON writes for state/cache/config
   ipinfo.py           exit IP cache (+ --update-ip worker)
   happmeta.py         Happ subscriptions, config merge, ping cache
+  delayping.py        the Ping button: delay through each server via xray under happd
   killswitch.py       nft killswitch wrapper (mode-aware)
   ipv6guard.py        disables IPv6 system-wide while any tunnel is active (leak guard)
   reputation.py       exit-IP reputation orchestrator over ipsources/

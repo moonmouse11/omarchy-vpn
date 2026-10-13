@@ -13,6 +13,10 @@ import qs.Ui
 //   --menu            the omarchy.menu-driven VPN menu (servers, tools, settings)
 //   --disconnect-all  the hero switch, when on
 //   --dns-leak-test   the DNS badge, when not yet green
+//   --ping-now        Ping next to SERVERS (everything), on a group, a click on a
+//                     row's ping, or `p` (group/server scope, queued) — the only
+//                     time pings are measured (through xray under happd, so also
+//                     under the kill switch); fields.activity shows the progress
 // The backend calls `omarchy-shell -q omarchy-vpn refresh` after every
 // connect/disconnect, so the widget updates at once instead of on the next tick.
 Panel {
@@ -34,6 +38,7 @@ Panel {
     "{subscription}: {server}",
     "{server}",
     "{server} · {ping}",
+    "{server} · {activity}",
     "{exit_flag} {exit_ip}",
     "{state}",
     "{server} · ↓ {down} ↑ {up}",
@@ -57,6 +62,11 @@ Panel {
   property string serverFilter: ""
   property int serverCursor: -1
   property string pendingKey: ""
+  // rows whose ping was just asked for: "…" until the backend has queued it
+  // (then the list's own `pinging` carries it) — cleared by the first list
+  // load started after pingSettle
+  property var pendingPing: ({})
+  property bool clearPendingOnLoad: false
   readonly property var serverRows: buildServerRows(serverGroups, expandedGroups, serverFilter)
 
   readonly property var badges: panelData && panelData.badges instanceof Array ? panelData.badges : []
@@ -147,6 +157,38 @@ Panel {
     Quickshell.execDetached(["python3", root.backend].concat(args))
   }
 
+  // A group's or a server's ping (click on its ping, its group button, `p`).
+  function pingRow(row) {
+    if (!row) return
+    var g = row.group
+    var args = ["--ping-now"]
+    var key
+    if (row.kind === "group") {
+      key = rowKey(g, null)
+      args.push("group", String(g.id))
+    } else {
+      key = rowKey(g, row.server)
+      args.push("server", String(g.provider), String(row.server.name), String(g.subscription_id || ""))
+    }
+    var next = {}
+    for (var k in pendingPing) next[k] = pendingPing[k]
+    next[key] = true
+    pendingPing = next
+    runArgs(args)
+    pingSettle.restart()
+  }
+
+  // A group header: its scope runs/queued. A server: not measured yet in
+  // the run that covers it (the backend's per-row `pinging`) — a result
+  // already in shows while the rest of the group is measured.
+  function rowPinging(row) {
+    if (!row) return false
+    var g = row.group
+    if (pendingPing[rowKey(g, null)] === true) return true
+    if (row.kind === "group") return g.pinging === true
+    return row.server.pinging === true || pendingPing[rowKey(g, row.server)] === true
+  }
+
   function activateServerRow(row) {
     if (!row) return
     if (row.kind === "group") { setGroupOpen(row.group, !row.open); return }
@@ -189,7 +231,20 @@ Panel {
     })
   }
 
-  readonly property string barLabel: connected ? formatLabel(labelFormat) : ""
+  // What the backend is busy with ("ping 23/150"): next to the connection
+  // unless the template places {activity} itself, alone when disconnected.
+  // Not while the panel is open: the panel is centred under this button, so
+  // a label growing mid-ping slid it sideways — and the panel shows the
+  // progress itself ("…" on the rows).
+  readonly property string activity: root.opened ? ""
+    : String((panelData.fields || {}).activity || "")
+  readonly property string barLabel: {
+    if (!connected) return activity
+    var text = formatLabel(labelFormat)
+    if (activity !== "" && labelFormat.indexOf("{activity}") === -1)
+      text = text !== "" ? text + " · " + activity : activity
+    return text
+  }
 
   // "{subscription}: {server}" -> "ARTEMIDA: 🇩🇪 Germany 1". An empty
   // placeholder takes one separator with it: the one before it when a value
@@ -368,8 +423,24 @@ Panel {
         var data = null
         try { data = JSON.parse(String(text || "")) } catch (e) {}
         root.serverGroups = data && data.groups instanceof Array ? data.groups : []
+        if (root.clearPendingOnLoad) {
+          root.pendingPing = ({})
+          root.clearPendingOnLoad = false
+        }
         root.pendingKey = ""
       }
+    }
+  }
+
+  // The backend queues a ping within a moment of the click; after that the
+  // server list's `pinging` shows the "…" and pendingPing can go.
+  Timer {
+    id: pingSettle
+    interval: 1500
+    onTriggered: {
+      if (serversProc.running) { restart(); return }
+      root.clearPendingOnLoad = true
+      root.loadServers()
     }
   }
 
@@ -427,6 +498,7 @@ Panel {
         else if (k === "d") root.runDnsTest()
         else if (k === "r") { root.refresh(); root.loadServers() }
         else if (k === "f") root.cycleLabelFormat()
+        else if (k === "p" && root.serverCursor >= 0) root.pingRow(root.serverRows[root.serverCursor])
         else if (k === "/") filterField.forceActiveFocus()
       }
 
@@ -574,10 +646,44 @@ Panel {
 
         PanelSeparator { foreground: root.foreground }
 
-        PanelSectionHeader {
-          text: "SERVERS"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
+        Item {
+          width: parent.width
+          implicitHeight: Math.max(serversHeader.implicitHeight, pingButton.implicitHeight)
+
+          PanelSectionHeader {
+            id: serversHeader
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            text: "SERVERS"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          Text {
+            id: pingButton
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: "\uf021 Ping"  // nf-fa-refresh
+            color: pingMouse.containsMouse ? root.foreground : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          MouseArea {
+            id: pingMouse
+            anchors.fill: pingButton
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.run("--ping-now")
+          }
+
+          PanelToolTip {
+            visible: pingMouse.containsMouse
+            text: root.activity !== "" ? "Measuring: " + root.activity
+                                       : "Measure every server's delay through xray"
+            fontFamily: root.fontFamily
+          }
         }
 
         TextField {
@@ -661,9 +767,11 @@ Panel {
         }
 
         Text {
+          // ⚙ Settings → "Show key hints in the panel" (config panel_key_hints)
+          visible: root.panelData.key_hints !== false
           textFormat: Text.PlainText
           width: parent.width
-          text: "j/k move · enter connect · / filter · t toggle · m menu · d DNS · f label · r refresh"
+          text: "j/k move · enter connect · p ping · / filter · t toggle · m menu · d DNS · f label · r refresh"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -690,9 +798,10 @@ Panel {
       if (isAuto) return "Auto — best ping · " + server.name
       return server.name
     }
+    readonly property bool pinging: root.rowPinging(row)
     readonly property string rightText: {
       if (!row) return ""
-      if (pending) return "…"
+      if (pending || pinging) return "…"
       if (isGroup) return row.group.summary || (row.count + " servers")
       return String(server.ping || "")
     }
@@ -701,6 +810,17 @@ Panel {
     current: isActive
     foreground: root.foreground
     implicitHeight: rowInner.implicitHeight + (isGroup ? Style.spacing.lg : Style.spacing.md)
+
+    MouseArea {
+      id: rowMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onPositionChanged: function(mouse) {
+        if (pointerGate.moved(rowMouse, mouse)) root.serverCursor = serverRow.rowIndex
+      }
+      onClicked: root.activateServerRow(serverRow.row)
+    }
 
     Row {
       id: rowInner
@@ -732,35 +852,70 @@ Panel {
         font.pixelSize: serverRow.isGroup ? Style.font.body : Style.font.bodySmall
         font.bold: serverRow.isGroup || serverRow.isActive
         elide: Text.ElideRight
-        width: parent.width - rowGlyph.width - rightLabel.width - parent.spacing * 2
+        width: parent.width - rowGlyph.width - rightLabel.width - groupPing.width
+          - parent.spacing * (groupPing.visible ? 3 : 2)
         anchors.verticalCenter: parent.verticalCenter
       }
 
       Text {
         id: rightLabel
         textFormat: Text.PlainText
-        text: serverRow.rightText
-        color: serverRow.server && (serverRow.server.stale || serverRow.server.ping_ms === null)
-          ? root.dim : (serverRow.isGroup ? root.dim : root.foreground)
+        // never measured: a ping glyph on hover, so there is still something to click
+        text: serverRow.rightText !== "" || serverRow.isGroup ? serverRow.rightText
+          : (rowMouse.containsMouse ? "\uf021" : "")  // nf-fa-refresh
+        color: pingMouse.containsMouse && !serverRow.isGroup ? root.foreground
+          : (serverRow.server && (serverRow.server.stale || serverRow.server.ping_ms === null)
+            ? root.dim : (serverRow.isGroup ? root.dim : root.foreground))
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         anchors.verticalCenter: parent.verticalCenter
-      }
-    }
 
-    MouseArea {
-      id: rowMouse
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onPositionChanged: function(mouse) {
-        if (pointerGate.moved(rowMouse, mouse)) root.serverCursor = serverRow.rowIndex
+        // a server's ping is its own button: click = measure it (the rest
+        // of the row connects)
+        MouseArea {
+          id: pingMouse
+          anchors.fill: parent
+          anchors.margins: -Style.space(4)
+          enabled: !serverRow.isGroup && !serverRow.pending
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.pingRow(serverRow.row)
+        }
       }
-      onClicked: root.activateServerRow(serverRow.row)
+
+      // a group's ping button, next to its summary
+      Text {
+        id: groupPing
+        visible: serverRow.isGroup
+        textFormat: Text.PlainText
+        text: "\uf021"  // nf-fa-refresh
+        color: groupPingMouse.containsMouse ? root.foreground : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        anchors.verticalCenter: parent.verticalCenter
+
+        MouseArea {
+          id: groupPingMouse
+          anchors.fill: parent
+          anchors.margins: -Style.space(4)
+          enabled: serverRow.isGroup
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.pingRow(serverRow.row)
+        }
+      }
     }
 
     PanelToolTip {
-      visible: rowMouse.containsMouse && !serverRow.isGroup && serverRow.server !== null
+      visible: pingMouse.containsMouse || groupPingMouse.containsMouse
+      text: serverRow.pinging ? "Measuring…"
+        : (serverRow.isGroup ? "Ping every server of " + serverRow.row.group.title : "Click to ping")
+      fontFamily: root.fontFamily
+    }
+
+    PanelToolTip {
+      visible: rowMouse.containsMouse && !pingMouse.containsMouse && !serverRow.isGroup
+        && serverRow.server !== null
       text: serverRow.server
         ? (serverRow.isActive ? "Disconnect" : "Connect") + (serverRow.server.protocol ? " · " + serverRow.server.protocol : "")
         : ""

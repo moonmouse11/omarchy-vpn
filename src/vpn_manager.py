@@ -22,10 +22,12 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 import config
+import delayping
 import dnsleak
 import fsutil
 import happmeta
@@ -181,7 +183,7 @@ LABEL_FIELDS = (
     "exit_ip", "exit_country", "exit_flag",
     "rate", "down", "up", "total", "total_down", "total_up",
     "ping", "protocol", "interface", "sub_traffic", "sub_expire",
-    "dns", "ipv6", "killswitch",
+    "dns", "ipv6", "killswitch", "activity",
 )  # fmt: skip
 
 
@@ -189,6 +191,15 @@ def _split_arrows(text: str) -> tuple[str, str]:
     """ "↓ 3 KiB/s ↑ 4 KiB/s" -> ("3 KiB/s", "4 KiB/s"); ("", "") when absent."""
     down, _, up = text.partition("↑")
     return down.replace("↓", "").strip(), up.strip()
+
+
+def activity_text() -> str:
+    """What the plugin is busy with, for the bar: "ping 23/150" while the
+    Ping button's sweep runs, else "". One small file read per tick."""
+    progress = delayping.read_progress()
+    if progress is None:
+        return ""
+    return f"ping {progress.get('done', 0)}/{progress.get('total', 0)}"
 
 
 def label_fields(
@@ -201,6 +212,7 @@ def label_fields(
     fields["state"] = title
     by_id = {b["id"]: b["label"] for b in badges}
     fields["killswitch"] = by_id.get("killswitch", "")
+    fields["activity"] = activity_text()
     if not active:
         return fields
     first = active[0]
@@ -226,7 +238,7 @@ def label_fields(
             exit_country=country,
             exit_flag=ipinfo.flag_emoji(country),
         )
-    ms = happmeta.ping_ms(first.name)
+    ms = happmeta.ping_ms(happmeta.ping_key(first.name, first.subscription_id))
     if ms is not None:
         fields["ping"] = f"{round(ms)} ms"
     fields["protocol"] = first.provider
@@ -277,6 +289,7 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
             "rate": "",
             "total": "",
             "badges": [ks_badge],
+            "key_hints": cfg.panel_key_hints,
             "fields": label_fields(
                 [],
                 "Traffic blocked" if ks_on else "Not protected",
@@ -333,6 +346,7 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
         "rate": rate,
         "total": total,
         "badges": badges,
+        "key_hints": cfg.panel_key_hints,
         "fields": label_fields(active, title, badges, rate=rate, total=total, cfg=cfg),
     }
 
@@ -357,7 +371,7 @@ PROC = Path("/proc")
 # background checks of the connection being left: their answers would
 # describe the old server (or time out on a dead one) — killed on a switch.
 # Not --update-reputation/--update-subs: those don't depend on which server is up.
-CHECK_FLAGS = ("--dns-autotest", "--dns-leak-test", "--update-ip", "--update-ping")
+CHECK_FLAGS = ("--dns-autotest", "--dns-leak-test", "--update-ip")
 
 
 class SwitchBusy(Exception):
@@ -489,21 +503,10 @@ def switch_lock(action: str):
         os.close(fd)  # releases the flock
 
 
+# held by whoever measures pings now: a Ping-all run or the queue's worker
+# (_try_lock / ping_now). Once seven background sweeps ran at once, each
+# spawned by a 3 s tick before the first could finish (2026-10-13).
 PING_LOCK = Path.home() / ".cache/vpn-manager/ping.lock"
-_held_locks: list[int] = []
-
-
-def _single_flight(path: Path) -> bool:
-    """Hold an flock on path for the rest of this process; False if another
-    process already holds it. Seen 2026-10-13: seven --update-ping sweeps at
-    once, each spawned by a 3 s tick before the first one could finish."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-    if not _try_flock(fd):
-        os.close(fd)
-        return False
-    _held_locks.append(fd)  # released when the process exits
-    return True
 
 
 def _busy(e: SwitchBusy) -> ActionResult:
@@ -1243,20 +1246,163 @@ def _speed_test_result_row(name: str, m: speedtest.Measurement) -> str:
     return f"{name}: ✗ {m.error}"
 
 
+def _ping_scope_targets(
+    scope: dict,
+) -> tuple[list[tuple[str, dict]], list[tuple[str, str, int]]]:
+    """(xray targets, direct targets) for a ping scope: {} = every server,
+    {"group": <panel group id>}, {"server": [provider, name, subscription id]}.
+    Happ/Keys go through xray (delayping); the rest keep the direct TCP connect."""
+    group, server = scope.get("group"), scope.get("server")
+    if server:
+        pname, name, sub_id = [*server, "", "", ""][:3]
+    elif group and str(group).startswith("happ:"):
+        pname, name, sub_id = "Happ", None, str(group).split(":", 2)[1]
+    else:
+        pname, name, sub_id = group, None, None
+    xray: list[tuple[str, dict]] = []
+    direct: list[tuple[str, str, int]] = []
+    for provider in ALL_PROVIDERS:
+        if pname and provider.name != pname:
+            continue
+        if provider.name == "Happ":
+            xray += delayping.happ_targets(sub_id if (group or server) else None, name)
+        elif isinstance(provider, KeysProvider):
+            xray += delayping.key_targets(provider._kind, name)
+        else:
+            try:
+                targets = provider.ping_targets()
+            except Exception as e:  # noqa: BLE001 — one broken provider must not stop the rest
+                logutil.log(f"ping targets: {provider.name} skipped: {e!r}")
+                continue
+            direct += [t for t in targets if name is None or t[0] == name]
+    return xray, direct
+
+
+def _try_lock(path: Path) -> int | None:
+    """A held flock's fd (release: os.close), or None when another holds it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    if _try_flock(fd):
+        return fd
+    os.close(fd)
+    return None
+
+
+def _ping_worker_alive() -> bool:
+    fd = _try_lock(PING_LOCK)
+    if fd is None:
+        return True
+    os.close(fd)
+    return False
+
+
+PING_REFRESH_EVERY = 2.0  # s between panel reloads while results come in (~230 ms each)
+
+
+def _measure(scope: dict, kind: str) -> tuple[dict[str, dict], bool]:
+    xray, direct = _ping_scope_targets(scope)
+    direct_allowed = not direct or not killswitch.is_enabled()
+    last = time.monotonic()
+
+    def on_progress(done: int, total: int) -> None:
+        # an open panel shows each result as it arrives — reloading its list
+        # at most every PING_REFRESH_EVERY (the caller refreshes at the end)
+        nonlocal last
+        if done < total and time.monotonic() - last >= PING_REFRESH_EVERY:
+            last = time.monotonic()
+            refresh_bar()
+
+    results = delayping.run(xray, direct, direct_allowed, kind=kind, on_progress=on_progress)
+    return results, direct_allowed
+
+
+def ping_now(scope: dict | None = None) -> tuple[str, str] | None:
+    """--ping-now: the only way pings are measured (no background sweep —
+    the user's call). Happ/Keys go through xray under happd (delayping),
+    which the kill switch lets through; WireGuard/OpenVPN keep the direct
+    TCP connect, which it drops — skipped while it is on.
+
+    No scope: the Ping button for everything — refused while anything is
+    measured. A row's or a group's scope (click on its ping, or `p`) goes
+    into a queue, never twice, and is refused while Ping-all runs; the
+    first such process becomes the worker and drains the queue one scope
+    at a time (so their cache writes never race). Returns the notification,
+    None for a quiet queued ping (the panel shows "…" on its rows)."""
+    if not scope:
+        with delayping.queue_locked():
+            fd = _try_lock(PING_LOCK)
+            if fd is None:
+                progress = delayping.read_progress() or {}
+                if progress.get("kind") == delayping.ALL:
+                    return "Ping", "Already measuring — the list updates when it's done"
+                return "Ping", "Wait for the queued pings to finish"
+            delayping.write_queue([])  # lock was free: whatever is left is stale
+            delayping.write_progress(0, 0, delayping.ALL)  # queued pings see it at once
+        try:
+            refresh_bar()  # the bar shows the progress ({activity}), rows "…"
+            results, direct_allowed = _measure({}, delayping.ALL)
+        finally:
+            os.close(fd)
+        refresh_bar()  # an open panel reloads its list
+        answered = sum(1 for r in results.values() if r.get("ms") is not None)
+        message = f"{answered}/{len(results)} servers answered"
+        if not direct_allowed:
+            message += " — WireGuard/OpenVPN skipped: the kill switch drops direct pings"
+        return "Ping", message
+
+    with delayping.queue_locked():
+        progress = delayping.read_progress() or {}
+        if progress.get("kind") == delayping.ALL:
+            return "Ping", "Ping all is running — this one is measured with it"
+        queue = delayping.read_queue()
+        if scope not in queue:
+            delayping.write_queue([*queue, scope])
+        fd = _try_lock(PING_LOCK)
+    refresh_bar()  # its rows show "…" while queued
+    if fd is None:
+        return None  # the running worker picks it up
+    try:
+        while True:
+            with delayping.queue_locked():
+                queue = delayping.read_queue()
+                if not queue:
+                    break
+                current = queue[0]
+            try:
+                _measure(current, delayping.QUEUED)
+            except Exception as e:  # noqa: BLE001 — one bad scope must not stall the queue
+                logutil.log(f"ping {current}: {e!r}")
+            with delayping.queue_locked():
+                delayping.write_queue([s for s in delayping.read_queue() if s != current])
+            refresh_bar()  # its result shows
+    finally:
+        os.close(fd)  # under no queue lock: a request added just now finds it free
+    # a scope queued between the empty check and the release would wait for
+    # the next click — take it now
+    if delayping.read_queue():
+        return ping_now(delayping.read_queue()[0])
+    return None
+
+
+def _ping_scope_from_args(argv: list[str]) -> dict | None:
+    """--ping-now [group ID | server PROVIDER NAME [SUBSCRIPTION_ID]]."""
+    if not argv:
+        return {}
+    if argv[0] == "group" and len(argv) == 2:
+        return {"group": argv[1]}
+    if argv[0] == "server" and len(argv) in (3, 4):
+        return {"server": [argv[1], argv[2], argv[3] if len(argv) == 4 else ""]}
+    return None
+
+
 def refresh_all_menu() -> ActionResult:
-    """Force a ping sweep (every provider) + Happ subscription sync now,
-    bypassing PING_MAX_AGE/SUB_MAX_AGE — request_ping_update()/
-    request_subscription_update() are staleness-gated and would otherwise
-    no-op if the last sweep was recent. Reputation is deliberately
+    """Force a Happ subscription sync now, bypassing SUB_MAX_AGE —
+    request_subscription_update() is staleness-gated and would otherwise
+    no-op if the last sync was recent. Pings are not part of it: they are
+    measured only by the panel's Ping button (--ping-now). Reputation is deliberately
     excluded (its own daily cadence + IPAPI_PACE already make it a
     multi-minute background job; forcing it from a menu click isn't
     "refresh now", it's "wait a while", which belongs to its own timer)."""
-    subprocess.Popen(
-        [sys.executable, str(Path(__file__)), "--update-ping"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
     subprocess.Popen(
         [sys.executable, str(Path(__file__)), "--update-subs-force"],
         stdout=subprocess.DEVNULL,
@@ -1571,7 +1717,6 @@ def provider_menu(provider) -> ActionResult:
     if provider.name == "Happ":
         return happ_menu(provider)
 
-    happmeta.request_ping_update()
     reputation.request_update()
     items: list[tuple[str, Callable]] = []
     for conn in provider.connections():
@@ -1631,14 +1776,15 @@ def happ_server_groups(provider) -> tuple[list[dict], dict[str, list[dict]]]:
 def happ_menu(provider) -> ActionResult:
     """Happ level 2: subscription providers, each leading to its servers."""
     happmeta.request_subscription_update()
-    happmeta.request_ping_update()
     reputation.request_update()
     servers, groups = happ_server_groups(provider)
 
     items: list[tuple[str, Callable]] = []
     for pname, group in groups.items():
         active = sum(1 for g in group if g["active"])
-        summary = happmeta.provider_ping_summary([g["name"] for g in group])
+        summary = happmeta.provider_ping_summary(
+            [happmeta.ping_key(g["name"], g["provider_id"]) for g in group]
+        )
         suffixes = []
         if active:
             suffixes.append(f"{active}/{len(group)}")
@@ -1666,11 +1812,16 @@ HAPP_NO_HEADERS_LABEL = "⚠️ No servers: provider may need captured Happ head
 
 
 def _server_row(entry: dict) -> dict:
-    """One server for the panel. A stale ping (no sweep under the killswitch)
-    keeps its last value with a "~" and stale=True — the panel dims it."""
-    state, ms = happmeta.ping_status(entry["name"])
+    """One server for the panel. A stale ping (older than PING_MAX_AGE —
+    pings are measured only on the Ping button) keeps its value with a "~"
+    and stale=True — the panel dims it. "—": not measured last time
+    (WireGuard/OpenVPN under the kill switch)."""
+    key = happmeta.ping_key(entry["name"], entry.get("provider_id"))
+    state, ms = happmeta.ping_status(key)
     if state == "none":
-        ping = ""  # never swept: say nothing rather than guess
+        ping = ""  # never measured: say nothing rather than guess
+    elif state == "skipped":
+        ping = "—"
     elif ms is None:
         ping = "timeout"
     else:
@@ -1682,15 +1833,65 @@ def _server_row(entry: dict) -> dict:
         "active": bool(entry["active"]),
         "protocol": entry.get("protocol", ""),
         "ping": ping,
-        "ping_ms": ms if state != "none" else None,
+        "ping_ms": ms if state not in ("none", "skipped") else None,
         "stale": state == "stale",
+        "ping_at": happmeta.ping_at(key),
         # the flag's country code, so the filter finds "Польша" by "pl"
         "country": (_name_flag_country(entry["name"]) or "").lower(),
     }
 
 
-def _server_group(group_id: str, provider: str, title: str, entries: list[dict], sub_id=None):
+class PingState(NamedTuple):
+    """What is being measured, for the panel's "…": every server (Ping-all),
+    the queued scopes, and the run in progress — its scope (the queue's
+    first; None for Ping-all) and start. A row of the running scope measured
+    since that start shows its result while the rest are still measured."""
+
+    every: bool = False
+    queued: tuple = ()
+    current: dict | None = None
+    started: float = float("inf")
+
+
+NOTHING_PINGING = PingState()
+
+
+def _pinging() -> PingState:
+    """A queue nobody works on (its worker died) is stale: shown as nothing."""
+    progress = delayping.read_progress() or {}
+    started = float(progress.get("started") or float("inf"))
+    if progress.get("kind") == delayping.ALL:
+        return PingState(every=True, started=started)
+    queue = delayping.read_queue()
+    if not queue or not _ping_worker_alive():
+        return PingState()
+    running = progress.get("kind") == delayping.QUEUED
+    return PingState(
+        queued=tuple(queue),
+        current=queue[0] if running else None,
+        started=started if running else float("inf"),
+    )
+
+
+def _server_group(
+    group_id: str,
+    provider: str,
+    title: str,
+    entries: list[dict],
+    sub_id=None,
+    *,
+    pinging: PingState = NOTHING_PINGING,
+):
+    group_scope = {"group": group_id}
+    group_pinging = pinging.every or group_scope in pinging.queued
     rows = [_server_row(e) for e in entries]
+    for row, entry in zip(rows, entries, strict=True):
+        server_scope = {"server": [provider, entry["name"], entry.get("provider_id") or ""]}
+        scopes = [group_scope, server_scope]
+        queued = group_pinging or server_scope in pinging.queued
+        in_current_run = pinging.every or pinging.current in scopes
+        # measured during the run in progress: its result shows already
+        row["pinging"] = queued and not (in_current_run and row["ping_at"] >= pinging.started)
     reachable = [r["ping_ms"] for r in rows if r["ping_ms"] is not None]
     summary = ""
     if reachable:
@@ -1704,6 +1905,7 @@ def _server_group(group_id: str, provider: str, title: str, entries: list[dict],
         "subscription_id": sub_id or "",
         "summary": summary,
         "active": any(r["active"] for r in rows),
+        "pinging": group_pinging,
         "servers": rows,
     }
 
@@ -1711,10 +1913,10 @@ def _server_group(group_id: str, provider: str, title: str, entries: list[dict],
 def server_list() -> dict:
     """--servers: the panel's list — every visible provider's connections,
     Happ split per subscription — with ping and protocol. Cache reads only
-    (it runs when the panel opens); stale subscriptions and pings refresh
-    in the background like the menu's."""
+    (it runs when the panel opens); stale subscriptions refresh in the
+    background like the menu's, pings only on the Ping button."""
     happmeta.request_subscription_update()
-    happmeta.request_ping_update()
+    pinging = _pinging()
     groups = []
     for provider in visible_providers():
         if provider.name == "Happ":
@@ -1722,7 +1924,9 @@ def server_list() -> dict:
             for pname, entries in happ_groups.items():
                 sub_id = entries[0].get("provider_id") or ""
                 groups.append(
-                    _server_group(f"happ:{sub_id}:{pname}", "Happ", pname, entries, sub_id)
+                    _server_group(
+                        f"happ:{sub_id}:{pname}", "Happ", pname, entries, sub_id, pinging=pinging
+                    )
                 )
             continue
         try:
@@ -1732,7 +1936,9 @@ def server_list() -> dict:
             continue
         if conns:
             entries = [{"name": c.name, "active": c.active} for c in conns]
-            groups.append(_server_group(provider.name, provider.name, provider.name, entries))
+            groups.append(
+                _server_group(provider.name, provider.name, provider.name, entries, pinging=pinging)
+            )
     return {"groups": groups}
 
 
@@ -1863,7 +2069,9 @@ def subscription_report(failed: dict[str, str]) -> tuple[str, str]:
     a provider that didn't update gets ⚠️ and why — its old list stays."""
     names_by_sub: dict[str, list[str]] = {}
     for server in happmeta.all_servers(allow_fetch=False):
-        names_by_sub.setdefault(server["provider_id"], []).append(server["name"])
+        names_by_sub.setdefault(server["provider_id"], []).append(
+            happmeta.ping_key(server["name"], server["provider_id"])
+        )
     lines = []
     for sub_id, prov in happmeta.providers().items():
         if not prov.get("url"):
@@ -1933,7 +2141,9 @@ def happ_provider_menu(provider, pname: str, entries: list) -> ActionResult:
             subscription_name=pname,
         )
         label = f"Disconnect {conn.name}" if conn.active else conn.name
-        suffix = happmeta.server_info_suffix(conn.name, entry.get("protocol", ""))
+        suffix = happmeta.server_info_suffix(
+            happmeta.ping_key(conn.name, conn.subscription_id), entry.get("protocol", "")
+        )
         if suffix:
             label += f"    {suffix}"
         if conn.active:
@@ -2154,9 +2364,10 @@ def main():
         help="Hold the happd session that owns a key xray process (internal)",
     )
     group.add_argument(
-        "--update-ping",
-        action="store_true",
-        help="Refresh Happ server ping cache in the background (internal)",
+        "--ping-now",
+        nargs="*",
+        metavar="group ID | server PROVIDER NAME [SUB_ID]",
+        help="Measure ping now: every server, one panel group, or one server (the panel)",
     )
     group.add_argument(
         "--update-subs",
@@ -2211,16 +2422,13 @@ def main():
         run_dns_autotest()
     elif args.update_ip:
         ipinfo.update(args.update_ip)
-    elif args.update_ping:
-        # pings go straight out the NIC (happmeta.measure_ping), which the
-        # killswitch drops: a sweep now would mark every server unreachable —
-        # keep the last real values and let them age out instead
-        if killswitch.is_enabled():
-            logutil.log("ping sweep skipped: killswitch is on")
-        elif not _single_flight(PING_LOCK):
-            pass  # every --status tick spawns one while the cache is stale
-        else:
-            happmeta.write_pings(_collect_ping_targets())
+    elif args.ping_now is not None:
+        scope = _ping_scope_from_args(args.ping_now)
+        if scope is None:
+            print("--ping-now: group ID | server PROVIDER NAME [SUB_ID]", file=sys.stderr)
+            sys.exit(2)
+        if (note := ping_now(scope)) is not None:
+            notify(*note)
     elif args.update_reputation:
         reputation.write_reputations(_collect_ping_targets())
     elif args.update_subs:

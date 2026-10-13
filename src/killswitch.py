@@ -99,12 +99,20 @@ def enable(
 
     dns: resolvers allowed on port 53 — only while a connect resolves its
     endpoints (system_resolvers()); without it DNS leaves only through the
-    tunnel, the xray mark or the LAN."""
+    tunnel, the xray mark or the LAN.
+
+    Every load also passes system_resolvers() as --happd-dns: port 53 to them
+    for happd's cgroup only. xray (run by happd) resolves a hostname server
+    with the system resolver, and that lookup leaves through its unmarked
+    `direct` outbound — without this, hostname servers can't connect under
+    the kill switch."""
     tail: list[str] = []
     for iface in ifaces or []:
         tail += ["--iface", iface]
     for server in dns or []:
         tail += ["--dns", server]
+    for server in system_resolvers():
+        tail += ["--happd-dns", server]
     if fresh:
         return _sudo("on", "--no-conf", *(extra_ips or []), *tail)
     detect = _sudo("detect")

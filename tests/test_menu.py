@@ -132,7 +132,6 @@ def _happ_menu_setup(monkeypatch, tmp_path, pings):
         {"name": "s3", "provider_name": "P2", "provider_id": "2", "config": {}},
     ]
     provider = FakeProvider("Happ", [VPNConnection(name="s1", provider="Happ", active=True)])
-    monkeypatch.setattr(vpn_manager.happmeta, "request_ping_update", lambda: None)
     monkeypatch.setattr(vpn_manager.happmeta, "request_subscription_update", lambda: None)
     monkeypatch.setattr(vpn_manager.reputation, "request_update", lambda: None)
     monkeypatch.setattr(vpn_manager.happmeta, "all_servers", lambda allow_fetch=True: servers)
@@ -173,7 +172,7 @@ def test_happ_provider_menu_labels_show_availability(monkeypatch, tmp_path):
             {
                 "up": {"ms": 12.0, "at": now},
                 "down": {"ms": None, "at": now},
-                "unknown": {"ms": 7.0, "at": now - 9999},  # stale -> unmarked
+                "unknown": {"ms": 7.0, "at": now - 99999},  # stale -> unmarked
             }
         )
     )
@@ -203,9 +202,10 @@ def test_happ_menu_provider_labels_include_ping_summary(monkeypatch, tmp_path):
     now = time.time()
     pings = json.dumps(
         {
-            "s1": {"ms": 10.0, "at": now},
-            "s2": {"ms": 30.0, "at": now},
-            "s3": {"ms": 5.0, "at": now - 9999},  # stale: P2 has no fresh data
+            # keyed by (subscription, name): happmeta.ping_key()
+            "1\ts1": {"ms": 10.0, "at": now},
+            "1\ts2": {"ms": 30.0, "at": now},
+            "2\ts3": {"ms": 5.0, "at": now - 99999},  # stale: P2 has no fresh data
         }
     )
     options = _happ_menu_setup(monkeypatch, tmp_path, pings)
@@ -228,7 +228,6 @@ def test_happ_menu_never_blocks_on_the_network(monkeypatch):
     fetches every stale subscription synchronously; measured 15s against a
     real stale cache, see CLAUDE.md)."""
     provider = FakeProvider("Happ", [])
-    monkeypatch.setattr(vpn_manager.happmeta, "request_ping_update", lambda: None)
     monkeypatch.setattr(vpn_manager.reputation, "request_update", lambda: None)
     calls = []
     monkeypatch.setattr(
@@ -257,7 +256,6 @@ def test_happ_menu_never_blocks_on_the_network(monkeypatch):
 
 def _happ_menu_rows(monkeypatch, servers, has_headers):
     monkeypatch.setattr(vpn_manager.happmeta, "request_subscription_update", lambda: None)
-    monkeypatch.setattr(vpn_manager.happmeta, "request_ping_update", lambda: None)
     monkeypatch.setattr(vpn_manager.reputation, "request_update", lambda: None)
     monkeypatch.setattr(vpn_manager.happmeta, "all_servers", lambda allow_fetch=True: servers)
     monkeypatch.setattr(vpn_manager.happmeta, "has_headers", lambda: has_headers)
@@ -1512,13 +1510,13 @@ def test_menu_input_passes_width(monkeypatch):
     ]
 
 
-def test_refresh_all_menu_spawns_ping_and_subs_unconditionally(monkeypatch):
+def test_refresh_all_menu_spawns_subs_unconditionally(monkeypatch):
     calls = []
     monkeypatch.setattr(vpn_manager.subprocess, "Popen", lambda cmd, **k: calls.append(cmd) or None)
     result = vpn_manager.refresh_all_menu()
     assert result.success
     flags = [c[2] for c in calls]  # [sys.executable, script_path, flag]
-    assert "--update-ping" in flags
+    assert flags == ["--update-subs-force"]  # pings: only the panel's Ping button
     # the forced variant — plain --update-subs would keep the SUB_MAX_AGE
     # gate inside fetch_subscription and no-op on a fresh cache
     assert "--update-subs-force" in flags
@@ -1569,7 +1567,6 @@ def test_happ_menu_name_clash_marks_only_active_provider(monkeypatch, tmp_path):
     ]
     active = VPNConnection(name="🇩🇪 Germany", provider="Happ", active=True, subscription_id="2")
     provider = FakeProvider("Happ", [active])
-    monkeypatch.setattr(vpn_manager.happmeta, "request_ping_update", lambda: None)
     monkeypatch.setattr(vpn_manager.happmeta, "request_subscription_update", lambda: None)
     monkeypatch.setattr(vpn_manager.reputation, "request_update", lambda: None)
     monkeypatch.setattr(vpn_manager.happmeta, "all_servers", lambda allow_fetch=True: servers)
@@ -1629,7 +1626,6 @@ def test_happ_menu_passes_protocol_to_server_rows(monkeypatch, tmp_path):
             },
         }
     ]
-    monkeypatch.setattr(vpn_manager.happmeta, "request_ping_update", lambda: None)
     monkeypatch.setattr(vpn_manager.happmeta, "request_subscription_update", lambda: None)
     monkeypatch.setattr(vpn_manager.reputation, "request_update", lambda: None)
     monkeypatch.setattr(vpn_manager.happmeta, "all_servers", lambda allow_fetch=True: servers)
@@ -1886,7 +1882,7 @@ def _fake_report_data(monkeypatch):
     monkeypatch.setattr(
         vpn_manager.happmeta,
         "provider_ping_summary",
-        lambda names: "✓ 2/2 · ⌀45ms" if names == ["DE", "NL"] else None,
+        lambda names: "✓ 2/2 · ⌀45ms" if names == ["1\tDE", "1\tNL"] else None,
     )
     monkeypatch.setattr(
         vpn_manager.happmeta,
@@ -1924,20 +1920,6 @@ def test_manual_subscription_refresh_always_reports(monkeypatch):
     monkeypatch.setattr(vpn_manager, "notify", lambda title, msg, **kw: sent.append((title, msg)))
     vpn_manager.main()
     assert sent == [("T", "B")]
-
-
-@pytest.mark.parametrize(("killswitch_on", "swept"), [(True, False), (False, True)])
-def test_ping_sweep_skipped_under_the_killswitch(monkeypatch, killswitch_on, swept):
-    """Pings go straight out the NIC, which the killswitch drops: a sweep
-    then would mark every server unreachable."""
-    monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", "--update-ping"])
-    monkeypatch.setattr(vpn_manager.killswitch, "is_enabled", lambda: killswitch_on)
-    monkeypatch.setattr(vpn_manager, "_collect_ping_targets", lambda: [("s", "h", 1)])
-    writes = []
-    monkeypatch.setattr(vpn_manager.happmeta, "write_pings", writes.append)
-    monkeypatch.setattr(vpn_manager.logutil, "log", lambda msg: None)
-    vpn_manager.main()
-    assert bool(writes) is swept
 
 
 def _ks_env(monkeypatch, tmp_path, *, lockdown=True, enabled=True):
@@ -2076,3 +2058,8 @@ def test_openvpn_keeps_the_dns_hole_until_its_tun_exists(monkeypatch, tmp_path, 
     assert order[0] == "rules dns=True"
     assert order[-1] == "rules dns=False"
     assert order.count("poll") >= 3  # before the connect + polled until tun0 / timeout
+
+
+def test_a_switch_leaves_the_ping_sweep_alone():
+    """Its xray probes don't depend on the connection being switched."""
+    assert "--ping-now" not in vpn_manager.CHECK_FLAGS

@@ -44,7 +44,7 @@
         "type": "string",
         "label": "Label format",
         "defaultValue": "{label}",
-        "description": "Bar label template. Placeholders: {label} {provider} {subscription} {server} {count} {state} {exit_ip} {exit_country} {exit_flag} {rate} {down} {up} {total} {total_down} {total_up} {ping} {protocol} {interface} {sub_traffic} {sub_expire} {dns} {ipv6} {killswitch}. Empty ones drop with their separator; f in the panel cycles presets."
+        "description": "Bar label template. Placeholders: {label} {provider} {subscription} {server} {count} {state} {exit_ip} {exit_country} {exit_flag} {rate} {down} {up} {total} {total_down} {total_up} {ping} {protocol} {interface} {sub_traffic} {sub_expire} {dns} {ipv6} {killswitch} {activity}. Empty ones drop with their separator; f in the panel cycles presets."
       }
     ]
   }

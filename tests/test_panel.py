@@ -349,6 +349,7 @@ def test_label_fields_carry_every_placeholder(env):
         "dns": "DNS: untested",
         "ipv6": "IPv6 blocked",
         "killswitch": "Kill switch off",
+        "activity": "",
     }
 
 
@@ -389,3 +390,10 @@ def test_manifest_lists_exactly_the_label_fields():
     manifest = json.loads((Path(__file__).parent.parent / "plugin/manifest.json").read_text())
     entry = next(e for e in manifest["barWidget"]["schema"] if e["key"] == "labelFormat")
     assert re.findall(r"\{([a-z0-9_]+)\}", entry["description"]) == list(vpn_manager.LABEL_FIELDS)
+
+
+@pytest.mark.parametrize("hints", [True, False])
+def test_panel_carries_the_key_hints_setting(env, monkeypatch, hints):
+    """⚙ Settings → "Show key hints in the panel" hides the panel's key line."""
+    cfg = vpn_manager.config.Config(panel_key_hints=hints)
+    assert vpn_manager.panel_state([], cfg)["key_hints"] is hints

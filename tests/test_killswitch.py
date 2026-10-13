@@ -317,12 +317,12 @@ def real_subprocess(monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
 
 
-def _rules(*args: str, home: str = "/nonexistent") -> str:
+def _rules(*args: str, home: str = "/nonexistent", **env: str) -> str:
     result = _REAL_RUN(
         ["bash", str(_SCRIPT), "rules", *args],
         capture_output=True,
         text=True,
-        env={"PATH": "/usr/bin:/bin", "HOME": home},
+        env={"PATH": "/usr/bin:/bin", "HOME": home, "CGROUP_ROOT": "/nonexistent", **env},
         check=True,
     )
     return result.stdout
@@ -368,8 +368,32 @@ def test_ruleset_rejects_what_is_not_an_address(real_subprocess):
 def test_enable_passes_dns_resolvers_to_the_script(monkeypatch):
     calls = []
     monkeypatch.setattr(killswitch, "_sudo", lambda *a: calls.append(a) or ActionResult(True, ""))
+    monkeypatch.setattr(killswitch, "system_resolvers", lambda: ["192.0.2.1"])
     killswitch.enable(extra_ips=["1.2.3.4"], ifaces=["wg0"], fresh=True, dns=["192.0.2.53"])
-    assert calls == [("on", "--no-conf", "1.2.3.4", "--iface", "wg0", "--dns", "192.0.2.53")]
+    assert calls == [
+        (
+            "on",
+            "--no-conf",
+            "1.2.3.4",
+            "--iface",
+            "wg0",
+            "--dns",
+            "192.0.2.53",
+            "--happd-dns",
+            "192.0.2.1",
+        )
+    ]
+
+
+def test_every_load_lets_happd_resolve(monkeypatch):
+    """Not only during a connect: xray resolves a hostname server again on
+    every reconnect and balancer pick, through its unmarked `direct`."""
+    calls = []
+    monkeypatch.setattr(killswitch, "_sudo", lambda *a: calls.append(a) or ActionResult(True, ""))
+    monkeypatch.setattr(killswitch, "system_resolvers", lambda: ["8.8.8.8"])
+    killswitch.enable(extra_ips=["1.2.3.4"], fresh=True)
+    assert calls[-1][-2:] == ("--happd-dns", "8.8.8.8")
+    assert "--dns" not in calls[-1]
 
 
 def test_system_resolvers_from_resolv_conf(monkeypatch, tmp_path):
@@ -416,3 +440,44 @@ def test_resolve_cached_only_never_looks_up(monkeypatch):
         "192.0.2.1",
         "198.51.100.7",
     ]
+
+
+def test_happd_cgroup_gets_dns_to_the_system_resolvers(real_subprocess, tmp_path):
+    """Port 53 to --happd-dns resolvers for happd's cgroup only (its xray
+    resolves hostname servers through the unmarked `direct`)."""
+    (tmp_path / "system.slice/happd.service").mkdir(parents=True)
+    rules = _rules(
+        "1.2.3.4",
+        "--no-conf",
+        "--happd-dns",
+        "8.8.8.8",
+        "--happd-dns",
+        "2001:4860:4860::8888",
+        CGROUP_ROOT=str(tmp_path),
+    )
+    cgroup = 'socket cgroupv2 level 2 "system.slice/happd.service"'
+    assert f"{cgroup} ip daddr 8.8.8.8 meta l4proto {{ tcp, udp }} th dport 53 accept" in rules
+    assert f"{cgroup} ip6 daddr 2001:4860:4860::8888 meta l4proto" in rules
+    # nothing outside that cgroup gets DNS
+    assert [line for line in rules.splitlines() if "dport 53" in line and cgroup not in line] == []
+
+
+def test_no_happd_cgroup_rule_without_happd(real_subprocess, tmp_path):
+    """nft resolves the path at load time: a missing cgroup (happd not
+    running) would fail the whole ruleset, so the rule is left out."""
+    rules = _rules("1.2.3.4", "--no-conf", "--happd-dns", "8.8.8.8", CGROUP_ROOT=str(tmp_path))
+    assert "cgroupv2" not in rules
+    assert "ip daddr 1.2.3.4 accept" in rules
+
+
+def test_happd_dns_rejects_what_is_not_an_address(real_subprocess, tmp_path):
+    (tmp_path / "system.slice/happd.service").mkdir(parents=True)
+    result = _REAL_RUN(
+        ["bash", str(_SCRIPT), "rules", "1.2.3.4", "--no-conf", "--happd-dns", "8.8.8.8; x"],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "CGROUP_ROOT": str(tmp_path)},
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "table" not in result.stdout

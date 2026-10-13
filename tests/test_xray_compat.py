@@ -12,6 +12,7 @@ plain CI matrix). Runs `xray run -test` only: parses the config, never
 opens a socket or a TUN device.
 """
 
+import contextlib
 import copy
 import json
 import os
@@ -23,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+import delayping
 import happmeta
 import providers.keys as keys
 from providers import happ
@@ -582,3 +584,73 @@ def test_subscription_dns_mode_keeps_the_providers_direct_dns(xray):
         },
         tunnel_dns=False,
     )
+
+
+# ── The Ping button's probe config (delayping) ───────────────────────────────
+
+
+@pytest.mark.parametrize("server", HAPP_SERVERS.values(), ids=HAPP_SERVERS.keys())
+def test_happ_probe_config_loads(xray, server):
+    cfg = happmeta.build_runtime_config(copy.deepcopy(server))
+    assert _config_error(delayping.probe_config(cfg, _free_port(), "lo")) is None
+
+
+@pytest.mark.parametrize("url", KEY_URLS.values(), ids=KEY_URLS.keys())
+def test_keys_probe_config_loads(xray, url):
+    cfg = keys._build_xray_config(keys.parse_key(url))
+    assert _config_error(delayping.probe_config(cfg, _free_port(), "lo")) is None
+
+
+def _probe_routing_log(server: dict, host: str, want: str) -> str:
+    """Run the real probe config, send one HTTP CONNECT for host:443 to its
+    inbound and return xray's log once `want` shows up (or 10 s pass)."""
+    port = _free_port()
+    cfg = delayping.probe_config(happmeta.build_runtime_config(server), port, "lo")
+    cfg["log"] = {"loglevel": "debug"}
+    proc = subprocess.Popen(
+        [str(happ.XRAY_BIN), "run", "-c", "stdin:"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env={**os.environ, "XRAY_LOCATION_ASSET": str(ASSETS)},
+    )
+    lines: list[str] = []
+    reader = threading.Thread(target=lambda: lines.extend(proc.stdout), daemon=True)
+    try:
+        proc.stdin.write(json.dumps(cfg))
+        proc.stdin.close()
+        reader.start()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not any(want in line for line in list(lines)):
+            with (
+                contextlib.suppress(OSError),
+                socket.create_connection(("127.0.0.1", port), timeout=3) as s,
+            ):
+                s.sendall(f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n".encode())
+                s.recv(64)
+            time.sleep(0.3)
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+    log = "".join(lines)
+    assert want in log, f"no '{want}' in xray log:\n{log[-1500:]}"
+    return log
+
+
+def test_probe_goes_to_the_server_even_where_the_subscription_says_direct(xray):
+    """A subscription rule sending the test URL's host `direct` (unmarked,
+    dropped by the kill switch — and not through the server) must not apply
+    to the probe: it times the server, whatever the routing says."""
+    server = copy.deepcopy(_VLESS_REALITY_XHTTP)
+    server["routing"]["rules"].insert(
+        0, {"domain": ["full:www.gstatic.com"], "outboundTag": "direct"}
+    )
+    log = _probe_routing_log(
+        server, "www.gstatic.com", "taking detour [proxy] for [tcp:www.gstatic.com:443]"
+    )
+    assert "taking detour [direct]" not in log
+
+
+def test_probe_of_a_balancer_server_uses_its_balancer(xray):
+    _probe_routing_log(copy.deepcopy(_HYSTERIA_BALANCER), "www.gstatic.com", "taking detour [DE-")

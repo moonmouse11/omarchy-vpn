@@ -8,6 +8,9 @@
 #   - DNS only to resolvers passed with --dns (during a connect, so endpoint
 #     hostnames resolve); otherwise DNS leaves through the tunnel, the xray
 #     mark or the LAN like everything else
+#   - DNS from happd's own cgroup (happd + the xray it runs) to resolvers
+#     passed with --happd-dns: xray resolves a hostname server with the
+#     system resolver, and that lookup leaves through its unmarked `direct`
 #   - local networks (LAN, router, DHCP)
 #   - VPN server IPs from the config + IPs passed as arguments (the Happ
 #     server from ~/.config/happ-killswitch.conf + resolved WG/OpenVPN endpoints)
@@ -16,10 +19,11 @@
 #
 # Usage:
 #   happ-killswitch detect                  # Happ server IPs (Happ must be connected)
-#   happ-killswitch on [IP…] [--iface NAME] [--dns IP] [--no-conf]
+#   happ-killswitch on [IP…] [--iface NAME] [--dns IP] [--happd-dns IP] [--no-conf]
 #                                           # enable (args: extra server IPs, --iface: allowed
 #                                           # tunnel interfaces, --dns: resolvers allowed on
-#                                           # port 53, --no-conf: ignore saved IPs)
+#                                           # port 53, --happd-dns: the same for happd's
+#                                           # cgroup only, --no-conf: ignore saved IPs)
 #   happ-killswitch rules [same args as on] # print the ruleset without applying it
 #   happ-killswitch off                     # disable (full rollback)
 #   happ-killswitch status                  # show the current rules
@@ -31,6 +35,11 @@ set -euo pipefail
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/happ-killswitch.conf"
 # must equal happmeta.KILLSWITCH_MARK (checked by tests/test_killswitch.py)
 XRAY_MARK=0x6b73
+# happd's systemd cgroup (relative to the cgroup2 root): happd and every xray
+# it starts live here, the browser and the rest of the session don't.
+# Overridable for tests only — sudo's env_reset strips it from callers.
+HAPPD_CGROUP="${HAPPD_CGROUP:-system.slice/happd.service}"
+CGROUP_ROOT="${CGROUP_ROOT:-/sys/fs/cgroup}"
 
 # Use sudo internally only when not root (sudoers grants this script NOPASSWD)
 SUDO=""
@@ -78,13 +87,15 @@ detect() {
 # hostnames resolve; otherwise DNS leaves only through the tunnel, the xray
 # mark or the LAN), --no-conf (ignore the saved Happ IPs).
 ruleset() {
-    local extra_ips=() ifaces=() dns=() use_conf=1
+    local extra_ips=() ifaces=() dns=() happd_dns=() use_conf=1
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --iface) [[ $# -ge 2 ]] || die "--iface needs an interface name"
                      ifaces+=("$2"); shift 2 ;;
             --dns)   [[ $# -ge 2 ]] || die "--dns needs an address"
                      dns+=("$2"); shift 2 ;;
+            --happd-dns) [[ $# -ge 2 ]] || die "--happd-dns needs an address"
+                     happd_dns+=("$2"); shift 2 ;;
             --no-conf) use_conf=0; shift ;;
             *)       extra_ips+=("$1"); shift ;;
         esac
@@ -130,6 +141,24 @@ ruleset() {
     $family daddr $ip tcp dport { 53, 853 } accept
 "
     done
+    # nft resolves the cgroup path to its id when the ruleset loads: a missing
+    # one (happd not running) would fail the whole load, so no rule then. A
+    # happd restart gets a new id — the next load (every connect) follows it.
+    local cgroup_rules=""
+    if [[ ${#happd_dns[@]} -gt 0 && -d $CGROUP_ROOT/$HAPPD_CGROUP ]]; then
+        [[ $HAPPD_CGROUP =~ ^[A-Za-z0-9@._-]+(/[A-Za-z0-9@._-]+)*$ ]] \
+            || die "bad cgroup path: $HAPPD_CGROUP"
+        local level
+        level=$(tr -cd / <<<"$HAPPD_CGROUP" | wc -c)
+        level=$((level + 1))
+        for ip in "${happd_dns[@]}"; do
+            valid_ip "$ip" || valid_ip6 "$ip" || die "not an IP address: $ip"
+            local family=ip
+            [[ $ip == *:* ]] && family=ip6
+            cgroup_rules+="    socket cgroupv2 level $level \"$HAPPD_CGROUP\" $family daddr $ip meta l4proto { tcp, udp } th dport 53 accept
+"
+        done
+    fi
 
     cat <<EOF
 table inet happ-ks
@@ -141,7 +170,7 @@ table inet happ-ks {
     oifname "lo"        accept
     meta mark $XRAY_MARK accept
     oifname "happ-*"    accept
-$iface_rules$dns_rules$addrs    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } accept
+$iface_rules$dns_rules$cgroup_rules$addrs    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } accept
     ip daddr 224.0.0.0/4 accept
     ip daddr 255.255.255.255 udp dport 67 accept
     ip6 daddr { fe80::/10, ff00::/8 } accept

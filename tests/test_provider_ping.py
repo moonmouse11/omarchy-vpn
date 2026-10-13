@@ -194,7 +194,7 @@ def test_ping_mark_states(tmp_path, monkeypatch):
             {
                 "up": {"ms": 42.0, "at": now},
                 "down": {"ms": None, "at": now},
-                "stale": {"ms": 1.0, "at": now - 9999},
+                "stale": {"ms": 1.0, "at": now - 99999},
             }
         )
     )
@@ -204,47 +204,19 @@ def test_ping_mark_states(tmp_path, monkeypatch):
     assert happmeta.ping_mark("absent") == ""
 
 
-# ── write_pings (single-writer format, combined targets) ──────────────────────
-
-
-def test_write_pings_combined_targets(tmp_path, monkeypatch):
-    ping_file = tmp_path / "ping.json"
-    monkeypatch.setattr(happmeta, "PING_CACHE", ping_file)
-    measured = {}
-
-    def fake_measure(host, port):
-        measured[(host, port)] = True
-        return 7.0 if port != 9 else None
-
-    monkeypatch.setattr(happmeta, "measure_ping", fake_measure)
-    targets = [
-        ("srv-happ", "h.example.com", 443),
-        ("wg", "w.example.com", 51820),
-        ("dead", "127.0.0.1", 9),
-    ]
-    happmeta.write_pings(targets)
-    data = json.loads(ping_file.read_text())
-    assert data["srv-happ"] == {"ms": 7.0, "at": data["srv-happ"]["at"]}
-    assert data["wg"]["ms"] == 7.0
-    assert data["dead"]["ms"] is None  # failure recorded for the ⛔ mark
-    assert set(measured) == {("h.example.com", 443), ("w.example.com", 51820), ("127.0.0.1", 9)}
-    assert time.time() - data["updated_at"] < 5
-
-
 # ── provider_menu labels ──────────────────────────────────────────────────────
 
 
 def test_provider_menu_labels_show_ping(monkeypatch, tmp_path):
     ping_file = tmp_path / "ping.json"
     monkeypatch.setattr(vpn_manager.happmeta, "PING_CACHE", ping_file)
-    monkeypatch.setattr(vpn_manager.happmeta, "request_ping_update", lambda: None)
     now = time.time()
     ping_file.write_text(
         json.dumps(
             {
                 "fast": {"ms": 12.0, "at": now},
                 "down": {"ms": None, "at": now},
-                "unmeasured": {"ms": 1.0, "at": now - 9999},
+                "unmeasured": {"ms": 1.0, "at": now - 99999},
             }
         )
     )
@@ -274,27 +246,8 @@ def test_provider_menu_labels_show_ping(monkeypatch, tmp_path):
 # ── sweep resilience (FIX 1) ──────────────────────────────────────────────────
 
 
-def test_write_pings_bad_target_does_not_abort_sweep(tmp_path, monkeypatch):
-    """A target whose measurement raises (e.g. port out of range slipping
-    through) is recorded as a failure; the rest of the sweep completes."""
-    ping_file = tmp_path / "ping.json"
-    monkeypatch.setattr(happmeta, "PING_CACHE", ping_file)
-
-    def flaky_measure(host, port):
-        if port > 65535:
-            raise OverflowError("port must be 0-65535")
-        return 5.0
-
-    monkeypatch.setattr(happmeta, "measure_ping", flaky_measure)
-    happmeta.write_pings([("good", "g.example.com", 443), ("bad", "b.example.com", 70000)])
-    data = json.loads(ping_file.read_text())
-    assert data["good"]["ms"] == 5.0
-    assert data["bad"]["ms"] is None  # recorded as ⛔, sweep not aborted
-    assert time.time() - data["updated_at"] < 5
-
-
 def test_collect_ping_targets_skips_broken_provider(monkeypatch):
-    """--update-ping combination: a provider whose ping_targets() raises is
+    """Reputation sweep targets: a provider whose ping_targets() raises is
     skipped, others still contribute (pattern: update_subscriptions)."""
     broken = FakeProvider("Broken", [])
 

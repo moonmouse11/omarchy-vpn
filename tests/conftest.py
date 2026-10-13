@@ -55,4 +55,8 @@ def _no_real_panel_caches(monkeypatch, tmp_path):
     import vpn_manager
 
     monkeypatch.setattr(killswitch, "STATE_CACHE", tmp_path / "killswitch-state.json")
+    monkeypatch.setattr(killswitch, "RESOLVED_CACHE", tmp_path / "resolved-ips.json")
     monkeypatch.setattr(vpn_manager, "DNS_VERDICT_CACHE", tmp_path / "dns-leak.json")
+    monkeypatch.setattr(vpn_manager, "SWITCH_LOCK", tmp_path / "switch.lock")
+    monkeypatch.setattr(vpn_manager, "PING_LOCK", tmp_path / "ping.lock")
+    monkeypatch.setattr(vpn_manager, "PROC", tmp_path / "proc")  # never signal real processes

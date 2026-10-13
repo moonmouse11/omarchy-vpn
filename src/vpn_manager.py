@@ -8,11 +8,14 @@ Usage:
 
 import argparse
 import contextlib
+import fcntl
 import getpass
 import json
+import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -247,7 +250,186 @@ def request_ip_update(connection_name: str):
 # ── Menu actions ──────────────────────────────────────────────────────────────
 
 
+SWITCH_LOCK = Path.home() / ".cache/vpn-manager/switch.lock"
+PREEMPT_GRACE = 2.0  # s for a superseded switch to stop on SIGTERM before SIGKILL
+PREEMPT_WAIT = 3.0  # s more for the lock after SIGKILL
+PROC = Path("/proc")
+# background checks of the connection being left: their answers would
+# describe the old server (or time out on a dead one) — killed on a switch.
+# Not --update-reputation/--update-subs: those don't depend on which server is up.
+CHECK_FLAGS = ("--dns-autotest", "--dns-leak-test", "--update-ip", "--update-ping")
+
+
+class SwitchBusy(Exception):
+    """Another connect/disconnect holds SWITCH_LOCK and won't let go."""
+
+
+class SwitchCancelled(BaseException):
+    """This switch was superseded by a newer one (SIGTERM from its switch_lock).
+    BaseException, like KeyboardInterrupt: a provider's `except Exception`
+    must not swallow it and carry on connecting."""
+
+
+class CheckCancelled(BaseException):
+    """A DNS leak test stopped by a switch (_abort_checks)."""
+
+
+def _lock_holder(fd: int) -> tuple[int | None, str]:
+    """(pid, action) written by the holder: "PID\naction"."""
+    os.lseek(fd, 0, os.SEEK_SET)
+    text = os.read(fd, 1024).decode(errors="replace").strip()
+    pid_text, _, action = text.partition("\n")
+    if pid_text.isdigit():
+        return int(pid_text), action.strip() or "another switch"
+    return None, text or "another switch"
+
+
+def _our_process(pid: int, flags: tuple[str, ...] | None = None) -> bool:
+    """pid is this program (vpn_manager.py), optionally run with one of flags."""
+    try:
+        argv = (PROC / str(pid) / "cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    args = [a.decode(errors="replace") for a in argv if a]
+    script = next((i for i, a in enumerate(args) if a.endswith("vpn_manager.py")), None)
+    if script is None:
+        return False
+    return flags is None or (len(args) > script + 1 and args[script + 1] in flags)
+
+
+def _try_flock(fd: int) -> bool:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def _wait_flock(fd: int, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while True:
+        if _try_flock(fd):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def _preempt(fd: int, pid: int | None) -> bool:
+    """Stop the switch holding the lock and take it. SIGTERM first (it
+    unwinds through SwitchCancelled); SIGKILL if it doesn't let go — a
+    holder stuck inside getaddrinfo only sees a Python signal handler once
+    the C call returns. Never this process (a nested switch_lock) and never
+    something that isn't ours."""
+    if pid is None or pid == os.getpid() or not _our_process(pid):
+        return False
+    for sig, wait in ((signal.SIGTERM, PREEMPT_GRACE), (signal.SIGKILL, PREEMPT_WAIT)):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            return False
+        if _wait_flock(fd, wait):
+            return True
+    return False
+
+
+def _abort_checks() -> None:
+    """SIGTERM every background check of the connection being left (CHECK_FLAGS)."""
+    me = os.getpid()
+    try:
+        pids = [int(p.name) for p in PROC.iterdir() if p.name.isdigit()]
+    except OSError:
+        return
+    for pid in pids:
+        if pid != me and _our_process(pid, CHECK_FLAGS):
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGTERM)
+                logutil.log(f"switch: aborted check pid {pid}")
+
+
+def _cancel_switch(signum, frame) -> None:
+    raise SwitchCancelled
+
+
+@contextlib.contextmanager
+def switch_lock(action: str):
+    """One switch at a time, whoever starts it (menu, panel, shortcut) —
+    and the newest one wins.
+
+    A connect can block for minutes (resolving endpoints through a dead
+    tunnel), and refusing the next click ("Already switching") left the
+    user stuck on a server without internet, unable to switch or even
+    disconnect (2026-10-13). So a new switch supersedes the running one:
+    it stops the holder (_preempt) and takes the lock; the holder unwinds
+    through SwitchCancelled and stays silent. Before that, repeated clicks
+    queued up and ran nine connects in the same second. flock, not a pid
+    file: the kernel drops it when the holder dies, so a crash (or the
+    SIGKILL) can't leave a stale lock. Taking it also stops the checks of
+    the connection being left (_abort_checks)."""
+    SWITCH_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(SWITCH_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if not _try_flock(fd):
+            pid, holder = _lock_holder(fd)
+            if not _preempt(fd, pid):
+                raise SwitchBusy(holder)
+            logutil.log(f"switch superseded: {holder} -> {action}")
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, f"{os.getpid()}\n{action}".encode())
+        _abort_checks()
+        previous = signal.signal(signal.SIGTERM, _cancel_switch)
+        try:
+            yield
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+    finally:
+        os.close(fd)  # releases the flock
+
+
+PING_LOCK = Path.home() / ".cache/vpn-manager/ping.lock"
+_held_locks: list[int] = []
+
+
+def _single_flight(path: Path) -> bool:
+    """Hold an flock on path for the rest of this process; False if another
+    process already holds it. Seen 2026-10-13: seven --update-ping sweeps at
+    once, each spawned by a 3 s tick before the first one could finish."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    if not _try_flock(fd):
+        os.close(fd)
+        return False
+    _held_locks.append(fd)  # released when the process exits
+    return True
+
+
+def _busy(e: SwitchBusy) -> ActionResult:
+    logutil.log(f"switch refused, busy: {e}")
+    return ActionResult(False, f"Already switching ({e}) — wait for it to finish")
+
+
+def _cancelled(action: str) -> ActionResult:
+    # the newer switch reports for itself; a second bubble would only confuse
+    logutil.log(f"switch cancelled, superseded: {action}")
+    return ActionResult(False, "")
+
+
 def guarded_connect(provider, connection: VPNConnection) -> ActionResult:
+    """_guarded_connect() under SWITCH_LOCK — the entry point for every connect."""
+    action = f"connecting to {provider.name}: {connection.name}"
+    try:
+        with switch_lock(action):
+            return _guarded_connect(provider, connection)
+    except SwitchBusy as e:
+        return _busy(e)
+    except SwitchCancelled:
+        return _cancelled(action)
+
+
+def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
     """Connect with killswitch interplay.
 
     - Happ connect: refresh the Happ server-IP whitelist; enable when the
@@ -299,7 +481,7 @@ def guarded_connect(provider, connection: VPNConnection) -> ActionResult:
         if not (c.provider == provider.name and c.name == connection.name)
     ]
     if others:
-        down = disconnect_all()
+        down = _disconnect_all()  # already under SWITCH_LOCK
         if not down.success:
             return down
 
@@ -320,6 +502,18 @@ def guarded_connect(provider, connection: VPNConnection) -> ActionResult:
 
 
 def guarded_disconnect(provider, connection: VPNConnection) -> ActionResult:
+    """_guarded_disconnect() under SWITCH_LOCK."""
+    action = f"disconnecting {provider.name}: {connection.name}"
+    try:
+        with switch_lock(action):
+            return _guarded_disconnect(provider, connection)
+    except SwitchBusy as e:
+        return _busy(e)
+    except SwitchCancelled:
+        return _cancelled(action)
+
+
+def _guarded_disconnect(provider, connection: VPNConnection) -> ActionResult:
     """provider.disconnect() plus keeping the IPv6 guard in sync — every
     menu disconnect action should go through this, not provider.disconnect
     directly, so IPv6 gets restored as soon as nothing is left active."""
@@ -344,6 +538,17 @@ def _apply_ipv6_guard(guard: ActionResult) -> None:
 
 
 def disconnect_all() -> ActionResult:
+    """_disconnect_all() under SWITCH_LOCK."""
+    try:
+        with switch_lock("disconnecting everything"):
+            return _disconnect_all()
+    except SwitchBusy as e:
+        return _busy(e)
+    except SwitchCancelled:
+        return _cancelled("disconnecting everything")
+
+
+def _disconnect_all() -> ActionResult:
     stopped, failed = [], []
     # act on everything, even providers hidden from the menu
     for provider in ALL_PROVIDERS:
@@ -640,17 +845,30 @@ def run_dns_autotest() -> None:
     refresh_bar()
 
 
+def _cancel_check(signum, frame) -> None:
+    raise CheckCancelled
+
+
 def dns_leak_test_menu() -> ActionResult:
     """DNS leak test — same backend (bash.ws) as dnsleaktest.com. Runs
     synchronously (a few seconds of DNS probes) and shows the result as a
     submenu rather than a single notification, so a long DNS-server list
     stays readable instead of getting truncated in a notify-send bubble."""
     progress = notifyutil.Progress("DNS Leak Test", steps=len(dnsleak.STEPS))
+    # a switch SIGTERMs a running test (_abort_checks): it would test the
+    # server being left — close the bubble instead of leaving it spinning
+    previous = signal.signal(signal.SIGTERM, _cancel_check)
     try:
         result = dnsleak.run(on_step=lambda n, label: progress.step(n, f"{label}…"))
     except dnsleak.LeakTestError as e:
         progress.fail(f"Test {e}{_failure_hint(e.reason)}")
         return ActionResult(False, "")  # already notified, with the reason
+    except CheckCancelled:
+        logutil.log("DNS Leak Test cancelled: the connection changed")
+        progress.done("Cancelled — the connection changed")
+        return ActionResult(False, "")
+    finally:
+        signal.signal(signal.SIGTERM, previous)
     progress.done("Done")
 
     active = active_connections()
@@ -1173,11 +1391,9 @@ def back_to_main() -> ActionResult:
 # ── Happ: providers -> servers (with ping/protocol info) ─────────────────────
 
 
-def happ_menu(provider) -> ActionResult:
-    """Happ level 2: subscription providers, each leading to its servers."""
-    happmeta.request_subscription_update()
-    happmeta.request_ping_update()
-    reputation.request_update()
+def happ_server_groups(provider) -> tuple[list[dict], dict[str, list[dict]]]:
+    """(all servers, subscription name -> its rows) with the active server
+    marked — shared by the Happ menu and the panel's server list."""
     servers = happmeta.all_servers(allow_fetch=False)
     active_conns = [c for c in provider.connections() if c.active]
 
@@ -1201,6 +1417,15 @@ def happ_menu(provider) -> ActionResult:
                 "protocol": happmeta.protocol_label(server["config"]),
             }
         )
+    return servers, groups
+
+
+def happ_menu(provider) -> ActionResult:
+    """Happ level 2: subscription providers, each leading to its servers."""
+    happmeta.request_subscription_update()
+    happmeta.request_ping_update()
+    reputation.request_update()
+    servers, groups = happ_server_groups(provider)
 
     items: list[tuple[str, Callable]] = []
     for pname, group in groups.items():
@@ -1227,6 +1452,132 @@ def happ_menu(provider) -> ActionResult:
 
 
 HAPP_NO_HEADERS_LABEL = "⚠️ No servers: provider may need captured Happ headers"
+
+
+# ── Panel: server list + connect/disconnect ───────────────────────────────────
+
+
+def _server_row(entry: dict) -> dict:
+    """One server for the panel. A stale ping (no sweep under the killswitch)
+    keeps its last value with a "~" and stale=True — the panel dims it."""
+    state, ms = happmeta.ping_status(entry["name"])
+    if state == "none":
+        ping = ""  # never swept: say nothing rather than guess
+    elif ms is None:
+        ping = "timeout"
+    else:
+        ping = f"{ms:.0f} ms"
+    if ms is not None and state == "stale":
+        ping = "~" + ping  # an old number; an old timeout is just dimmed
+    return {
+        "name": entry["name"],
+        "active": bool(entry["active"]),
+        "protocol": entry.get("protocol", ""),
+        "ping": ping,
+        "ping_ms": ms if state != "none" else None,
+        "stale": state == "stale",
+        # the flag's country code, so the filter finds "Польша" by "pl"
+        "country": (_name_flag_country(entry["name"]) or "").lower(),
+    }
+
+
+def _server_group(group_id: str, provider: str, title: str, entries: list[dict], sub_id=None):
+    rows = [_server_row(e) for e in entries]
+    reachable = [r["ping_ms"] for r in rows if r["ping_ms"] is not None]
+    summary = ""
+    if reachable:
+        median = sorted(reachable)[len(reachable) // 2]
+        stale = "~" if any(r["stale"] for r in rows if r["ping_ms"] is not None) else ""
+        summary = f"✓ {len(reachable)}/{len(rows)} · {stale}{median:.0f} ms"
+    return {
+        "id": group_id,
+        "provider": provider,
+        "title": title,
+        "subscription_id": sub_id or "",
+        "summary": summary,
+        "active": any(r["active"] for r in rows),
+        "servers": rows,
+    }
+
+
+def server_list() -> dict:
+    """--servers: the panel's list — every visible provider's connections,
+    Happ split per subscription — with ping and protocol. Cache reads only
+    (it runs when the panel opens); stale subscriptions and pings refresh
+    in the background like the menu's."""
+    happmeta.request_subscription_update()
+    happmeta.request_ping_update()
+    groups = []
+    for provider in visible_providers():
+        if provider.name == "Happ":
+            _servers, happ_groups = happ_server_groups(provider)
+            for pname, entries in happ_groups.items():
+                sub_id = entries[0].get("provider_id") or ""
+                groups.append(
+                    _server_group(f"happ:{sub_id}:{pname}", "Happ", pname, entries, sub_id)
+                )
+            continue
+        try:
+            conns = provider.connections()
+        except Exception as e:  # noqa: BLE001 — one broken provider must not empty the list
+            logutil.log(f"server list: {provider.name} skipped: {e!r}")
+            continue
+        if conns:
+            entries = [{"name": c.name, "active": c.active} for c in conns]
+            groups.append(_server_group(provider.name, provider.name, provider.name, entries))
+    return {"groups": groups}
+
+
+def _provider_named(name: str):
+    return next((p for p in ALL_PROVIDERS if p.name == name), None)
+
+
+def panel_connect(provider_name: str, name: str, sub_id: str | None = None) -> ActionResult:
+    """--connect from the panel: the same guarded_connect() as the menu
+    (killswitch, IPv6 guard, one tunnel at a time, DNS autotest)."""
+    provider = _provider_named(provider_name)
+    if provider is None:
+        return ActionResult(False, f"Unknown provider: {provider_name}")
+    if provider.name == "Happ":
+        sub_name = happmeta.providers().get(sub_id or "", {}).get("name") if sub_id else None
+        conn = VPNConnection(
+            name=name,
+            provider="Happ",
+            active=False,
+            subscription_id=sub_id or None,
+            subscription_name=sub_name,
+        )
+    else:
+        found = next((c for c in provider.connections() if c.name == name), None)
+        if found is None:
+            return ActionResult(False, f"{provider_name}: {name} not found")
+        conn = found
+    return guarded_connect(provider, conn)
+
+
+def panel_disconnect(provider_name: str, name: str) -> ActionResult:
+    """--disconnect from the panel. Happ's active connection name can differ
+    from the subscription's server name (GUI names lack the emoji), so for
+    Happ any active connection of it is the one."""
+    provider = _provider_named(provider_name)
+    if provider is None:
+        return ActionResult(False, f"Unknown provider: {provider_name}")
+    active = [c for c in provider.connections() if c.active]
+    conn = next((c for c in active if c.name == name), None)
+    if conn is None and provider.name == "Happ" and active:
+        conn = active[0]
+    if conn is None:
+        return ActionResult(False, f"{provider_name}: {name} is not connected")
+    return guarded_disconnect(provider, conn)
+
+
+def _report(result: ActionResult) -> None:
+    if result.message:
+        if result.success:
+            notify("VPN", result.message)
+        else:
+            notify("VPN — Error", result.message, urgent=True)
+    refresh_bar()
 
 
 def _happ_rejected_rows(shown: set[str]) -> list[tuple[str, Callable]]:
@@ -1558,6 +1909,18 @@ def main():
         "--disconnect-all", action="store_true", help="Disconnect every VPN (the panel's switch)"
     )
     group.add_argument(
+        "--servers", action="store_true", help="Print the panel's server list as JSON"
+    )
+    group.add_argument(
+        "--connect",
+        nargs="+",
+        metavar="PROVIDER NAME [SUBSCRIPTION_ID]",
+        help="Connect a server (the panel's server list)",
+    )
+    group.add_argument(
+        "--disconnect", nargs=2, metavar=("PROVIDER", "NAME"), help="Disconnect a connection"
+    )
+    group.add_argument(
         "--dns-leak-test", action="store_true", help="Run the DNS leak test (the panel's DNS badge)"
     )
     group.add_argument(
@@ -1621,6 +1984,14 @@ def main():
         print(json.dumps(get_status()))
     elif args.menu:
         run_menu()
+    elif args.servers:
+        print(json.dumps(server_list(), ensure_ascii=False))
+    elif args.connect is not None:
+        if len(args.connect) not in (2, 3):
+            parser.error("--connect takes PROVIDER NAME [SUBSCRIPTION_ID]")
+        _report(panel_connect(*args.connect))
+    elif args.disconnect is not None:
+        _report(panel_disconnect(*args.disconnect))
     elif args.disconnect_all:
         result = disconnect_all()
         notify("VPN", result.message, urgent=not result.success)
@@ -1638,6 +2009,8 @@ def main():
         # keep the last real values and let them age out instead
         if killswitch.is_enabled():
             logutil.log("ping sweep skipped: killswitch is on")
+        elif not _single_flight(PING_LOCK):
+            pass  # every --status tick spawns one while the cache is stale
         else:
             happmeta.write_pings(_collect_ping_targets())
     elif args.update_reputation:

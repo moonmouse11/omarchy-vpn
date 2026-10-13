@@ -1142,6 +1142,18 @@ def _fresh_ping_entry(name: str) -> dict | None:
     return entry
 
 
+def ping_status(name: str) -> tuple[str, float | None]:
+    """("fresh" | "stale" | "none", ms). ms None = measured, didn't answer.
+    "stale": older than PING_MAX_AGE — e.g. under the killswitch, which
+    drops the sweep's direct connects so vpn_manager stops sweeping; the
+    last value is still worth showing, marked as old."""
+    entry = _read_pings().get(name)
+    if not isinstance(entry, dict) or "at" not in entry:
+        return "none", None
+    fresh = time.time() - entry.get("at", 0) <= PING_MAX_AGE
+    return ("fresh" if fresh else "stale"), entry.get("ms")
+
+
 def ping_mark(name: str) -> str:
     """'✓ 42 ms' / '⛔' / '' — the Happ GUI availability metaphor for any
     connection name in the shared ping cache (Happ, WireGuard, OpenVPN)."""

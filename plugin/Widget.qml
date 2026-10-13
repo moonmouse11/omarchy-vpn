@@ -33,6 +33,16 @@ Panel {
   property bool refreshPending: false
   property bool busy: false
 
+  // Server list (--servers, loaded when the panel opens and after a connect
+  // or disconnect — not on the 3 s tick). One flat row model: group headers,
+  // an "Auto — best ping" row per open group, servers.
+  property var serverGroups: []
+  property var expandedGroups: ({})
+  property string serverFilter: ""
+  property int serverCursor: -1
+  property string pendingKey: ""
+  readonly property var serverRows: buildServerRows(serverGroups, expandedGroups, serverFilter)
+
   readonly property var badges: panelData && panelData.badges instanceof Array ? panelData.badges : []
   // protected | unverified | at_risk | off | blocked — the lock only once
   // every check has passed (vpn_manager.panel_state)
@@ -72,6 +82,95 @@ Panel {
       if (issues.length > 0) lines.push(issues.join(" · "))
     }
     return lines.join("\n")
+  }
+
+  function rowKey(group, server) {
+    return String(group.id) + "\n" + (server ? String(server.name) : "")
+  }
+
+  // A group is open when the user opened it, else when it holds the active
+  // server; a filter opens every group with a match and hides the rest.
+  function buildServerRows(groups, expanded, filter) {
+    var q = String(filter || "").trim().toLowerCase()
+    var rows = []
+    for (var i = 0; i < groups.length; i++) {
+      var g = groups[i]
+      var servers = g.servers || []
+      if (q !== "") servers = servers.filter(function(s) {
+        var hay = String(s.name) + " " + String(s.protocol || "") + " " + String(s.country || "")
+        return hay.toLowerCase().indexOf(q) !== -1
+      })
+      if (q !== "" && servers.length === 0) continue
+      var open = q !== "" || (expanded[g.id] === undefined ? g.active === true : expanded[g.id] === true)
+      rows.push({ kind: "group", group: g, open: open, count: servers.length })
+      if (!open) continue
+      var best = null
+      for (var j = 0; j < servers.length; j++) {
+        var s = servers[j]
+        if (s.ping_ms === null || s.ping_ms === undefined || s.active) continue
+        if (!best || s.ping_ms < best.ping_ms) best = s
+      }
+      if (best && servers.length > 1) rows.push({ kind: "auto", group: g, server: best })
+      for (var k = 0; k < servers.length; k++) rows.push({ kind: "server", group: g, server: servers[k] })
+    }
+    return rows
+  }
+
+  function setGroupOpen(group, open) {
+    var next = {}
+    for (var key in expandedGroups) next[key] = expandedGroups[key]
+    next[group.id] = open
+    expandedGroups = next
+  }
+
+  function loadServers() {
+    if (!serversProc.running) serversProc.running = true
+  }
+
+  function runArgs(args) {
+    Quickshell.execDetached(["python3", root.backend].concat(args))
+  }
+
+  function activateServerRow(row) {
+    if (!row) return
+    if (row.kind === "group") { setGroupOpen(row.group, !row.open); return }
+    var g = row.group, s = row.server
+    pendingKey = rowKey(g, s)
+    if (row.kind === "server" && s.active) {
+      runArgs(["--disconnect", g.provider, s.name])
+      return
+    }
+    var args = ["--connect", g.provider, s.name]
+    if (g.subscription_id) args.push(g.subscription_id)
+    runArgs(args)
+  }
+
+  function moveServerCursor(dy) {
+    pointerGate.reset()
+    if (serverRows.length === 0) return
+    serverCursor = Math.max(0, Math.min(serverRows.length - 1, serverCursor + dy))
+    scrollRowIntoView(serverCursor)
+  }
+
+  // h/l on a group header: collapse/expand, like a file tree
+  function openCursorGroup(open) {
+    var row = serverRows[serverCursor]
+    if (row && row.kind === "group") setGroupOpen(row.group, open)
+  }
+
+  function scrollRowIntoView(index) {
+    if (!panelFlick || index < 0 || index >= serverColumn.children.length) return
+    Qt.callLater(function() {
+      var item = serverColumn.children[index]
+      if (!item) return
+      var top = item.mapToItem(panelFlick.contentItem, 0, 0).y
+      var bottom = top + item.height
+      var margin = Style.space(6)
+      var maxY = Math.max(0, panelFlick.contentHeight - panelFlick.height)
+      if (top < panelFlick.contentY + margin) panelFlick.contentY = Math.max(0, top - margin)
+      else if (bottom > panelFlick.contentY + panelFlick.height - margin)
+        panelFlick.contentY = Math.min(maxY, bottom + margin - panelFlick.height)
+    })
   }
 
   function refresh() {
@@ -145,13 +244,34 @@ Panel {
 
   onOpenedChanged: if (opened) {
     refresh()
+    loadServers()
+    serverCursor = -1
+    serverFilter = ""
+    if (panelFlick) panelFlick.contentY = 0
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+  onServerRowsChanged: {
+    pointerGate.reset()  // rows just moved under a still pointer — not a hover
+    if (serverCursor >= serverRows.length) serverCursor = serverRows.length - 1
+  }
+
+  // Hover moves the cursor only when the pointer itself moved: a rebuilt or
+  // scrolled list slides rows under a still pointer, and each one used to
+  // grab the cursor (the filter jumped it to row 27). Measured against the
+  // viewport, so scrolling isn't movement.
+  PointerMoveGate {
+    id: pointerGate
+    referenceItem: panelFlick
   }
 
   IpcHandler {
     target: root.ipcTarget
 
-    function refresh(): void { root.refresh() }
+    // the backend calls this after every connect/disconnect
+    function refresh(): void {
+      root.refresh()
+      if (root.opened) root.loadServers()
+    }
     function menu(): void { root.openMenu() }
     function open(): void { root.open() }
     function close(): void { root.close() }
@@ -169,6 +289,20 @@ Panel {
       if (!root.refreshPending) return
       root.refreshPending = false
       Qt.callLater(root.refresh)
+    }
+  }
+
+  Process {
+    id: serversProc
+    command: ["python3", root.backend, "--servers"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var data = null
+        try { data = JSON.parse(String(text || "")) } catch (e) {}
+        root.serverGroups = data && data.groups instanceof Array ? data.groups : []
+        root.pendingKey = ""
+      }
     }
   }
 
@@ -203,13 +337,20 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(560))
+    contentWidth: panel.fittedContentWidth(Style.space(400))
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(680))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onActivateRequested: root.openMenu()
+      onMoveRequested: function(dx, dy) {
+        if (dy !== 0) root.moveServerCursor(dy)
+        else root.openCursorGroup(dx > 0)
+      }
+      onActivateRequested: {
+        if (root.serverCursor >= 0) root.activateServerRow(root.serverRows[root.serverCursor])
+        else root.openMenu()
+      }
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
@@ -217,12 +358,24 @@ Panel {
         if (k === "t") root.togglePower()
         else if (k === "m") root.openMenu()
         else if (k === "d") root.runDnsTest()
-        else if (k === "r") root.refresh()
+        else if (k === "r") { root.refresh(); root.loadServers() }
+        else if (k === "/") filterField.forceActiveFocus()
       }
+
+      Flickable {
+        id: panelFlick
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: column.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
       Column {
         id: column
-        width: parent.width
+        width: panelFlick.width
         spacing: Style.space(12)
 
         Item {
@@ -353,6 +506,66 @@ Panel {
 
         PanelSeparator { foreground: root.foreground }
 
+        PanelSectionHeader {
+          text: "SERVERS"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+        }
+
+        TextField {
+          id: filterField
+          width: parent.width
+          foreground: root.foreground
+          placeholderText: "Filter servers — press /"
+          text: root.serverFilter
+          onTextChanged: {
+            root.serverFilter = text
+            root.serverCursor = text !== "" ? 0 : -1
+          }
+          onAccepted: {
+            root.activateServerRow(root.serverRows[Math.max(0, root.serverCursor)])
+          }
+          Keys.onPressed: function(event) {
+            if (event.key === Qt.Key_Down) { root.moveServerCursor(1); event.accepted = true }
+            else if (event.key === Qt.Key_Up) { root.moveServerCursor(-1); event.accepted = true }
+            else if (event.key === Qt.Key_Escape) {
+              if (text !== "") text = ""
+              keyCatcher.forceActiveFocus()
+              event.accepted = true
+            }
+          }
+        }
+
+        Text {
+          visible: root.serverRows.length === 0
+          width: parent.width
+          textFormat: Text.PlainText
+          text: root.serverFilter !== "" ? "No servers match." : (serversProc.running ? "Loading servers…" : "No servers.")
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          horizontalAlignment: Text.AlignHCenter
+        }
+
+        Column {
+          id: serverColumn
+          width: parent.width
+          spacing: Style.space(2)
+
+          Repeater {
+            model: root.serverRows
+            ServerRow {
+              required property var modelData
+              required property int index
+              width: serverColumn.width
+              row: modelData
+              rowIndex: index
+            }
+          }
+        }
+
+        PanelSeparator { foreground: root.foreground }
+
         CursorSurface {
           id: menuRow
           width: parent.width
@@ -382,7 +595,7 @@ Panel {
         Text {
           textFormat: Text.PlainText
           width: parent.width
-          text: "t toggle · m menu · d DNS test · r refresh · esc close"
+          text: "j/k move · enter connect · / filter · t toggle · m menu · d DNS · r refresh"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -390,6 +603,100 @@ Panel {
           wrapMode: Text.WordWrap
         }
       }
+      }
+    }
+  }
+
+  component ServerRow: CursorSurface {
+    id: serverRow
+    property var row: null
+    property int rowIndex: 0
+    readonly property bool isGroup: row && row.kind === "group"
+    readonly property bool isAuto: row && row.kind === "auto"
+    readonly property var server: row && row.server ? row.server : null
+    readonly property bool isActive: row && row.kind === "server" && server && server.active === true
+    readonly property bool pending: row && !isGroup && root.pendingKey === root.rowKey(row.group, server)
+    readonly property string leftText: {
+      if (!row) return ""
+      if (isGroup) return row.group.title
+      if (isAuto) return "Auto — best ping · " + server.name
+      return server.name
+    }
+    readonly property string rightText: {
+      if (!row) return ""
+      if (pending) return "…"
+      if (isGroup) return row.group.summary || (row.count + " servers")
+      return String(server.ping || "")
+    }
+
+    hasCursor: root.serverCursor === rowIndex
+    current: isActive
+    foreground: root.foreground
+    implicitHeight: rowInner.implicitHeight + (isGroup ? Style.spacing.lg : Style.spacing.md)
+
+    Row {
+      id: rowInner
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(6)
+      anchors.rightMargin: Style.space(8)
+      spacing: Style.space(8)
+
+      Text {
+        id: rowGlyph
+        // nf-fa-caret_down / caret_right / bolt / circle
+        text: serverRow.isGroup ? (serverRow.row.open ? "\uf0d7" : "\uf0da")
+          : (serverRow.isAuto ? "\uf0e7" : (serverRow.isActive ? "\uf111" : ""))
+        color: serverRow.isActive || serverRow.isGroup ? root.foreground : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: serverRow.isActive ? Style.font.caption : Style.font.body
+        width: Style.space(16)
+        horizontalAlignment: Text.AlignHCenter
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        text: serverRow.leftText
+        color: serverRow.isAuto ? root.dim : root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: serverRow.isGroup ? Style.font.body : Style.font.bodySmall
+        font.bold: serverRow.isGroup || serverRow.isActive
+        elide: Text.ElideRight
+        width: parent.width - rowGlyph.width - rightLabel.width - parent.spacing * 2
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        id: rightLabel
+        textFormat: Text.PlainText
+        text: serverRow.rightText
+        color: serverRow.server && (serverRow.server.stale || serverRow.server.ping_ms === null)
+          ? root.dim : (serverRow.isGroup ? root.dim : root.foreground)
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    MouseArea {
+      id: rowMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onPositionChanged: function(mouse) {
+        if (pointerGate.moved(rowMouse, mouse)) root.serverCursor = serverRow.rowIndex
+      }
+      onClicked: root.activateServerRow(serverRow.row)
+    }
+
+    PanelToolTip {
+      visible: rowMouse.containsMouse && !serverRow.isGroup && serverRow.server !== null
+      text: serverRow.server
+        ? (serverRow.isActive ? "Disconnect" : "Connect") + (serverRow.server.protocol ? " · " + serverRow.server.protocol : "")
+        : ""
+      fontFamily: root.fontFamily
     }
   }
 }

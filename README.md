@@ -124,9 +124,35 @@ The shell and Hyprland pick everything up live — no restart needed.
 
 Widget settings (`bar.layout.right[]` entry in `~/.config/omarchy/shell.json`, or
 `omarchy bar set omarchy-vpn <key> <value>`): `interval` (seconds, default 3),
-`showLabel` (`false` = icon only). Clicks: left = panel, right = menu, middle = refresh.
-Panel keys: `j`/`k` move, `Enter` connect/disconnect, `h`/`l` collapse/expand a group,
-`/` filter (`Esc` leaves it), `t` toggle, `m` menu, `d` DNS leak test, `r` refresh, `Esc` close.
+`showLabel` (`false` = icon only), `labelFormat` (below). Clicks: left = panel, right = menu,
+middle = refresh. Panel keys: `j`/`k` move, `Enter` connect/disconnect, `h`/`l` collapse/expand a
+group, `/` filter (`Esc` leaves it), `t` toggle, `m` menu, `d` DNS leak test, `f` cycle label
+presets, `r` refresh, `Esc` close.
+
+#### Bar label template
+
+`labelFormat` works like the clock's `format`: a template with placeholders, default
+`{label}`. Set it with `omarchy bar set omarchy-vpn labelFormat '{server} · {ping}'`, or press `f`
+in the panel to cycle the presets — the choice is saved to `shell.json`.
+
+| Placeholder | Example |
+|---|---|
+| `{label}` | `Happ · Unlock VPN: 🇩🇪 Germany` |
+| `{provider}` · `{subscription}` · `{server}` | `Happ` · `Unlock VPN` · `🇩🇪 Germany` |
+| `{count}` | `1` — active connections |
+| `{state}` | `Protected` / `Unverified` / `At risk` |
+| `{exit_ip}` · `{exit_country}` · `{exit_flag}` | `31.77.129.6` · `DE` · `🇩🇪` |
+| `{rate}` · `{down}` · `{up}` | `↓ 260 B/s ↑ 321 B/s` · `260 B/s` · `321 B/s` |
+| `{total}` · `{total_down}` · `{total_up}` | session traffic of the tunnel interface |
+| `{ping}` | `47 ms` — TCP RTT to the server, measured around the tunnel |
+| `{protocol}` | `vless/grpc/reality` (Happ), else the provider |
+| `{interface}` | `happ-xray` |
+| `{sub_traffic}` · `{sub_expire}` | `0 GB / 75 GB` · `20.10.2026` — the subscription panel's |
+| `{dns}` · `{ipv6}` · `{killswitch}` | the panel badges: `DNS private`, `IPv6 blocked`, `Kill switch on` |
+
+A placeholder with no value right now (no ping yet, no subscription for WireGuard) disappears
+with its separator: `{subscription}: {server}` → `nl`, `{server} ({ping})` → `🇩🇪 Germany`. When
+nothing is left, the label falls back to `{label}`. An unknown placeholder stays as typed.
 
 ### Happ setup (only if no servers show up)
 

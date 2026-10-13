@@ -1,0 +1,199 @@
+"""The panel's server list (--servers) and its connect/disconnect actions."""
+
+import time
+
+import pytest
+
+import config
+import happmeta
+import vpn_manager
+from providers.base import ActionResult, VPNConnection
+
+
+class FakeProvider:
+    def __init__(self, name, conns):
+        self.name = name
+        self._conns = conns
+        self.connected, self.disconnected = [], []
+
+    def connections(self):
+        return self._conns
+
+    def connect(self, conn):
+        self.connected.append(conn)
+        return ActionResult(True, f"connected {conn.name}")
+
+    def disconnect(self, conn):
+        self.disconnected.append(conn)
+        return ActionResult(True, f"disconnected {conn.name}")
+
+
+@pytest.fixture
+def env(monkeypatch, tmp_path):
+    """Pings from a fake cache; no background sweeps or subscription fetches."""
+    pings = {}
+    monkeypatch.setattr(happmeta, "_read_pings", lambda: pings)
+    monkeypatch.setattr(happmeta, "request_subscription_update", lambda: None)
+    monkeypatch.setattr(happmeta, "request_ping_update", lambda: None)
+    monkeypatch.setattr(vpn_manager.config, "load_config", config.Config)
+    return pings
+
+
+def test_ping_status_fresh_stale_none(env):
+    now = time.time()
+    env["a"] = {"ms": 42.0, "at": now}
+    env["b"] = {"ms": 42.0, "at": now - happmeta.PING_MAX_AGE - 1}
+    env["c"] = {"ms": None, "at": now}
+    assert happmeta.ping_status("a") == ("fresh", 42.0)
+    assert happmeta.ping_status("b") == ("stale", 42.0)
+    assert happmeta.ping_status("c") == ("fresh", None)
+    assert happmeta.ping_status("nope") == ("none", None)
+
+
+@pytest.mark.parametrize(
+    ("entry", "ping", "stale"),
+    [
+        ({"ms": 46.6, "fresh": True}, "47 ms", False),
+        ({"ms": 46.6, "fresh": False}, "~47 ms", True),  # killswitch on: no sweep, old value
+        ({"ms": None, "fresh": True}, "timeout", False),
+        ({"ms": None, "fresh": False}, "timeout", True),  # an old timeout is just dimmed
+        (None, "", False),  # never swept: say nothing
+    ],
+)
+def test_server_row_ping(env, entry, ping, stale):
+    if entry is not None:
+        age = 0 if entry["fresh"] else happmeta.PING_MAX_AGE + 1
+        env["🇵🇱 Польша"] = {"ms": entry["ms"], "at": time.time() - age}
+    row = vpn_manager._server_row({"name": "🇵🇱 Польша", "active": False, "protocol": "vless"})
+    assert (row["ping"], row["stale"]) == (ping, stale)
+    assert row["country"] == "pl"  # the filter finds Russian names by code
+
+
+def test_server_list_groups_happ_per_subscription_and_other_providers(env, monkeypatch):
+    env["🇩🇪 DE"] = {"ms": 40.0, "at": time.time()}
+    env["🇳🇱 NL"] = {"ms": 60.0, "at": time.time()}
+    happ = FakeProvider("Happ", [])
+    wg = FakeProvider("WireGuard", [VPNConnection(name="home", provider="WireGuard", active=True)])
+    empty = FakeProvider("OpenVPN", [])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [happ, wg, empty])
+    monkeypatch.setattr(
+        vpn_manager,
+        "happ_server_groups",
+        lambda provider: (
+            [],
+            {
+                "Unlock VPN": [
+                    {"name": "🇩🇪 DE", "active": True, "provider_id": "15", "protocol": "vless"},
+                    {"name": "🇳🇱 NL", "active": False, "provider_id": "15", "protocol": "ss"},
+                ]
+            },
+        ),
+    )
+    groups = vpn_manager.server_list()["groups"]
+    assert [(g["provider"], g["title"], g["active"]) for g in groups] == [
+        ("Happ", "Unlock VPN", True),
+        ("WireGuard", "WireGuard", True),
+    ]  # a provider with nothing to show is left out
+    unlock = groups[0]
+    assert unlock["subscription_id"] == "15"
+    assert unlock["summary"] == "✓ 2/2 · 60 ms"  # median of reachable
+    assert [(r["name"], r["ping"], r["active"]) for r in unlock["servers"]] == [
+        ("🇩🇪 DE", "40 ms", True),
+        ("🇳🇱 NL", "60 ms", False),
+    ]
+
+
+def test_server_list_hides_hidden_providers_and_survives_a_broken_one(env, monkeypatch):
+    class Broken(FakeProvider):
+        def connections(self):
+            raise OSError("boom")
+
+    wg = FakeProvider("WireGuard", [VPNConnection(name="home", provider="WireGuard", active=False)])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [Broken("OpenVPN", []), wg])
+    monkeypatch.setattr(vpn_manager.logutil, "log", lambda msg: None)
+    monkeypatch.setattr(
+        vpn_manager.config, "load_config", lambda: config.Config(providers={"wireguard": False})
+    )
+    assert vpn_manager.server_list()["groups"] == []
+
+
+def _guarded(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        vpn_manager,
+        "guarded_connect",
+        lambda p, c: calls.append(("up", p.name, c)) or ActionResult(True, "ok"),
+    )
+    monkeypatch.setattr(
+        vpn_manager,
+        "guarded_disconnect",
+        lambda p, c: calls.append(("down", p.name, c)) or ActionResult(True, "ok"),
+    )
+    return calls
+
+
+def test_panel_connect_happ_carries_the_subscription(monkeypatch):
+    calls = _guarded(monkeypatch)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("Happ", [])])
+    monkeypatch.setattr(happmeta, "providers", lambda: {"15": {"name": "Unlock VPN", "url": "u"}})
+    assert vpn_manager.panel_connect("Happ", "🇩🇪 DE", "15").success
+    _, provider, conn = calls[0]
+    assert (provider, conn.name, conn.subscription_id, conn.subscription_name) == (
+        "Happ",
+        "🇩🇪 DE",
+        "15",
+        "Unlock VPN",
+    )
+
+
+def test_panel_connect_other_provider_uses_its_connection(monkeypatch):
+    calls = _guarded(monkeypatch)
+    home = VPNConnection(name="home", provider="WireGuard", active=False, config_path="/x")
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("WireGuard", [home])])
+    assert vpn_manager.panel_connect("WireGuard", "home").success
+    assert calls == [("up", "WireGuard", home)]
+    assert not vpn_manager.panel_connect("WireGuard", "gone").success
+    assert not vpn_manager.panel_connect("Nope", "home").success
+
+
+def test_panel_disconnect_matches_by_name_or_any_happ(monkeypatch):
+    calls = _guarded(monkeypatch)
+    happ_conn = VPNConnection(name="Germany", provider="Happ", active=True)  # GUI name, no emoji
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("Happ", [happ_conn])])
+    assert vpn_manager.panel_disconnect("Happ", "🇩🇪 Germany").success
+    assert calls == [("down", "Happ", happ_conn)]
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("WireGuard", [])])
+    assert not vpn_manager.panel_disconnect("WireGuard", "home").success
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["--connect", "Happ", "🇩🇪 DE", "15"], ("connect", ("Happ", "🇩🇪 DE", "15"))),
+        (["--connect", "WireGuard", "home"], ("connect", ("WireGuard", "home"))),
+        (["--disconnect", "WireGuard", "home"], ("disconnect", ("WireGuard", "home"))),
+    ],
+)
+def test_panel_cli_connect_disconnect(monkeypatch, argv, expected):
+    seen, reported = [], []
+    monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", *argv])
+    monkeypatch.setattr(
+        vpn_manager,
+        "panel_connect",
+        lambda *a: seen.append(("connect", a)) or ActionResult(True, "up"),
+    )
+    monkeypatch.setattr(
+        vpn_manager,
+        "panel_disconnect",
+        lambda *a: seen.append(("disconnect", a)) or ActionResult(True, "down"),
+    )
+    monkeypatch.setattr(vpn_manager, "_report", reported.append)
+    vpn_manager.main()
+    assert seen == [expected]
+    assert len(reported) == 1
+
+
+def test_panel_cli_connect_rejects_wrong_arity(monkeypatch):
+    monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", "--connect", "Happ"])
+    with pytest.raises(SystemExit):
+        vpn_manager.main()

@@ -23,6 +23,7 @@ import contextlib
 import json
 import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -159,23 +160,79 @@ def resume_for_happ(extra_ips: list[str] | None = None) -> ActionResult | None:
     return None
 
 
-def resolve_endpoint_ips(targets: list[tuple[str, str, int]]) -> list[str]:
+RESOLVE_TIMEOUT = 4.0  # seconds for all lookups together
+RESOLVED_CACHE = Path.home() / ".cache/vpn-manager/resolved-ips.json"
+
+
+def resolve_endpoint_ips(
+    targets: list[tuple[str, str, int]], timeout: float = RESOLVE_TIMEOUT
+) -> list[str]:
     """IPv4 addresses for (name, host, port) targets, sorted, deduplicated.
 
-    Unresolvable hosts are skipped with a log line — a dead endpoint must
-    not abort the whole whitelist. IPv6 endpoints are skipped (the nft
-    ruleset only has `ip daddr` v4 matches; a v6 literal would fail the
-    whole ruleset load)."""
-    ips: set[str] = set()
+    All hosts are looked up in parallel within `timeout`. A switch away from
+    a dead server resolves through that dead tunnel (the system resolver's
+    route goes into it): glibc then hung ~2 min per host, one after another,
+    and held the switch for 15 minutes (2026-10-13). A host that doesn't
+    answer in time falls back to its last known address (RESOLVED_CACHE), so
+    the whitelist still has it; one never resolved is skipped with a log
+    line — a dead endpoint must not abort the whole whitelist. IPv6 endpoints
+    are skipped (the nft ruleset only has `ip daddr` v4 matches; a v6 literal
+    would fail the whole ruleset load).
+
+    Lookup threads are daemons: getaddrinfo can't be cancelled, and a stuck
+    one must not hold the process open after the switch is done."""
+    hosts: dict[str, str] = {}
     for name, host, _port in targets:
+        hosts.setdefault(host, name)
+    answers: dict[str, str | OSError] = {}
+
+    def lookup(host: str) -> None:
         try:
             infos = socket.getaddrinfo(host, None, socket.AF_INET)
         except OSError as e:
-            logutil.log(f"killswitch: cannot resolve {host} ({name}): {e}")
-            continue
+            answers[host] = e
+            return
         if infos:
-            ips.add(str(infos[0][4][0]))
+            answers[host] = str(infos[0][4][0])
+
+    threads = [threading.Thread(target=lookup, args=(h,), daemon=True) for h in hosts]
+    for t in threads:
+        t.start()
+    deadline = time.monotonic() + timeout
+    for t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+    answers = dict(answers)  # late answers from stuck threads don't count
+
+    known = _read_resolved()
+    ips: set[str] = set()
+    fresh: dict[str, str] = {}
+    for host, name in hosts.items():
+        answer = answers.get(host)
+        if isinstance(answer, str):
+            ips.add(answer)
+            if answer != host:
+                fresh[host] = answer
+            continue
+        why = answer if isinstance(answer, OSError) else f"no answer in {timeout:g} s"
+        if host in known:
+            ips.add(known[host])
+            logutil.log(f"killswitch: {host} ({name}): {why}; using last known {known[host]}")
+        else:
+            logutil.log(f"killswitch: cannot resolve {host} ({name}): {why}")
+    if fresh:
+        with contextlib.suppress(OSError):
+            fsutil.write_json_atomic(RESOLVED_CACHE, {**known, **fresh})
     return sorted(ips)
+
+
+def _read_resolved() -> dict[str, str]:
+    try:
+        data = json.loads(RESOLVED_CACHE.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
 
 
 def _sudo(*args: str) -> ActionResult:

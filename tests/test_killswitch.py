@@ -182,6 +182,39 @@ def test_resolve_endpoint_ips(monkeypatch):
     assert killswitch.resolve_endpoint_ips([("v6", "v6-only.example", 1)]) == []
 
 
+def test_resolve_endpoint_ips_dead_dns_is_bounded_and_falls_back(monkeypatch):
+    """A switch away from a dead tunnel resolves through it: lookups hang.
+    The whole batch must give up within the timeout (it used to take ~2 min
+    per host, one after another) and use the last address that worked."""
+    import socket
+    import threading
+    import time
+
+    monkeypatch.setattr(killswitch.logutil, "log", lambda msg: None)
+    dns_alive = True
+    release = threading.Event()
+
+    def fake_getaddrinfo(host, port, family):
+        if not dns_alive:
+            release.wait(5)  # stuck in the resolver
+            raise OSError("Temporary failure in name resolution")
+        return [(socket.AF_INET, 0, 0, "", ({"a.example": "1.1.1.1"}.get(host, "2.2.2.2"), 0))]
+
+    monkeypatch.setattr(killswitch.socket, "getaddrinfo", fake_getaddrinfo)
+    targets = [("a", "a.example", 1), ("b", "b.example", 1)]
+    assert killswitch.resolve_endpoint_ips(targets) == ["1.1.1.1", "2.2.2.2"]  # remembered
+
+    dns_alive = False
+    targets.append(("never", "never.example", 1))
+    started = time.monotonic()
+    try:
+        ips = killswitch.resolve_endpoint_ips(targets, timeout=0.3)
+    finally:
+        release.set()
+    assert time.monotonic() - started < 2  # parallel, bounded — not per host
+    assert ips == ["1.1.1.1", "2.2.2.2"]  # last known; the never-resolved host is skipped
+
+
 def test_resume_for_happ_extra_ips_bypass_detect(monkeypatch, tmp_path):
     """Happ connect under killswitch: the caller passes the resolved server
     IP (detect can't see the session before connect); rules rebuild around

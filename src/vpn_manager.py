@@ -171,6 +171,78 @@ def _dns_badge(conn: VPNConnection) -> dict:
 PROTECTION_CHECKS = ("exit", "dns", "ipv6")
 
 
+# The bar label's labelFormat placeholders (plugin/Widget.qml fills them).
+LABEL_FIELDS = (
+    "label", "provider", "subscription", "server", "count", "state",
+    "exit_ip", "exit_country", "exit_flag",
+    "rate", "down", "up", "total", "total_down", "total_up",
+    "ping", "protocol", "interface", "sub_traffic", "sub_expire",
+    "dns", "ipv6", "killswitch",
+)  # fmt: skip
+
+
+def _split_arrows(text: str) -> tuple[str, str]:
+    """ "↓ 3 KiB/s ↑ 4 KiB/s" -> ("3 KiB/s", "4 KiB/s"); ("", "") when absent."""
+    down, _, up = text.partition("↑")
+    return down.replace("↓", "").strip(), up.strip()
+
+
+def label_fields(
+    active: list[VPNConnection], title: str, badges: list[dict], *, rate: str, total: str, cfg
+) -> dict[str, str]:
+    """Every value a bar label template can show, as display strings — ""
+    when unknown, so the template drops it with its separator. Cache reads
+    only: the 3 s tick pays for these (the subscription parse is memoized)."""
+    fields = dict.fromkeys(LABEL_FIELDS, "")
+    fields["state"] = title
+    by_id = {b["id"]: b["label"] for b in badges}
+    fields["killswitch"] = by_id.get("killswitch", "")
+    if not active:
+        return fields
+    first = active[0]
+    fields.update(
+        label=first.label,
+        provider=first.provider,
+        subscription=first.subscription_name or "",
+        server=first.name,
+        count=str(len(active)),
+        interface=first.interface or "",
+        dns=by_id.get("dns", ""),
+        ipv6=by_id.get("ipv6", ""),
+        rate=rate,
+        total=total,
+    )
+    fields["down"], fields["up"] = _split_arrows(rate)
+    fields["total_down"], fields["total_up"] = _split_arrows(total)
+    cache = ipinfo.read_cache()
+    if cache and ipinfo.is_fresh(cache, first.name, cfg.exit_ip_max_age):
+        country = (cache.get("country_code") or "").upper()
+        fields.update(
+            exit_ip=str(cache.get("ip") or ""),
+            exit_country=country,
+            exit_flag=ipinfo.flag_emoji(country),
+        )
+    ms = happmeta.ping_ms(first.name)
+    if ms is not None:
+        fields["ping"] = f"{round(ms)} ms"
+    fields["protocol"] = first.provider
+    if first.provider == "Happ":
+        server_cfg = happmeta.resolve_config(
+            first.name, allow_fetch=False, provider_id=first.subscription_id
+        )
+        if server_cfg:
+            fields["protocol"] = happmeta.protocol_label(server_cfg) or first.provider
+    info = happmeta.subscription_info(first.subscription_id) if first.subscription_id else None
+    if info:
+        used = happmeta.fmt_traffic(info.get("download"))
+        if used != "?":
+            fields["sub_traffic"] = f"{used} / {happmeta.fmt_limit(info.get('total'))}"
+        expire = happmeta.fmt_expire(info.get("expire"))
+        if expire != "?":
+            fields["sub_expire"] = expire
+    return fields
+
+
 def panel_state(active: list[VPNConnection], cfg) -> dict:
     """What the bar panel draws: a hero (state, connection, exit) and the
     protection badges. Built from caches and cheap probes only — it rides
@@ -195,6 +267,14 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
             "rate": "",
             "total": "",
             "badges": [ks_badge],
+            "fields": label_fields(
+                [],
+                "Traffic blocked" if ks_on else "Not protected",
+                [ks_badge],
+                rate="",
+                total="",
+                cfg=cfg,
+            ),
         }
     first = active[0]
     badges = [
@@ -221,6 +301,8 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
         state, title = "protected", "Protected"
     else:
         state, title = "unverified", "Unverified"
+    rate = (iface_rate(first.interface) or "") if first.interface else ""
+    total = (iface_traffic(first.interface) or "") if first.interface else ""
     return {
         "connected": True,
         "state": state,
@@ -228,9 +310,10 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
         "meta": meta,
         "detail": detail,
         "exit_ip": exit_ip,
-        "rate": (iface_rate(first.interface) or "") if first.interface else "",
-        "total": (iface_traffic(first.interface) or "") if first.interface else "",
+        "rate": rate,
+        "total": total,
         "badges": badges,
+        "fields": label_fields(active, title, badges, rate=rate, total=total, cfg=cfg),
     }
 
 

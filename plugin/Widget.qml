@@ -24,6 +24,22 @@ Panel {
   readonly property string backend: String(setting("backend",
     Quickshell.env("HOME") + "/.local/share/omarchy-vpn/src/vpn_manager.py"))
   readonly property bool showLabel: setting("showLabel", true) !== false
+  // Like the clock's `format`: a template in this widget's shell.json entry,
+  // placeholders = vpn_manager.LABEL_FIELDS (filled by --status as
+  // panel.fields); `f` in the panel cycles labelFormats and writes it back
+  // (not `l`: PanelKeyCatcher turns h/j/k/l into moves before textKey).
+  readonly property string labelFormat: String(setting("labelFormat", "{label}"))
+  readonly property var labelFormats: [
+    "{label}",
+    "{subscription}: {server}",
+    "{server}",
+    "{server} · {ping}",
+    "{exit_flag} {exit_ip}",
+    "{state}",
+    "{server} · ↓ {down} ↑ {up}",
+    "{protocol} · {server}",
+    "{sub_traffic} · {sub_expire}"
+  ]
   readonly property bool vertical: bar ? bar.vertical : false
 
   property bool connected: false
@@ -72,6 +88,57 @@ Panel {
       if (issues.length > 0) lines.push(issues.join(" · "))
     }
     return lines.join("\n")
+  }
+
+  readonly property string barLabel: connected ? formatLabel(labelFormat) : ""
+
+  // "{subscription}: {server}" -> "ARTEMIDA: 🇩🇪 Germany 1". An empty
+  // placeholder takes one separator with it: the one before it when a value
+  // precedes it ("{server} · {ping}" -> "server"), else the one after
+  // ("{subscription}: {server}" -> "server" for WireGuard). A bracket pair
+  // around it goes together ("{server} ({ping})" -> "server"). An unknown
+  // placeholder stays as typed, so a typo shows.
+  function formatLabel(fmt) {
+    var values = panelData.fields || {}
+    var closers = { "(": ")", "[": "]", "«": "»" }
+    // even indexes: literal text, odd: {placeholder}
+    var parts = String(fmt).split(/(\{[a-z0-9_]+\})/)
+    var shown = []
+    for (var i = 1; i < parts.length; i += 2) {
+      var key = parts[i].slice(1, -1)
+      shown[i] = values[key] === undefined ? parts[i] : String(values[key] || "")
+    }
+    for (var j = 1; j < parts.length; j += 2) {
+      if (shown[j] !== "") continue
+      var before = parts[j - 1]
+      var after = parts[j + 1]
+      var close = closers[before.slice(-1)]
+      if (close && after.charAt(0) === close) {
+        parts[j - 1] = before.slice(0, -1).replace(/\s+$/, "")
+        parts[j + 1] = after.slice(1)
+        continue
+      }
+      var valueBefore = false
+      for (var k = j - 2; k > 0; k -= 2) if (shown[k] !== "") { valueBefore = true; break }
+      if (valueBefore) parts[j - 1] = ""
+      else parts[j + 1] = ""
+    }
+    var out = ""
+    for (var n = 0; n < parts.length; n++) out += n % 2 === 1 ? shown[n] : parts[n]
+    out = out.trim()
+    return out !== "" ? out : label
+  }
+
+  function cycleLabelFormat() {
+    var i = labelFormats.indexOf(labelFormat)
+    var entry = { id: root.moduleName }
+    for (var key in root.settings) if (key !== "id") entry[key] = root.settings[key]
+    entry.labelFormat = labelFormats[(i + 1) % labelFormats.length]
+    // local first so the label changes on the key press; the shell.json
+    // write comes back through the bar as the same value (as the clock does)
+    root.settings = entry
+    if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
+      root.bar.shell.updateEntryInline(root.moduleName, entry)
   }
 
   function refresh() {
@@ -185,7 +252,7 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: root.stateGlyph
-      + (root.showLabel && root.label !== "" && !root.vertical ? "  " + root.label : "")
+      + (root.showLabel && root.barLabel !== "" && !root.vertical ? "  " + root.barLabel : "")
     tooltipText: root.opened ? "" : root.hoverText
     dimmed: !root.connected
     fontSize: Style.font.caption
@@ -218,6 +285,7 @@ Panel {
         else if (k === "m") root.openMenu()
         else if (k === "d") root.runDnsTest()
         else if (k === "r") root.refresh()
+        else if (k === "f") root.cycleLabelFormat()
       }
 
       Column {
@@ -382,7 +450,7 @@ Panel {
         Text {
           textFormat: Text.PlainText
           width: parent.width
-          text: "t toggle · m menu · d DNS test · r refresh · esc close"
+          text: "t toggle · m menu · d DNS · f label · r refresh · esc"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

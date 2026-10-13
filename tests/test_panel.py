@@ -35,6 +35,14 @@ def env(monkeypatch):
     monkeypatch.setattr(vpn_manager.reputation, "country_of", lambda name: None)
     monkeypatch.setattr(vpn_manager, "iface_rate", lambda iface: "↓ 3 KiB/s ↑ 4 KiB/s")
     monkeypatch.setattr(vpn_manager, "iface_traffic", lambda iface: "↓ 1 MiB  ↑ 2 MiB")
+    monkeypatch.setattr(vpn_manager.happmeta, "ping_ms", lambda name: state.get("ping"))
+    monkeypatch.setattr(
+        vpn_manager.happmeta,
+        "resolve_config",
+        lambda name, allow_fetch, provider_id: state.get("cfg"),
+    )
+    monkeypatch.setattr(vpn_manager.happmeta, "protocol_label", lambda cfg: "vless/grpc/reality")
+    monkeypatch.setattr(vpn_manager.happmeta, "subscription_info", lambda sub_id: state.get("info"))
     return state
 
 
@@ -284,3 +292,77 @@ def test_status_rate_is_read_before_the_tick_saves_a_sample(env, monkeypatch):
         vpn_manager, "iface_rate", lambda iface: "" if sampled else "↓ 3 KiB/s ↑ 4 KiB/s"
     )
     assert vpn_manager.get_status()["panel"]["rate"] == "↓ 3 KiB/s ↑ 4 KiB/s"
+
+
+def test_label_fields_carry_every_placeholder(env):
+    env.update(
+        ping=47.4,
+        cfg={"outbounds": []},
+        info={"download": 6.5 * 2**30, "total": 0, "expire": 1797232846},
+    )
+    fields = _panel([DE_SERVER])["fields"]
+    assert set(fields) == set(vpn_manager.LABEL_FIELDS)
+    assert fields == {
+        "label": "Happ · ARTEMIDA: 🇩🇪 Germany 1",
+        "provider": "Happ",
+        "subscription": "ARTEMIDA",
+        "server": "🇩🇪 Germany 1",
+        "count": "1",
+        "state": "Unverified",
+        "exit_ip": "2.27.59.210",
+        "exit_country": "DE",
+        "exit_flag": "🇩🇪",
+        "rate": "↓ 3 KiB/s ↑ 4 KiB/s",
+        "down": "3 KiB/s",
+        "up": "4 KiB/s",
+        "total": "↓ 1 MiB  ↑ 2 MiB",
+        "total_down": "1 MiB",
+        "total_up": "2 MiB",
+        "ping": "47 ms",
+        "protocol": "vless/grpc/reality",
+        "interface": "happ-xray",
+        "sub_traffic": "6.5 GB / ∞",
+        "sub_expire": "14.12.2026",
+        "dns": "DNS: untested",
+        "ipv6": "IPv6 blocked",
+        "killswitch": "Kill switch off",
+    }
+
+
+def test_label_fields_unknown_values_are_empty(env):
+    """No ping, no Happ config, no panel info, exit not looked up yet:
+    empty strings, which the template drops with their separators."""
+    env["fresh"] = False
+    plain = VPNConnection(name="nl", provider="WireGuard", active=True)
+    fields = _panel([plain])["fields"]
+    assert fields["protocol"] == "WireGuard"  # non-Happ: the provider is the protocol
+    for key in (
+        "subscription",
+        "exit_ip",
+        "exit_flag",
+        "ping",
+        "sub_traffic",
+        "sub_expire",
+        "interface",
+        "rate",
+        "down",
+    ):
+        assert fields[key] == "", key
+
+
+def test_label_fields_when_disconnected(env):
+    fields = _panel([])["fields"]
+    assert fields["state"] == "Not protected"
+    assert fields["killswitch"] == "Kill switch off"
+    assert fields["server"] == fields["label"] == ""
+
+
+def test_manifest_lists_exactly_the_label_fields():
+    """The widget settings' description is the user's placeholder reference."""
+    import json
+    import re
+    from pathlib import Path
+
+    manifest = json.loads((Path(__file__).parent.parent / "plugin/manifest.json").read_text())
+    entry = next(e for e in manifest["barWidget"]["schema"] if e["key"] == "labelFormat")
+    assert re.findall(r"\{([a-z0-9_]+)\}", entry["description"]) == list(vpn_manager.LABEL_FIELDS)

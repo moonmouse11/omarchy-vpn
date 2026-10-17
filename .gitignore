@@ -62,5 +62,6 @@ docs
 .vibe-wise/
 .agents/
 skills-lock.json
+.pi/
 
 Backlog.md

@@ -433,13 +433,14 @@ def _forward_chain(rules: str) -> list[str]:
 def test_forwarded_traffic_leaves_only_through_the_tunnel(real_subprocess):
     """CVE-2020-15590 (PIA): Docker/VM traffic is forwarded, never hits the
     output hook. Out only into the tunnel, back only on established flows, DNS
-    dropped before the LAN accept (Mullvad's order) so the router isn't asked."""
+    dropped (53 and DoT 853) before the LAN accept (Mullvad's order) so the router isn't asked."""
     rules = _forward_chain(_rules("198.51.100.30", "--no-conf", "--iface", "wg0"))
     assert rules[0] == "type filter hook forward priority 0; policy drop;"
+    assert 'iifname "happ-*" ct state established,related accept' in rules
     assert 'iifname "wg0" ct state established,related accept' in rules
     assert 'oifname "wg0" accept' in rules
     assert not any(r.startswith("iifname") and "established" not in r for r in rules)
-    dns = rules.index("meta l4proto { tcp, udp } th dport 53 drop")
+    dns = rules.index("meta l4proto { tcp, udp } th dport { 53, 853 } drop")
     lan = next(i for i, r in enumerate(rules) if r.startswith("ip daddr { 10.0.0.0/8"))
     assert rules.index('oifname "happ-*" accept') < dns < lan
     # the server whitelist is for the host's own VPN processes, not containers

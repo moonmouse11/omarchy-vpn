@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # happ-killswitch — killswitch for VPN connections (Happ, WireGuard, OpenVPN).
 #
-# Blocks ALL outbound traffic except:
+# Blocks ALL outbound traffic (forwarded traffic too, see below) except:
 #   - packets carrying xray's SO_MARK (Happ/Keys proxy outbounds, see
 #     happmeta.KILLSWITCH_MARK) — the tunnel itself, whatever its servers
 #   - VPN tunnels (happ-*, plus interfaces passed via --iface)
@@ -14,6 +14,9 @@
 #   - local networks (LAN, router, DHCP)
 #   - VPN server IPs from the config + IPs passed as arguments (the Happ
 #     server from ~/.config/happ-killswitch.conf + resolved WG/OpenVPN endpoints)
+#
+# Forwarded traffic (Docker, VMs — routed, never seen by the output hook)
+# leaves only into the same tunnels; DNS (53, 853) is dropped before the LAN.
 #
 # Net effect: tunnel up = internet works; tunnel down = no internet at all.
 #
@@ -164,6 +167,11 @@ ruleset() {
         done
     fi
 
+    # shared by output and forward
+    local lan_rules='    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } accept
+    ip daddr 224.0.0.0/4 accept'
+    local link_rules='    ip6 daddr { fe80::/10, ff00::/8 } accept'
+
     cat <<EOF
 table inet happ-ks
 delete table inet happ-ks
@@ -174,24 +182,22 @@ table inet happ-ks {
     oifname "lo"        accept
     meta mark $XRAY_MARK accept
     oifname "happ-*"    accept
-$iface_rules$dns_rules$cgroup_rules$addrs    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } accept
-    ip daddr 224.0.0.0/4 accept
+$iface_rules$dns_rules$cgroup_rules$addrs$lan_rules
     ip daddr 255.255.255.255 udp dport 67 accept
-    ip6 daddr { fe80::/10, ff00::/8 } accept
+$link_rules
   }
   # Containers/VMs (Docker, libvirt) are routed, not sent: their traffic never
   # reaches the output hook (CVE-2020-15590, PIA). Mullvad's layout: out only
   # into the tunnel, back only on established flows, DNS dropped before the
-  # LAN accept so a container can't ask the router either.
+  # LAN accept (853: DoT, as in output) so a container can't ask the router.
   chain forward {
     type filter hook forward priority 0; policy drop;
 
     iifname "happ-*" ct state established,related accept
     oifname "happ-*" accept
-$fwd_iface_rules    meta l4proto { tcp, udp } th dport 53 drop
-    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } accept
-    ip daddr 224.0.0.0/4 accept
-    ip6 daddr { fe80::/10, ff00::/8 } accept
+$fwd_iface_rules    meta l4proto { tcp, udp } th dport { 53, 853 } drop
+$lan_rules
+$link_rules
   }
 }
 EOF

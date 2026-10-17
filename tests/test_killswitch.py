@@ -343,13 +343,13 @@ def test_ruleset_replaces_the_table_in_one_transaction(real_subprocess):
 def test_dns_leaves_only_to_the_given_resolvers(real_subprocess):
     """No more port 53 to anywhere: only --dns resolvers (during a connect)."""
     strict = _rules("198.51.100.30", "--no-conf")
-    assert "dport 53" not in strict
+    assert "dport 53 accept" not in strict
     hole = _rules("198.51.100.30", "--no-conf", "--dns", "192.0.2.53", "--dns", "2001:db8::53")
     assert "ip daddr 192.0.2.53 udp dport 53 accept" in hole
     assert "ip daddr 192.0.2.53 tcp dport { 53, 853 } accept" in hole
     assert "ip6 daddr 2001:db8::53 udp dport 53 accept" in hole
     # nothing else opens DNS (the other dport is DHCP's 67)
-    assert hole.count("dport 53") + hole.count("dport { 53, 853 }") == 4
+    assert hole.count("dport 53 accept") + hole.count("dport { 53, 853 } accept") == 4
 
 
 def test_ruleset_rejects_what_is_not_an_address(real_subprocess):
@@ -425,6 +425,27 @@ def test_system_resolvers_behind_the_systemd_stub(monkeypatch, tmp_path):
     assert ran == [["resolvectl", "dns"]]
 
 
+def _forward_chain(rules: str) -> list[str]:
+    body = rules.split("chain forward {", 1)[1].split("}\n", 1)[0]
+    return [line.strip() for line in body.splitlines() if line.strip()]
+
+
+def test_forwarded_traffic_leaves_only_through_the_tunnel(real_subprocess):
+    """CVE-2020-15590 (PIA): Docker/VM traffic is forwarded, never hits the
+    output hook. Out only into the tunnel, back only on established flows, DNS
+    dropped before the LAN accept (Mullvad's order) so the router isn't asked."""
+    rules = _forward_chain(_rules("198.51.100.30", "--no-conf", "--iface", "wg0"))
+    assert rules[0] == "type filter hook forward priority 0; policy drop;"
+    assert 'iifname "wg0" ct state established,related accept' in rules
+    assert 'oifname "wg0" accept' in rules
+    assert not any(r.startswith("iifname") and "established" not in r for r in rules)
+    dns = rules.index("meta l4proto { tcp, udp } th dport 53 drop")
+    lan = next(i for i, r in enumerate(rules) if r.startswith("ip daddr { 10.0.0.0/8"))
+    assert rules.index('oifname "happ-*" accept') < dns < lan
+    # the server whitelist is for the host's own VPN processes, not containers
+    assert not any("198.51.100.30" in r for r in rules)
+
+
 def test_ruleset_accepts_wg_quick_interface_names(real_subprocess):
     """Review: wg-quick allows `=` and `+` ([a-zA-Z0-9_=+.-]{1,15})."""
     assert 'oifname "home+nl"' in _rules("1.2.3.4", "--no-conf", "--iface", "home+nl")
@@ -459,7 +480,9 @@ def test_happd_cgroup_gets_dns_to_the_system_resolvers(real_subprocess, tmp_path
     assert f"{cgroup} ip daddr 8.8.8.8 meta l4proto {{ tcp, udp }} th dport 53 accept" in rules
     assert f"{cgroup} ip6 daddr 2001:4860:4860::8888 meta l4proto" in rules
     # nothing outside that cgroup gets DNS
-    assert [line for line in rules.splitlines() if "dport 53" in line and cgroup not in line] == []
+    assert [
+        line for line in rules.splitlines() if "dport 53 accept" in line and cgroup not in line
+    ] == []
 
 
 def test_no_happd_cgroup_rule_without_happd(real_subprocess, tmp_path):

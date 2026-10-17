@@ -124,11 +124,15 @@ ruleset() {
 "
     done
     local iface_rules=""
+    local fwd_iface_rules=""
     local iface
     for iface in "${ifaces[@]}"; do
         # wg-quick's own name rule ([a-zA-Z0-9_=+.-]{1,15}) + the OpenVPN 'tun*' glob
         [[ $iface =~ ^[A-Za-z0-9_=+.*-]{1,15}$ ]] || die "bad interface name: $iface"
         iface_rules+="    oifname \"$iface\"    accept
+"
+        fwd_iface_rules+="    iifname \"$iface\" ct state established,related accept
+    oifname \"$iface\" accept
 "
     done
     local dns_rules=""
@@ -173,6 +177,20 @@ table inet happ-ks {
 $iface_rules$dns_rules$cgroup_rules$addrs    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } accept
     ip daddr 224.0.0.0/4 accept
     ip daddr 255.255.255.255 udp dport 67 accept
+    ip6 daddr { fe80::/10, ff00::/8 } accept
+  }
+  # Containers/VMs (Docker, libvirt) are routed, not sent: their traffic never
+  # reaches the output hook (CVE-2020-15590, PIA). Mullvad's layout: out only
+  # into the tunnel, back only on established flows, DNS dropped before the
+  # LAN accept so a container can't ask the router either.
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+
+    iifname "happ-*" ct state established,related accept
+    oifname "happ-*" accept
+$fwd_iface_rules    meta l4proto { tcp, udp } th dport 53 drop
+    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } accept
+    ip daddr 224.0.0.0/4 accept
     ip6 daddr { fe80::/10, ff00::/8 } accept
   }
 }

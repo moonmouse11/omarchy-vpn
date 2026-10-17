@@ -81,6 +81,15 @@ def test_killswitch_mode_cycles(state):
     assert state.draft.killswitch_mode == "off"
 
 
+def test_locations_layout_cycles(state):
+    _go(state, "🗂 Protocols in the VPN window: tree")
+    state.activate()
+    assert state.current.text == "🗂 Protocols in the VPN window: tabs"
+    state.activate()
+    state.activate()
+    assert state.draft.locations_layout == "tree"
+
+
 def test_lockdown_row_toggles_the_draft(state):
     _go(state, "✅ Lockdown")
     state.activate()
@@ -92,7 +101,7 @@ def test_move_skips_headers_and_stops_at_the_ends(state):
     state.move(-1)
     assert state.current.text.startswith("✅ DNS always")  # top: no wrap
     _go(state, "⬜ Run the DNS leak test")
-    state.move(4)  # killswitch mode, Lockdown, key hints, then over "── Providers ──"
+    state.move(5)  # killswitch mode, Lockdown, key hints, layout, then over "── Providers ──"
     assert state.current.text == "✅ WireGuard"
     state.move(100)
     assert state.current.text == "🔑 IPQualityScore: no API key"  # bottom: no wrap

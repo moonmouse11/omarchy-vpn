@@ -84,6 +84,10 @@ def build_rows(
     def toggle_key_hints(d):
         d.panel_key_hints = not d.panel_key_hints
 
+    def next_locations_layout(d):
+        layouts = config.LOCATIONS_LAYOUTS
+        d.locations_layout = layouts[(layouts.index(d.locations_layout) + 1) % len(layouts)]
+
     mode = draft.killswitch_mode
     rows = [
         Row("── General ──", "header"),
@@ -112,6 +116,11 @@ def build_rows(
             f"{_checkbox(draft.panel_key_hints)} Show key hints in the panel",
             "toggle",
             toggle_key_hints,
+        ),
+        Row(
+            f"🗂 Protocols in the VPN window: {draft.locations_layout}",
+            "toggle",
+            next_locations_layout,
         ),
         Row("── Providers ──", "header"),
     ]

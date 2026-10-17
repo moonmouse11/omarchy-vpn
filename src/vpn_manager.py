@@ -3,7 +3,6 @@
 omarchy-vpn — entry point
 Usage:
   vpn_manager.py --status   Output JSON status for the omarchy-shell bar widget
-  vpn_manager.py --menu     Open the interactive menu (omarchy.menu)
 """
 
 import argparse
@@ -71,7 +70,6 @@ def active_connections(providers=None) -> list[VPNConnection]:
     ]
 
 
-NO_VPN = "direct"  # pseudo-connection key for the ipinfo cache when no VPN is up
 BACK_LABEL = "‹ Back"
 
 
@@ -265,6 +263,15 @@ def _killswitch_unsupported(active: list[VPNConnection]) -> bool:
     return any(c.provider not in ("Happ", *KILLSWITCH_PROVIDERS) for c in active)
 
 
+def _window_tools(active: list[VPNConnection], cfg) -> list[str]:
+    """The app window's Tools buttons: what ⚙ Settings didn't hide (Settings
+    itself can't be), the kill switch only where it works."""
+    keys = [k for k, _label, _fn in TOOLS if k == "settings" or cfg.tool_visible(k)]
+    if cfg.tool_visible("killswitch") and not _killswitch_unsupported(active):
+        keys.append("killswitch")
+    return keys
+
+
 def panel_state(active: list[VPNConnection], cfg) -> dict:
     """What the bar panel draws: a hero (state, connection, exit) and the
     protection badges. Built from caches and cheap probes only — it rides
@@ -290,6 +297,7 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
             "total": "",
             "badges": [ks_badge],
             "key_hints": cfg.panel_key_hints,
+            "tools": _window_tools(active, cfg),
             "fields": label_fields(
                 [],
                 "Traffic blocked" if ks_on else "Not protected",
@@ -347,6 +355,7 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
         "total": total,
         "badges": badges,
         "key_hints": cfg.panel_key_hints,
+        "tools": _window_tools(active, cfg),
         "fields": label_fields(active, title, badges, rate=rate, total=total, cfg=cfg),
     }
 
@@ -778,33 +787,6 @@ def _disconnect_all() -> ActionResult:
     return ActionResult(True, f"Disconnected: {message}")
 
 
-def manage_profiles(provider) -> ActionResult:
-    """Second-level menu: pick a profile, then autostart/delete."""
-    conns = provider.connections()
-    if not conns:
-        return ActionResult(False, f"No {provider.name} profiles found")
-
-    profile_labels = [f"{c.name}{'  (connected)' if c.active else ''}" for c in conns]
-    selected = menu_select(profile_labels, prompt=f"{provider.name} profile")
-    if not selected:
-        return ActionResult(True, "")
-    conn = next((c for c in conns if selected.startswith(c.name)), None)
-    if conn is None:
-        return ActionResult(False, f"Unknown profile: {selected}")
-
-    action_labels = ["Toggle autostart", "Delete config"]
-    if conn.active:
-        action_labels.insert(0, "Disconnect")
-    selected = menu_select(action_labels, prompt=conn.name)
-    if selected == "Toggle autostart":
-        return provider.toggle_autostart(conn)
-    if selected == "Delete config":
-        return provider.delete_config(conn)
-    if selected == "Disconnect":
-        return guarded_disconnect(provider, conn)
-    return ActionResult(True, "")
-
-
 # ── Menu ──────────────────────────────────────────────────────────────────────
 # Two levels, omarchy-style:
 #   level 1 — provider choice (WireGuard / OpenVPN / Happ / ...) + global actions
@@ -860,18 +842,6 @@ def _killswitch_toggle(on: bool) -> ActionResult:
 
 
 KILLSWITCH_ICON = settings_tui.KILLSWITCH_ICON
-
-
-def _killswitch_item() -> tuple[str, Callable]:
-    if killswitch.is_enabled() or killswitch.mode() in ("happ", "all"):
-        return (
-            f"{KILLSWITCH_ICON} Killswitch: ON — click to disable",
-            lambda: _killswitch_toggle(False),
-        )
-    return (
-        f"{KILLSWITCH_ICON} Killswitch: OFF — click to enable (all)",
-        lambda: _killswitch_toggle(True),
-    )
 
 
 def _dns_leak_server_row(
@@ -1101,7 +1071,6 @@ def dns_leak_test_menu() -> ActionResult:
         items.append((verdict, lambda: ActionResult(True, "")))
     if result["conclusion"]:
         items.append((f"bash.ws: {result['conclusion']}", lambda: ActionResult(True, "")))
-    items.append((BACK_LABEL, tools_menu))
     run_items(_unique_labels(items), prompt="DNS Leak Test")
     return ActionResult(True, "")
 
@@ -1143,7 +1112,6 @@ def ip_info_menu() -> ActionResult:
     items.append(_ip_info_flag_row("🏢 Datacenter/Hosting", any(f.hosting for f in findings)))
     items.append(_ip_info_flag_row("🕵️ Proxy/VPN detected", any(f.proxy for f in findings)))
     items.append(_ip_info_flag_row("📱 Mobile network", any(f.mobile for f in findings)))
-    items.append((BACK_LABEL, tools_menu))
     run_items(_unique_labels(items), prompt="IP Info")
     return ActionResult(True, "")
 
@@ -1181,7 +1149,6 @@ def speed_test_menu() -> ActionResult:
         for icon, name, url in targets
     ]
     items.append((SPEED_TEST_CUSTOM_LABEL, _speed_test_custom_url))
-    items.append((BACK_LABEL, tools_menu))
     run_items(_unique_labels(items), prompt=SPEED_TEST_TITLE)
     return ActionResult(True, "")
 
@@ -1244,6 +1211,17 @@ def _speed_test_result_row(name: str, m: speedtest.Measurement) -> str:
     if m.mbps is not None:
         return f"{name}: ⬇ {m.mbps:.1f} Mbit/s"
     return f"{name}: ✗ {m.error}"
+
+
+def run_tool(key: str) -> ActionResult:
+    """--tool KEY: one of the app window's Tools buttons."""
+    if key == "killswitch":
+        if _killswitch_unsupported(active_connections(providers=list(ALL_PROVIDERS))):
+            msg = "The kill switch is suspended while a NetworkManager VPN is up"
+            return ActionResult(False, msg)
+        on = killswitch.is_enabled() or killswitch.mode() in ("happ", "all")
+        return _killswitch_toggle(not on)
+    return next(fn for k, _label, fn in TOOLS if k == key)()
 
 
 def _ping_scope_targets(
@@ -1569,178 +1547,6 @@ TOOLS = [
 ]
 
 
-def tools_menu() -> ActionResult:
-    cfg = config.load_config()
-    items = [(label, fn) for key, label, fn in TOOLS if cfg.tool_visible(key)]
-    if cfg.tool_visible("killswitch") and not _killswitch_unsupported(active_connections()):
-        items.append(_killswitch_item())
-    items.append((BACK_LABEL, back_to_main))
-    run_items(_unique_labels(items), prompt="Tools")
-    return ActionResult(True, "")
-
-
-def provider_actions(provider) -> list[tuple[str, Callable]]:
-    """Import / manage entries for providers that support them."""
-    if provider.name in ("WireGuard", "AmneziaWG"):
-        return [
-            (
-                f"  Import {provider.name} config...",
-                lambda: import_config_file(provider, provider.name),
-            ),
-            (
-                f"  Manage {provider.name} profiles...",
-                lambda: manage_profiles(provider),
-            ),
-        ]
-    if provider.name == "OpenVPN":
-        return [("  Import OpenVPN config...", lambda: import_config_file(provider, "OpenVPN"))]
-    if provider.name in ("VLESS", "Shadowsocks"):
-        return [("  Import key...", lambda: import_config_file(provider, provider.name))]
-    if provider.name == "NetworkManager":
-        return [
-            (
-                "  Import VPN config into NetworkManager...",
-                lambda: import_config_file(provider, "NetworkManager"),
-            ),
-            ("  Manage NetworkManager profiles...", lambda: manage_profiles(provider)),
-        ]
-    return []
-
-
-def menu_loop() -> ActionResult:
-    """Level 1: the active connection with metrics, providers to pick from,
-    quick disconnect, and the killswitch toggle — always the last row."""
-    items: list[tuple[str, Callable]] = []
-
-    all_active = active_connections(providers=list(ALL_PROVIDERS))
-    if all_active:
-        items.extend(_current_connection_items(all_active[0]))
-    else:
-        ip_row = _no_vpn_ip_item()
-        if ip_row:
-            items.append(ip_row)
-
-    # every provider not hidden in ⚙ Settings, empty ones too: their submenu
-    # is where the Import/Manage rows live (Happ's explains missing headers)
-    for provider in visible_providers():
-        conns = provider.connections()
-        active = sum(1 for c in conns if c.active)
-        label = f"{provider.name}  ({active}/{len(conns)})"
-        items.append((label, lambda p=provider: provider_menu(p)))
-
-    if all_active:
-        if len(all_active) == 1:
-            first = all_active[0]
-            items.append((f"Disconnect: {first.label}", disconnect_all))
-        else:
-            items.append((f"Disconnect ALL  ({len(all_active)})", disconnect_all))
-
-    items.append(("🛠️ Tools", tools_menu))
-    return run_items(items, prompt="VPN")
-
-
-def _current_connection_items(conn: VPNConnection) -> list[tuple[str, Callable]]:
-    """First menu rows: what is connected + live metrics. Row 1 reconnects
-    the server; row 2 (metrics, indented) shows the full detail card.
-    dmenu rows are single-line, so the metrics get their own row instead
-    of being truncated by the menu width."""
-    cfg = config.load_config()
-    metrics = []
-    rate = iface_rate(conn.interface)
-    if rate:
-        metrics.append(rate)
-    if cfg.exit_ip_enabled:
-        exit_line = ipinfo.status_line(conn.name, cfg.exit_ip_max_age)
-        if exit_line:
-            metrics.append(exit_line.removeprefix("Exit: "))
-        else:
-            request_ip_update(conn.name)
-    rows = [(f"↻ {conn.label}", lambda: _reconnect(conn))]
-    if metrics:
-        rows.append((("     " + " · ".join(metrics)), lambda: _details(conn, cfg)))
-    return rows
-
-
-def _details(conn: VPNConnection, cfg) -> ActionResult:
-    lines = [conn.label]
-    if conn.interface:
-        live = iface_rate(conn.interface)
-        totals = iface_traffic(conn.interface)
-        if live:
-            lines.append(live)
-        if totals:
-            lines.append(totals)
-    exit_line = ipinfo.status_line(conn.name, cfg.exit_ip_max_age)
-    if exit_line:
-        lines.append(exit_line)
-    notify("VPN — connection", "\n".join(lines))
-    return ActionResult(True, "")
-
-
-def _reconnect(conn: VPNConnection) -> ActionResult:
-    provider = next((p for p in ALL_PROVIDERS if p.name == conn.provider), None)
-    if provider is None:
-        return ActionResult(False, f"Unknown provider: {conn.provider}")
-    down = guarded_disconnect(provider, conn)
-    if not down.success:
-        return down
-    return guarded_connect(provider, conn)
-
-
-def _no_vpn_ip_item() -> tuple[str, Callable] | None:
-    """Not connected: the first row shows the real public IP (cache-first —
-    the --status tick is not running to refresh it, so trigger a fetch when
-    stale). Click re-fetches and shows the full line."""
-    cfg = config.load_config()
-    if not cfg.exit_ip_enabled:
-        return None
-    exit_line = ipinfo.status_line(NO_VPN, cfg.exit_ip_max_age)
-    if exit_line is None:
-        request_ip_update(NO_VPN)
-        label = "● No VPN"
-    else:
-        label = f"● No VPN · {exit_line.removeprefix('Exit: ')}"
-
-    def _refresh() -> ActionResult:
-        line = ipinfo.status_line(NO_VPN, cfg.exit_ip_max_age)
-        if line is None:
-            request_ip_update(NO_VPN)
-            return ActionResult(True, "IP refresh started — reopen the menu to see it")
-        notify("VPN", line)
-        return ActionResult(True, "")
-
-    return (label, _refresh)
-
-
-def provider_menu(provider) -> ActionResult:
-    """Level 2: connections of one provider, plus its actions."""
-    if provider.name == "Happ":
-        return happ_menu(provider)
-
-    reputation.request_update()
-    items: list[tuple[str, Callable]] = []
-    for conn in provider.connections():
-        info = happmeta.ping_mark(conn.name)
-        suffix = f"    {info}" if info else ""
-        if conn.active:
-            items.append(
-                (f"Disconnect {conn.name}{suffix}", lambda c=conn: guarded_disconnect(provider, c))
-            )
-        else:
-            label = f"{conn.name}{suffix}"
-            items.append((label, lambda c=conn: guarded_connect(provider, c)))
-    items.extend(provider_actions(provider))
-    items.append((BACK_LABEL, back_to_main))
-    run_items(_unique_labels(items), prompt=provider.name)
-    # The submenu already notified/refreshed; stay silent for the parent level.
-    return ActionResult(True, "")
-
-
-def back_to_main() -> ActionResult:
-    menu_loop()
-    return ActionResult(True, "")
-
-
 # ── Happ: providers -> servers (with ping/protocol info) ─────────────────────
 
 
@@ -1771,41 +1577,6 @@ def happ_server_groups(provider) -> tuple[list[dict], dict[str, list[dict]]]:
             }
         )
     return servers, groups
-
-
-def happ_menu(provider) -> ActionResult:
-    """Happ level 2: subscription providers, each leading to its servers."""
-    happmeta.request_subscription_update()
-    reputation.request_update()
-    servers, groups = happ_server_groups(provider)
-
-    items: list[tuple[str, Callable]] = []
-    for pname, group in groups.items():
-        active = sum(1 for g in group if g["active"])
-        summary = happmeta.provider_ping_summary(
-            [happmeta.ping_key(g["name"], g["provider_id"]) for g in group]
-        )
-        suffixes = []
-        if active:
-            suffixes.append(f"{active}/{len(group)}")
-        if summary:
-            suffixes.append(summary)
-        label = pname
-        if suffixes:
-            label += "  (" + " · ".join(suffixes) + ")"
-        items.append((label, lambda p=pname, g=group: happ_provider_menu(provider, p, g)))
-    rejected = _happ_rejected_rows(set(groups))
-    items.extend(rejected)
-    if not servers and not rejected and not happmeta.has_headers():
-        items.append((HAPP_NO_HEADERS_LABEL, _happ_no_headers))
-    items.append(("  Refresh subscriptions", _refresh_subscriptions))
-    items.append((BACK_LABEL, back_to_main))
-    run_items(items, prompt="Happ")
-    # the submenu already notified; returning None crashed the caller's result.success
-    return ActionResult(True, "")
-
-
-HAPP_NO_HEADERS_LABEL = "⚠️ No servers: provider may need captured Happ headers"
 
 
 # ── Panel: server list + connect/disconnect ───────────────────────────────────
@@ -1910,6 +1681,9 @@ def _server_group(
     }
 
 
+HAPP_NO_HEADERS_TITLE = "⚠ No servers: provider may need captured Happ headers (README)"
+
+
 def server_list() -> dict:
     """--servers: the panel's list — every visible provider's connections,
     Happ split per subscription — with ping and protocol. Cache reads only
@@ -1917,8 +1691,12 @@ def server_list() -> dict:
     background like the menu's, pings only on the Ping button."""
     happmeta.request_subscription_update()
     pinging = _pinging()
-    groups = []
+    groups: list[dict] = []
+    # every visible protocol, empty ones too: the window's tree/tabs/sidebar list them
+    providers: list[dict] = []
     for provider in visible_providers():
+        first = len(groups)
+        providers.append({"name": provider.name})
         if provider.name == "Happ":
             _servers, happ_groups = happ_server_groups(provider)
             for pname, entries in happ_groups.items():
@@ -1928,18 +1706,41 @@ def server_list() -> dict:
                         f"happ:{sub_id}:{pname}", "Happ", pname, entries, sub_id, pinging=pinging
                     )
                 )
-            continue
-        try:
-            conns = provider.connections()
-        except Exception as e:  # noqa: BLE001 — one broken provider must not empty the list
-            logutil.log(f"server list: {provider.name} skipped: {e!r}")
-            continue
-        if conns:
-            entries = [{"name": c.name, "active": c.active} for c in conns]
-            groups.append(
-                _server_group(provider.name, provider.name, provider.name, entries, pinging=pinging)
-            )
-    return {"groups": groups}
+            # a panel that answered stub rows instead of servers (device limit,
+            # unsupported client) says why in its own words, not missing silently
+            for sub_id, prov in happmeta.providers().items():
+                if prov["name"] in happ_groups or not (
+                    reasons := happmeta.subscription_rejection(sub_id)
+                ):
+                    continue
+                title = f"{prov['name']} · ⚠ {reasons[0].removeprefix('⚠️').strip()}"
+                groups.append(
+                    _server_group(f"happ:{sub_id}:{prov['name']}", "Happ", title, [], sub_id)
+                )
+            # nothing at all with default headers: a panel may want Happ's own
+            if len(groups) == first and not happmeta.has_headers():
+                groups.append(_server_group("happ:no-headers", "Happ", HAPP_NO_HEADERS_TITLE, []))
+        else:
+            try:
+                conns = provider.connections()
+            except Exception as e:  # noqa: BLE001 — one broken provider must not empty the list
+                logutil.log(f"server list: {provider.name} skipped: {e!r}")
+                conns = []
+            if conns:
+                entries = [{"name": c.name, "active": c.active} for c in conns]
+                groups.append(
+                    _server_group(
+                        provider.name, provider.name, provider.name, entries, pinging=pinging
+                    )
+                )
+        mine = groups[first:]
+        providers[-1]["total"] = sum(len(g["servers"]) for g in mine)
+        providers[-1]["active"] = any(g["active"] for g in mine)
+    return {
+        "groups": groups,
+        "providers": providers,
+        "layout": config.load_config().locations_layout,
+    }
 
 
 def _provider_named(name: str):
@@ -1994,60 +1795,6 @@ def _report(result: ActionResult) -> None:
     refresh_bar()
 
 
-def _happ_rejected_rows(shown: set[str]) -> list[tuple[str, Callable]]:
-    """Subscriptions whose panel answered stub rows instead of servers
-    (device limit reached, client not supported) — say why in the panel's
-    own words instead of silently missing from the list."""
-    rows: list[tuple[str, Callable]] = []
-    for sub_id, prov in happmeta.providers().items():
-        if prov["name"] in shown or not (reasons := happmeta.subscription_rejection(sub_id)):
-            continue
-        name = prov["name"]
-        rows.append(
-            (
-                f"⚠️ {name}: {reasons[0].removeprefix('⚠️').strip()}",
-                lambda n=name, r=reasons: _happ_rejected(n, r),
-            )
-        )
-    return rows
-
-
-def _happ_rejected(name: str, reasons: list[str]) -> ActionResult:
-    notify(f"Happ — {name} sent no servers", "\n".join(reasons))
-    return ActionResult(True, "")
-
-
-def _happ_no_headers() -> ActionResult:
-    """Subscriptions are fetched with happmeta.default_headers() until
-    ~/.config/happ-capture/headers.json exists; a panel with a device limit
-    rejects those, and an empty list looked like the menu had lost every
-    provider."""
-    notify(
-        "Happ — no servers",
-        "The provider didn't return servers for Happ's default headers.\n"
-        "Refresh subscriptions; if still empty, capture the device headers once:\n"
-        'omarchy-vpn README → "Happ setup (one-time, for headless)"\n'
-        f"(writes {happmeta.HEADERS_FILE})",
-    )
-    return ActionResult(True, "")
-
-
-def _refresh_subscriptions() -> ActionResult:
-    """Manual Happ subscription refresh — fire-and-forget (fetches can take
-    tens of seconds); the menu rebuilds with fresh servers on next open.
-    Forced like Refresh All: the gated --update-subs skipped every cache
-    younger than SUB_MAX_AGE, so a click right after a fetch did nothing
-    (a freed device slot stayed "device limit reached" for up to an hour)."""
-    subprocess.Popen(
-        [sys.executable, str(Path(__file__)), "--update-subs-force"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    notify("Happ", "Subscription refresh started — reopen the menu in a few seconds")
-    return ActionResult(True, "")
-
-
 def _traffic_summary(info: dict | None) -> str | None:
     """'6.5 GB / ∞ · until 20.10.2026' from the panel's userinfo headers."""
     if not info:
@@ -2092,67 +1839,6 @@ def subscription_report(failed: dict[str, str]) -> tuple[str, str]:
         else "Happ — subscriptions updated"
     )
     return title, "\n".join(lines) or "No Happ subscriptions"
-
-
-def happ_provider_menu(provider, pname: str, entries: list) -> ActionResult:
-    """Happ level 3: servers of one provider with ping + protocol info."""
-    if not entries:
-        notify("Happ", f"{pname}: no servers")
-        return ActionResult(True, "")
-    items: list[tuple[str, Callable]] = []
-
-    # Panel card info (traffic/expiry) from the subscription cache — the
-    # first "ⓘ" entry only notifies, it is not connectable.
-    sub_id = next((e.get("provider_id") for e in entries if e.get("provider_id")), None)
-    info = happmeta.subscription_info(sub_id) if sub_id else None
-    if info:
-        parts = []
-        traffic = happmeta.fmt_traffic(info.get("download"))
-        limit = happmeta.fmt_limit(info.get("total"))
-        if traffic != "?" or limit != "∞":
-            parts.append(f"Traffic {traffic} / {limit}")
-        expire = happmeta.fmt_expire(info.get("expire"))
-        if expire != "?":
-            parts.append(f"until {expire}")
-        if parts:
-            lines = []
-            if info.get("title"):
-                lines.append(str(info["title"]))
-            lines.append(
-                f"↓ {happmeta.fmt_traffic(info.get('download'))} · "
-                f"↑ {happmeta.fmt_traffic(info.get('upload'))} / "
-                f"{happmeta.fmt_limit(info.get('total'))}"
-            )
-            if expire != "?":
-                lines.append(f"Valid until {expire}")
-
-            def _info_action():
-                notify(f"Happ · {pname}", "\n".join(lines))
-                return ActionResult(True, "")
-
-            items.append(("ⓘ " + " · ".join(parts), _info_action))
-
-    for entry in entries:
-        conn = VPNConnection(
-            name=entry["name"],
-            provider="Happ",
-            active=entry["active"],
-            subscription_id=entry.get("provider_id"),
-            subscription_name=pname,
-        )
-        label = f"Disconnect {conn.name}" if conn.active else conn.name
-        suffix = happmeta.server_info_suffix(
-            happmeta.ping_key(conn.name, conn.subscription_id), entry.get("protocol", "")
-        )
-        if suffix:
-            label += f"    {suffix}"
-        if conn.active:
-            items.append((label, lambda c=conn: guarded_disconnect(provider, c)))
-        else:
-            items.append((label, lambda c=conn: guarded_connect(provider, c)))
-    items.append((BACK_LABEL, lambda: happ_menu(provider)))
-    run_items(_unique_labels(items), prompt=pname[:40])
-    return ActionResult(True, "")
 
 
 def _unique_labels(items: list[tuple[str, Callable]]) -> list[tuple[str, Callable]]:
@@ -2268,17 +1954,6 @@ def menu_input(prompt: str) -> str | None:
     return text.strip() or None if text else None
 
 
-def import_config_file(provider, title: str) -> ActionResult:
-    path = menu_input(f"{title} config path")
-    if not path:
-        return ActionResult(success=False, message="No path entered")
-    return provider.import_config(path)
-
-
-def run_menu():
-    menu_loop()
-
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -2322,7 +1997,6 @@ def main():
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--status", action="store_true", help="Print JSON status for the bar widget")
-    group.add_argument("--menu", action="store_true", help="Open interactive menu")
     group.add_argument(
         "--disconnect-all", action="store_true", help="Disconnect every VPN (the panel's switch)"
     )
@@ -2337,6 +2011,11 @@ def main():
     )
     group.add_argument(
         "--disconnect", nargs=2, metavar=("PROVIDER", "NAME"), help="Disconnect a connection"
+    )
+    group.add_argument(
+        "--tool",
+        choices=[*(key for key, _label, _fn in TOOLS), "killswitch"],
+        help="Run one tool (the app window's Tools buttons; killswitch toggles it)",
     )
     group.add_argument(
         "--dns-leak-test", action="store_true", help="Run the DNS leak test (the panel's DNS badge)"
@@ -2401,8 +2080,6 @@ def main():
 
     if args.status:
         print(json.dumps(get_status()))
-    elif args.menu:
-        run_menu()
     elif args.servers:
         print(json.dumps(server_list(), ensure_ascii=False))
     elif args.connect is not None:
@@ -2415,6 +2092,8 @@ def main():
         result = disconnect_all()
         notify("VPN", result.message, urgent=not result.success)
         refresh_bar()
+    elif args.tool:
+        _report(run_tool(args.tool))
     elif args.dns_leak_test:
         dns_leak_test_menu()
         refresh_bar()

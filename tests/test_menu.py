@@ -49,283 +49,6 @@ def patch_menu_env(monkeypatch, providers, picks):
     )
 
 
-def test_level1_shows_providers_with_counts(monkeypatch):
-    wg = FakeProvider(
-        "WireGuard",
-        [
-            VPNConnection(name="a", provider="WireGuard", active=True),
-            VPNConnection(name="b", provider="WireGuard", active=False),
-        ],
-    )
-    happ = FakeProvider("Happ", [VPNConnection(name="de", provider="Happ", active=False)])
-    picks = iter([None])  # user escapes
-    seen = []
-    patch_menu_env(monkeypatch, [wg, happ], picks=[])
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or next(picks, None),
-    )
-    vpn_manager.run_menu()
-    options = seen[0]
-    assert "WireGuard  (1/2)" in options  # active count suffix
-    assert "Happ  (0/1)" in options  # inactive providers show a zero count too
-    assert "Disconnect ALL" not in options  # only one active connection
-    assert sum(o in ("WireGuard  (1/2)", "Happ  (0/1)") for o in options) == 2
-
-
-def test_happ_provider_menu_disambiguates_duplicate_labels(monkeypatch):
-    """Two servers with identical rendered labels must both be reachable."""
-
-    class RecordingProvider:
-        name = "Happ"
-
-        def __init__(self):
-            self.connected = []
-
-        def connections(self):
-            return []
-
-        def connect(self, conn):
-            self.connected.append(conn)
-            return ActionResult(True, "ok")
-
-        def disconnect(self, conn):
-            return ActionResult(True, "ok")
-
-    provider = RecordingProvider()
-    entries = [{"name": "Same", "active": False}, {"name": "Same", "active": False}]
-
-    from types import SimpleNamespace
-
-    made = []
-    monkeypatch.setattr(
-        vpn_manager,
-        "VPNConnection",
-        lambda **kw: made.append(SimpleNamespace(**kw)) or made[-1],
-    )
-    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
-    monkeypatch.setattr(vpn_manager.happmeta, "server_info_suffix", lambda name, protocol="": "")
-    monkeypatch.setattr(vpn_manager.happmeta, "server_params", lambda name, **kw: None)
-    monkeypatch.setattr(vpn_manager.killswitch, "resume_for_happ", lambda **kw: None)
-    monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
-    monkeypatch.setattr(vpn_manager, "notify", lambda *a, **k: None)
-    picks = iter(["Same (2)"])
-    seen = []
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or next(picks, None),
-    )
-
-    vpn_manager.happ_provider_menu(provider, "P", entries)
-    assert seen[0] == ["Same", "Same (2)", "‹ Back"]
-    # picking the disambiguated label must run the SECOND entry's action
-    assert provider.connected == [made[1]]
-
-
-def _happ_menu_setup(monkeypatch, tmp_path, pings):
-    """Drive happ_menu with stubbed servers; return the captured option list."""
-    servers = [
-        {"name": "s1", "provider_name": "P1", "provider_id": "1", "config": {}},
-        {"name": "s2", "provider_name": "P1", "provider_id": "1", "config": {}},
-        {"name": "s3", "provider_name": "P2", "provider_id": "2", "config": {}},
-    ]
-    provider = FakeProvider("Happ", [VPNConnection(name="s1", provider="Happ", active=True)])
-    monkeypatch.setattr(vpn_manager.happmeta, "request_subscription_update", lambda: None)
-    monkeypatch.setattr(vpn_manager.reputation, "request_update", lambda: None)
-    monkeypatch.setattr(vpn_manager.happmeta, "all_servers", lambda allow_fetch=True: servers)
-    ping_file = tmp_path / "ping.json"
-    monkeypatch.setattr(vpn_manager.happmeta, "PING_CACHE", ping_file)
-    if pings is not None:
-        ping_file.write_text(pings)
-    seen = []
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or None,
-    )
-    vpn_manager.happ_menu(provider)
-    return seen[0]
-
-
-def test_happ_provider_menu_labels_show_availability(monkeypatch, tmp_path):
-    """Server labels carry the Happ GUI ✓/✗ availability marks."""
-
-    class IdleProvider:
-        name = "Happ"
-
-        def connect(self, conn):
-            return ActionResult(True, "ok")
-
-        def disconnect(self, conn):
-            return ActionResult(True, "ok")
-
-    import json
-    import time
-
-    now = time.time()
-    ping_file = tmp_path / "ping.json"
-    monkeypatch.setattr(vpn_manager.happmeta, "PING_CACHE", ping_file)
-    ping_file.write_text(
-        json.dumps(
-            {
-                "up": {"ms": 12.0, "at": now},
-                "down": {"ms": None, "at": now},
-                "unknown": {"ms": 7.0, "at": now - 99999},  # stale -> unmarked
-            }
-        )
-    )
-    monkeypatch.setattr(vpn_manager.happmeta, "server_params", lambda name: None)
-    seen = []
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or None,
-    )
-
-    entries = [
-        {"name": "up", "active": False},
-        {"name": "down", "active": False},
-        {"name": "unknown", "active": False},
-    ]
-    vpn_manager.happ_provider_menu(IdleProvider(), "P", entries)
-    assert "✓ 12 ms" in seen[0][0]
-    assert "⛔" in seen[0][1]
-    assert seen[0][2] == "unknown"  # stale -> no mark at all
-
-
-def test_happ_menu_provider_labels_include_ping_summary(monkeypatch, tmp_path):
-    import json
-    import time
-
-    now = time.time()
-    pings = json.dumps(
-        {
-            # keyed by (subscription, name): happmeta.ping_key()
-            "1\ts1": {"ms": 10.0, "at": now},
-            "1\ts2": {"ms": 30.0, "at": now},
-            "2\ts3": {"ms": 5.0, "at": now - 99999},  # stale: P2 has no fresh data
-        }
-    )
-    options = _happ_menu_setup(monkeypatch, tmp_path, pings)
-    assert "P1  (1/2 · ✓ 2/2 · ⌀20ms)" in options
-    assert "P2" in options  # no fresh pings -> old plain label
-    assert not any(o.startswith("P2  (") for o in options)
-    assert options[-1] == "‹ Back"
-
-
-def test_happ_menu_provider_label_without_ping_data(monkeypatch, tmp_path):
-    options = _happ_menu_setup(monkeypatch, tmp_path, None)  # no cache file at all
-    assert "P1  (1/2)" in options  # old format: active suffix only
-    assert "P2" in options
-
-
-def test_happ_menu_never_blocks_on_the_network(monkeypatch):
-    """Regression: happ_menu() must read all_servers() cache-only and kick
-    off the background refresh, exactly like providers/happ.py's --status
-    path — it must NEVER call the network-fetching default (allow_fetch=True
-    fetches every stale subscription synchronously; measured 15s against a
-    real stale cache, see CLAUDE.md)."""
-    provider = FakeProvider("Happ", [])
-    monkeypatch.setattr(vpn_manager.reputation, "request_update", lambda: None)
-    calls = []
-    monkeypatch.setattr(
-        vpn_manager.happmeta,
-        "request_subscription_update",
-        lambda: calls.append("request_subscription_update"),
-    )
-
-    def fake_all_servers(allow_fetch=True):
-        calls.append(("all_servers", allow_fetch))
-        if allow_fetch:
-            raise AssertionError("happ_menu() must never fetch subscriptions synchronously")
-        return []
-
-    monkeypatch.setattr(vpn_manager.happmeta, "all_servers", fake_all_servers)
-    monkeypatch.setattr(vpn_manager, "menu_select", lambda options, prompt="VPN": None)
-
-    result = vpn_manager.happ_menu(provider)
-
-    assert "request_subscription_update" in calls
-    assert ("all_servers", False) in calls
-    # regression (found by mypy): it used to fall off the end and return None,
-    # and run_items() reads result.success on whatever the action returns
-    assert result == vpn_manager.ActionResult(True, "")
-
-
-def _happ_menu_rows(monkeypatch, servers, has_headers):
-    monkeypatch.setattr(vpn_manager.happmeta, "request_subscription_update", lambda: None)
-    monkeypatch.setattr(vpn_manager.reputation, "request_update", lambda: None)
-    monkeypatch.setattr(vpn_manager.happmeta, "all_servers", lambda allow_fetch=True: servers)
-    monkeypatch.setattr(vpn_manager.happmeta, "has_headers", lambda: has_headers)
-    shown = []
-    monkeypatch.setattr(
-        vpn_manager, "menu_select", lambda options, prompt="VPN": shown.append(options)
-    )
-    vpn_manager.happ_menu(FakeProvider("Happ", []))
-    return shown[0]
-
-
-def test_happ_menu_explains_missing_headers(monkeypatch):
-    """Empty list without captured headers: the panel may reject the default
-    Happ UA. Say so instead of an empty list that looks like lost providers."""
-    rows = _happ_menu_rows(monkeypatch, [], has_headers=False)
-    assert vpn_manager.HAPP_NO_HEADERS_LABEL in rows
-
-
-def test_happ_menu_says_why_a_provider_sent_no_servers(monkeypatch):
-    """A panel that answered stub rows (device limit) gets a row with its own
-    reason; the generic no-headers hint is then redundant."""
-    monkeypatch.setattr(
-        vpn_manager.happmeta,
-        "providers",
-        lambda: {
-            "1": {"name": "ARTEMIDA", "url": "https://x/1"},
-            "2": {"name": "OK", "url": "https://x/2"},
-        },
-    )
-    monkeypatch.setattr(
-        vpn_manager.happmeta,
-        "subscription_rejection",
-        lambda sub_id: (
-            ["⚠️ Достигнут лимит устройств: 4", "Удалите устройство"] if sub_id == "1" else []
-        ),
-    )
-    rows = _happ_menu_rows(monkeypatch, [], has_headers=False)
-    assert "⚠️ ARTEMIDA: Достигнут лимит устройств: 4" in rows
-    assert not any(r.startswith("⚠️ OK") for r in rows)
-    assert vpn_manager.HAPP_NO_HEADERS_LABEL not in rows
-
-
-def test_happ_menu_no_header_hint_once_servers_exist(monkeypatch):
-    assert vpn_manager.HAPP_NO_HEADERS_LABEL not in _happ_menu_rows(
-        monkeypatch, [], has_headers=True
-    )
-
-
-def test_two_level_connect(monkeypatch):
-    wg = FakeProvider("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
-    patch_menu_env(monkeypatch, [wg], picks=["WireGuard  (0/1)", "nl"])
-    vpn_manager.run_menu()
-    assert wg.connected == ["nl"]
-
-
-def test_two_level_disconnect_active(monkeypatch):
-    wg = FakeProvider("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=True)])
-    patch_menu_env(monkeypatch, [wg], picks=["WireGuard  (1/1)", "Disconnect nl"])
-    vpn_manager.run_menu()
-    assert wg.disconnected == ["nl"]
-
-
-def test_back_returns_to_level1(monkeypatch):
-    wg = FakeProvider("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
-    # level1 -> WireGuard, level2 -> Back, level1 -> escape
-    patch_menu_env(monkeypatch, [wg], picks=["WireGuard  (0/1)", "‹ Back", None])
-    vpn_manager.run_menu()
-    assert wg.connected == []
-
-
 class HappLikeProvider:
     """One disconnect stops everything (like Happ stopping all happd
     processes); later disconnect calls then report 'not connected'."""
@@ -358,30 +81,6 @@ def test_disconnect_all_treats_not_connected_as_stopped(monkeypatch):
     result = vpn_manager.disconnect_all()
     assert result.success, result.message
     assert "Failed" not in result.message
-
-
-def test_level1_active_count_label(monkeypatch):
-    wg = FakeProvider(
-        "WireGuard",
-        [
-            VPNConnection(name="a", provider="WireGuard", active=True),
-            VPNConnection(name="b", provider="WireGuard", active=False),
-        ],
-    )
-    picks = iter(["WireGuard  (1/2)", None])
-    seen_prompts = []
-    patch_menu_env(monkeypatch, [wg], picks=[])
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": (
-            seen_prompts.append((prompt, list(options))) or next(picks, None)
-        ),
-    )
-    vpn_manager.run_menu()
-    level1_options = seen_prompts[0][1]
-    assert "WireGuard  (1/2)" in level1_options
-    assert "🛠️ Tools" in level1_options
 
 
 def test_killswitch_all_mode_arms_wg(monkeypatch, tmp_path):
@@ -686,30 +385,6 @@ def test_refresh_bar_calls_the_widget_ipc(monkeypatch):
     assert ran == [["omarchy-shell", "-q", vpn_manager.PLUGIN_ID, "refresh"]]
 
 
-def test_level1_layout_connected(monkeypatch):
-    """Menu order: current connection (first, with metrics) → providers →
-    quick disconnect, Tools ALWAYS the last row."""
-    wg = FakeProvider(
-        "WireGuard",
-        [VPNConnection(name="nl", provider="WireGuard", active=True, interface="wg0")],
-    )
-    patch_menu_env(monkeypatch, [wg], picks=[])
-    monkeypatch.setattr(vpn_manager, "iface_rate", lambda iface: "↓ 2.0 MiB/s ↑ 512.0 KiB/s")
-    monkeypatch.setattr(vpn_manager.ipinfo, "status_line", lambda name, age: "Exit: 1.2.3.4 🇩🇪")
-    seen = []
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or None,
-    )
-    vpn_manager.run_menu()
-    options = seen[0]
-    assert options[0].startswith("↻ WireGuard: nl")
-    assert options[1] == "     ↓ 2.0 MiB/s ↑ 512.0 KiB/s · 1.2.3.4 🇩🇪"  # metrics row
-    assert "Disconnect: WireGuard: nl" in options
-    assert options[-1] == "🛠️ Tools"
-
-
 def test_connect_disconnects_other_tunnels(monkeypatch):
     """One tunnel at a time: connecting while another provider is up tears
     the old one down first (two VPNs fight over the default route)."""
@@ -720,182 +395,6 @@ def test_connect_disconnects_other_tunnels(monkeypatch):
     assert result.success
     assert wg.connected == ["nl"]
     assert happ.disconnected == ["de"]  # torn down before the new connect
-
-
-def test_reconnect_row_drops_and_reconnects(monkeypatch):
-    """Selecting the current-connection row is a reconnect: disconnect the
-    server, then connect it again."""
-    wg = FakeProvider(
-        "WireGuard",
-        [VPNConnection(name="nl", provider="WireGuard", active=True, interface="wg0")],
-    )
-    patch_menu_env(monkeypatch, [wg], picks=["↻ WireGuard: nl"])
-    result = vpn_manager.menu_loop()
-    assert result.success
-    assert wg.disconnected == ["nl"] and wg.connected == ["nl"]
-
-
-def test_no_vpn_row_shows_current_ip(monkeypatch):
-    """Disconnected: the first row is the real public IP (not a VPN one)."""
-    wg = FakeProvider("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
-    patch_menu_env(monkeypatch, [wg], picks=[])
-    monkeypatch.setattr(vpn_manager.ipinfo, "status_line", lambda name, age: "Exit: 192.0.2.50 🇷🇺")
-    seen = []
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or None,
-    )
-    vpn_manager.run_menu()
-    assert seen[0][0] == "● No VPN · 192.0.2.50 🇷🇺"
-
-
-def test_no_vpn_row_when_cache_stale_and_ip_disabled(monkeypatch):
-    """Stale cache -> bare '● No VPN' row and a background fetch; exit_ip
-    disabled in config -> no row at all."""
-    wg = FakeProvider("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
-    patch_menu_env(monkeypatch, [wg], picks=[])
-    monkeypatch.setattr(vpn_manager.ipinfo, "status_line", lambda name, age: None)
-    fetched = []
-    monkeypatch.setattr(vpn_manager, "request_ip_update", fetched.append)
-    seen = []
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or None,
-    )
-    vpn_manager.run_menu()
-    assert seen[0][0] == "● No VPN"
-    assert fetched == [vpn_manager.NO_VPN]
-
-    cfg = config.Config()
-    cfg.exit_ip_enabled = False
-    monkeypatch.setattr(vpn_manager.config, "load_config", lambda: cfg)
-    vpn_manager.run_menu()
-    assert seen[1][0] == "WireGuard  (0/1)"  # no IP row, providers start right away
-
-
-def test_level1_disconnect_all_label_for_multiple(monkeypatch):
-    wg = FakeProvider(
-        "WireGuard",
-        [VPNConnection(name="nl", provider="WireGuard", active=True, interface="wg0")],
-    )
-    happ = FakeProvider("Happ", [VPNConnection(name="de", provider="Happ", active=True)])
-    patch_menu_env(monkeypatch, [wg, happ], picks=[])
-    seen = []
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or None,
-    )
-    vpn_manager.run_menu()
-    options = seen[0]
-    assert "Disconnect ALL  (2)" in options
-    assert options[-1] == "🛠️ Tools"
-
-
-def test_level1_no_disconnect_row_when_idle(monkeypatch):
-    wg = FakeProvider("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
-    patch_menu_env(monkeypatch, [wg], picks=[])
-    seen = []
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or None,
-    )
-    vpn_manager.run_menu()
-    options = seen[0]
-    assert not any(o.startswith("Disconnect") for o in options)
-    assert not any(o.startswith("▶") for o in options)
-    assert options[-1] == "🛠️ Tools"
-
-
-def test_menu_loop_shows_empty_providers_unless_hidden(monkeypatch):
-    """Every provider not hidden in ⚙ Settings is listed, empty ones too —
-    their submenu holds the Import rows. Hidden ones never show."""
-    wg = FakeProvider("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
-    keys = FakeProvider("VLESS", [])
-    ovpn = FakeProvider("OpenVPN", [])
-    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [wg, keys, ovpn])
-    cfg = config.Config()
-    cfg.providers = {"openvpn": False}
-    monkeypatch.setattr(vpn_manager.config, "load_config", lambda: cfg)
-    monkeypatch.setattr(vpn_manager.killswitch, "is_enabled", lambda: False)
-    monkeypatch.setattr(vpn_manager.killswitch, "mode", lambda: "off")
-    monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
-    monkeypatch.setattr(vpn_manager, "request_ip_update", lambda name: None)
-    monkeypatch.setattr(vpn_manager.ipinfo, "status_line", lambda name, age: None)
-    seen = []
-    monkeypatch.setattr(
-        vpn_manager, "menu_select", lambda options, prompt="VPN": seen.append(list(options))
-    )
-    vpn_manager.menu_loop()
-    rows = seen[0]
-    assert "WireGuard  (0/1)" in rows
-    assert "VLESS  (0/0)" in rows
-    assert not any(r.startswith("OpenVPN") for r in rows)
-    assert rows[-1] == "🛠️ Tools"  # Tools always last
-
-
-def test_menu_loop_always_shows_tools_row(monkeypatch):
-    """Present even with nothing configured/active, right before killswitch
-    moved inside it — Tools itself replaces the three separate rows."""
-    patch_menu_env(monkeypatch, [], picks=[])
-    seen = []
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or None,
-    )
-    vpn_manager.menu_loop()
-    assert "🛠️ Tools" in seen[0]
-    assert "🔍 DNS Leak Test" not in seen[0]
-    assert "ℹ️ IP Info" not in seen[0]
-    assert not any("Killswitch:" in str(row) for row in seen[0])
-
-
-def test_tools_menu_lists_every_visible_tool(monkeypatch):
-    monkeypatch.setattr(vpn_manager.config, "load_config", config.Config)
-    monkeypatch.setattr(vpn_manager.killswitch, "is_enabled", lambda: False)
-    monkeypatch.setattr(vpn_manager.killswitch, "mode", lambda: "off")
-    monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
-    seen = []
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="Tools": seen.append(list(options)) or None,
-    )
-    vpn_manager.tools_menu()
-    rows = seen[0]
-    for label in (
-        "🔍 DNS Leak Test",
-        "ℹ️ IP Info",
-        "⚡ Speed Test",
-        "🔄 Refresh All",
-        "🗑️ Clear Caches",
-        "⚙️ Settings",
-    ):
-        assert label in rows
-    assert any(row.startswith(f"{vpn_manager.KILLSWITCH_ICON} Killswitch:") for row in rows)
-    assert rows[-1] == "‹ Back"
-
-
-def test_tools_menu_hides_disabled_tool(monkeypatch):
-    cfg = config.Config()
-    cfg.tools_visible["dns_leak_test"] = False
-    monkeypatch.setattr(vpn_manager.config, "load_config", lambda: cfg)
-    monkeypatch.setattr(vpn_manager.killswitch, "is_enabled", lambda: False)
-    monkeypatch.setattr(vpn_manager.killswitch, "mode", lambda: "off")
-    monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
-    seen = []
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="Tools": seen.append(list(options)) or None,
-    )
-    vpn_manager.tools_menu()
-    assert "🔍 DNS Leak Test" not in seen[0]
-    assert "ℹ️ IP Info" in seen[0]  # untouched key stays visible
 
 
 def _speed_test_env(monkeypatch, *, measure, ks_on=False, active=(), urls=(), picks=()):
@@ -944,7 +443,7 @@ def test_speed_test_menu_lists_all_presets_custom_urls_and_custom_row(monkeypatc
     for s in vpn_manager.speedtest.SERVICES:
         assert f"🌐 {s.name}" in rows
     assert "🔗 http://10.0.0.5/f.bin" in rows
-    assert rows[-2:] == [vpn_manager.SPEED_TEST_CUSTOM_LABEL, "‹ Back"]
+    assert rows[-1] == vpn_manager.SPEED_TEST_CUSTOM_LABEL
 
 
 def test_speed_test_single_service_shows_result_in_window_not_notification(monkeypatch):
@@ -1276,7 +775,7 @@ def test_dns_leak_test_menu_builds_result_rows(monkeypatch):
     assert any("Quad9" in r and "Leaked" not in r for r in rows)
     assert "bash.ws: DNS may be leaking." in rows
     assert not any(ch in r for r in rows for ch in "⚠✅")  # plain text, no status emoji
-    assert rows[-1] == "‹ Back"
+    assert "‹ Back" not in rows  # the Tools menu it led back to is gone
 
 
 def test_dns_leak_test_menu_handles_network_failure(monkeypatch):
@@ -1327,7 +826,7 @@ def test_ip_info_menu_builds_rows(monkeypatch):
     assert "🏢 Datacenter/Hosting: Yes" in rows
     assert "🕵️ Proxy/VPN detected: No" in rows
     assert "📱 Mobile network: No" in rows
-    assert rows[-1] == "‹ Back"
+    assert "‹ Back" not in rows
 
 
 def test_ip_info_menu_handles_no_findings(monkeypatch):
@@ -1340,8 +839,8 @@ def test_ip_info_menu_handles_no_findings(monkeypatch):
     assert not result.success
 
 
-def test_killswitch_item_toggle_gathers_targets(monkeypatch, tmp_path):
-    """The OFF item enables 'all' mode with the gathered whitelist."""
+def test_killswitch_tool_toggle_gathers_targets(monkeypatch, tmp_path):
+    """--tool killswitch while off enables 'all' mode with the gathered whitelist."""
     monkeypatch.setattr(vpn_manager.killswitch.config, "CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setattr(vpn_manager.killswitch, "is_enabled", lambda: False)
     monkeypatch.setattr(vpn_manager, "_killswitch_all_targets", lambda **kw: (["1.2.3.4"], ["nl"]))
@@ -1351,10 +850,21 @@ def test_killswitch_item_toggle_gathers_targets(monkeypatch, tmp_path):
         "set_mode",
         lambda on, **kw: calls.append((on, kw)) or ActionResult(True, "ok"),
     )
-    label, fn = vpn_manager._killswitch_item()
-    assert "OFF" in label and "(all)" in label
-    fn()
+    monkeypatch.setattr(vpn_manager.killswitch, "mode", lambda: "off")
+    monkeypatch.setattr(vpn_manager, "active_connections", lambda **kw: [])
+    vpn_manager.run_tool("killswitch")
     assert calls == [(True, {"extra_ips": ["1.2.3.4"], "ifaces": ["nl"]})]
+
+
+def test_killswitch_tool_refuses_under_a_networkmanager_vpn(monkeypatch):
+    """The kill switch is suspended while NM owns the tunnel (the panel hides
+    its badge and the window its button) — --tool must not toggle it either."""
+    nm = VPNConnection(name="office", provider="NetworkManager", active=True)
+    monkeypatch.setattr(vpn_manager, "active_connections", lambda **kw: [nm])
+    monkeypatch.setattr(vpn_manager.killswitch, "set_mode", lambda *a, **kw: pytest.fail("toggled"))
+    result = vpn_manager.run_tool("killswitch")
+    assert not result.success
+    assert "NetworkManager" in result.message
 
 
 def test_run_items_matches_indented_labels(monkeypatch):
@@ -1388,86 +898,6 @@ def test_unique_labels_suffix_cannot_collide_with_genuine_label():
     # actions stay attached to their original entry
     unique = vpn_manager._unique_labels(items)
     assert [a() for _, a in unique] == [1, 2, 3]
-
-
-def _happ_provider_menu_env(monkeypatch, entries, info, seen, notifications, picks):
-    class P:
-        name = "Happ"
-
-        def connections(self):
-            return []
-
-        def connect(self, conn):
-            return ActionResult(True, "ok")
-
-        def disconnect(self, conn):
-            return ActionResult(True, "ok")
-
-    monkeypatch.setattr(vpn_manager.happmeta, "server_info_suffix", lambda name, protocol="": "")
-    monkeypatch.setattr(vpn_manager.happmeta, "subscription_info", lambda sub_id: info)
-    monkeypatch.setattr(vpn_manager, "notify", lambda *a, **k: notifications.append((a, k)))
-    monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
-    picks_iter = iter(picks)
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or next(picks_iter, None),
-    )
-    return P()
-
-
-def test_happ_provider_menu_shows_traffic_info(monkeypatch):
-    """Panel info present -> leading ⓘ entry with traffic + expiry; its action
-    only notifies (never connectable)."""
-    entries = [{"name": "s1", "active": False, "provider_id": "42"}]
-    info = {
-        "upload": 0,
-        "download": 1973660012446,
-        "total": 0,
-        "expire": 1797232846,
-        "title": "oplVPN_bot",
-    }
-    seen, notifications = [], []
-    provider = _happ_provider_menu_env(
-        monkeypatch, entries, info, seen, notifications, picks=[None]
-    )
-
-    vpn_manager.happ_provider_menu(provider, "P", entries)
-    assert seen[0] == ["ⓘ Traffic 1838 GB / ∞ · until 14.12.2026", "s1", "‹ Back"]
-
-    # picking the ⓘ entry notifies with the full card, connects nothing
-    info_label = "ⓘ Traffic 1838 GB / ∞ · until 14.12.2026"
-    seen2, notifications2 = [], []
-    provider2 = _happ_provider_menu_env(
-        monkeypatch, entries, info, seen2, notifications2, picks=[info_label]
-    )
-    vpn_manager.happ_provider_menu(provider2, "P", entries)
-    card = "oplVPN_bot\n↓ 1838 GB · ↑ 0 GB / ∞\nValid until 14.12.2026"
-    assert notifications2 == [(("Happ · P", card), {})]
-
-
-def test_happ_provider_menu_omits_missing_info_parts(monkeypatch):
-    """expire None -> no 'until …' part; nothing raises on partial info."""
-    entries = [{"name": "s1", "active": False, "provider_id": "42"}]
-    info = {"upload": None, "download": None, "total": 0, "expire": None, "title": None}
-    seen, notifications = [], []
-    provider = _happ_provider_menu_env(
-        monkeypatch, entries, info, seen, notifications, picks=[None]
-    )
-    vpn_manager.happ_provider_menu(provider, "P", entries)
-    assert seen[0] == ["s1", "‹ Back"]  # nothing worth showing -> no ⓘ
-
-
-def test_happ_provider_menu_no_info_entry_without_record(monkeypatch):
-    """Older caches / captured extras (no provider_id, no info record) keep the
-    plain server list."""
-    entries = [{"name": "s1", "active": False, "provider_id": ""}]
-    seen, notifications = [], []
-    provider = _happ_provider_menu_env(
-        monkeypatch, entries, None, seen, notifications, picks=[None]
-    )
-    vpn_manager.happ_provider_menu(provider, "P", entries)
-    assert seen[0] == ["s1", "‹ Back"]
 
 
 def test_menu_input_returns_stripped_text(monkeypatch):
@@ -1558,88 +988,6 @@ def test_clear_caches_menu_tolerates_missing_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(vpn_manager, "CACHE_DIR", tmp_path / "does-not-exist")
     result = vpn_manager.clear_caches_menu()
     assert result.success
-
-
-def test_happ_menu_name_clash_marks_only_active_provider(monkeypatch, tmp_path):
-    servers = [
-        {"name": "🇩🇪 Germany", "provider_name": "P1", "provider_id": "1", "config": {}},
-        {"name": "🇩🇪 Germany", "provider_name": "P2", "provider_id": "2", "config": {}},
-    ]
-    active = VPNConnection(name="🇩🇪 Germany", provider="Happ", active=True, subscription_id="2")
-    provider = FakeProvider("Happ", [active])
-    monkeypatch.setattr(vpn_manager.happmeta, "request_subscription_update", lambda: None)
-    monkeypatch.setattr(vpn_manager.reputation, "request_update", lambda: None)
-    monkeypatch.setattr(vpn_manager.happmeta, "all_servers", lambda allow_fetch=True: servers)
-    monkeypatch.setattr(vpn_manager.happmeta, "PING_CACHE", tmp_path / "ping.json")
-    seen = []
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or None,
-    )
-    vpn_manager.happ_menu(provider)
-    assert "P2  (1/1)" in seen[0]
-    assert "P1" in seen[0]  # no active suffix for the same-named P1 server
-
-
-def test_happ_provider_menu_connects_with_subscription_identity(monkeypatch, tmp_path):
-    monkeypatch.setattr(vpn_manager.happmeta, "PING_CACHE", tmp_path / "ping.json")
-    monkeypatch.setattr(vpn_manager.happmeta, "server_params", lambda name, **kw: None)
-    monkeypatch.setattr(vpn_manager.happmeta, "subscription_info", lambda sub_id: None)
-    monkeypatch.setattr(vpn_manager, "notify", lambda *a, **k: None)
-    monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
-    got = []
-    monkeypatch.setattr(
-        vpn_manager, "guarded_connect", lambda p, c: got.append(c) or ActionResult(True, "")
-    )
-    monkeypatch.setattr(vpn_manager, "menu_select", lambda options, prompt="VPN": "🇩🇪 Germany")
-    entries = [{"name": "🇩🇪 Germany", "active": False, "provider_id": "2"}]
-    vpn_manager.happ_provider_menu(FakeProvider("Happ", []), "P2", entries)
-    assert (got[0].subscription_id, got[0].subscription_name) == ("2", "P2")
-
-
-def test_main_menu_current_connection_shows_subscription(monkeypatch):
-    conn = VPNConnection(
-        name="🇩🇪 Germany", provider="Happ", active=True, subscription_name="Wirecat"
-    )
-    monkeypatch.setattr(vpn_manager, "iface_rate", lambda iface: "")
-    monkeypatch.setattr(vpn_manager.config, "load_config", config.Config)
-    monkeypatch.setattr(vpn_manager.ipinfo, "status_line", lambda name, age: None)
-    monkeypatch.setattr(vpn_manager, "request_ip_update", lambda name: None)
-    rows = vpn_manager._current_connection_items(conn)
-    assert rows[0][0] == "↻ Happ · Wirecat: 🇩🇪 Germany"
-
-
-def test_happ_menu_passes_protocol_to_server_rows(monkeypatch, tmp_path):
-    servers = [
-        {
-            "name": "de",
-            "provider_name": "P",
-            "provider_id": "1",
-            "config": {
-                "outbounds": [
-                    {
-                        "protocol": "hysteria",
-                        "streamSettings": {"network": "hysteria", "security": "tls"},
-                    }
-                ]
-            },
-        }
-    ]
-    monkeypatch.setattr(vpn_manager.happmeta, "request_subscription_update", lambda: None)
-    monkeypatch.setattr(vpn_manager.reputation, "request_update", lambda: None)
-    monkeypatch.setattr(vpn_manager.happmeta, "all_servers", lambda allow_fetch=True: servers)
-    monkeypatch.setattr(vpn_manager.happmeta, "PING_CACHE", tmp_path / "ping.json")
-    monkeypatch.setattr(vpn_manager.happmeta, "subscription_info", lambda sub_id: None)
-    picks = iter(["P"])
-    seen = []
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or next(picks, None),
-    )
-    vpn_manager.happ_menu(FakeProvider("Happ", []))
-    assert "de    hysteria/tls" in seen[1]  # server level shows the protocol
 
 
 def _record_ipv6_guard(monkeypatch):
@@ -1850,16 +1198,6 @@ def test_failure_hint_without_vpn_and_killswitch_adds_nothing_to_a_plain_error(m
     assert vpn_manager._failure_hint("HTTP 502") == ""
 
 
-def test_refresh_subscriptions_forces_a_refetch(monkeypatch):
-    """The menu's Refresh must bypass the SUB_MAX_AGE gate: the gated
-    --update-subs ignored a click within an hour of the last fetch."""
-    spawned = []
-    monkeypatch.setattr(vpn_manager.subprocess, "Popen", lambda argv, **kw: spawned.append(argv))
-    monkeypatch.setattr(vpn_manager, "notify", lambda *a, **kw: None)
-    vpn_manager._refresh_subscriptions()
-    assert [argv[-1] for argv in spawned] == ["--update-subs-force"]
-
-
 def _fake_report_data(monkeypatch):
     monkeypatch.setattr(
         vpn_manager.happmeta,
@@ -2063,3 +1401,16 @@ def test_openvpn_keeps_the_dns_hole_until_its_tun_exists(monkeypatch, tmp_path, 
 def test_a_switch_leaves_the_ping_sweep_alone():
     """Its xray probes don't depend on the connection being switched."""
     assert "--ping-now" not in vpn_manager.CHECK_FLAGS
+
+
+def test_tool_flag_runs_the_tools_action(monkeypatch):
+    """--tool KEY (the app window's Tools buttons) runs the same TOOLS action
+    the old 🛠 Tools submenu did."""
+    ran = []
+    tools = [
+        (k, label, lambda k=k: ran.append(k) or ActionResult(True, ""))
+        for k, label, _ in vpn_manager.TOOLS
+    ]
+    monkeypatch.setattr(vpn_manager, "TOOLS", tools)
+    vpn_manager.run_tool("speed_test")
+    assert ran == ["speed_test"]

@@ -1,14 +1,13 @@
 """Ping ✓/✗ availability for WireGuard/OpenVPN: endpoint parsing, the shared
-ping cache writer, and provider_menu labels."""
+ping cache writer."""
 
 import json
 import time
 
-from test_menu import FakeProvider, patch_menu_env
+from test_menu import FakeProvider
 
 import happmeta
 import vpn_manager
-from providers.base import VPNConnection
 from providers.openvpn import ovpn_endpoint
 from providers.wireguard import wg_endpoint
 
@@ -202,45 +201,6 @@ def test_ping_mark_states(tmp_path, monkeypatch):
     assert happmeta.ping_mark("down") == "⛔"
     assert happmeta.ping_mark("stale") == ""
     assert happmeta.ping_mark("absent") == ""
-
-
-# ── provider_menu labels ──────────────────────────────────────────────────────
-
-
-def test_provider_menu_labels_show_ping(monkeypatch, tmp_path):
-    ping_file = tmp_path / "ping.json"
-    monkeypatch.setattr(vpn_manager.happmeta, "PING_CACHE", ping_file)
-    now = time.time()
-    ping_file.write_text(
-        json.dumps(
-            {
-                "fast": {"ms": 12.0, "at": now},
-                "down": {"ms": None, "at": now},
-                "unmeasured": {"ms": 1.0, "at": now - 99999},
-            }
-        )
-    )
-    wg = FakeProvider(
-        "WireGuard",
-        [
-            VPNConnection(name="fast", provider="WireGuard", active=False),
-            VPNConnection(name="down", provider="WireGuard", active=False),
-            VPNConnection(name="unmeasured", provider="WireGuard", active=True),
-        ],
-    )
-    seen = []
-    patch_menu_env(monkeypatch, [wg], picks=[])
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or None,
-    )
-    vpn_manager.provider_menu(wg)
-    options = seen[0]
-    assert "fast    ✓ 12 ms" in options
-    assert "down    ⛔" in options
-    assert "Disconnect unmeasured" in options  # stale measurement: plain label
-    assert not any(o.endswith("unmeasured    ✓ 1 ms") for o in options)
 
 
 # ── sweep resilience (FIX 1) ──────────────────────────────────────────────────

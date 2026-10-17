@@ -1,6 +1,6 @@
 # omarchy-vpn
 
-> **Status:** built for **Omarchy 4** (omarchy-shell bar + omarchy.menu). The
+> **Status:** built for **Omarchy 4** (omarchy-shell bar widget, panel and window). The
 > Omarchy 3 (Waybar + Walker) version lives in its own repository —
 > [waybar-vpn-manager](https://github.com/moonmouse11/waybar-vpn-manager)
 > (archived at v0.3.0).
@@ -9,8 +9,9 @@ A VPN manager plugin for the [Omarchy](https://omarchy.org/) shell with support 
 **WireGuard, AmneziaWG, OpenVPN, Shadowsocks (ss://), VLESS (vless://), Happ** and any VPN managed by **NetworkManager**.
 Built for Arch Linux with Hyprland / [Omarchy](https://omarchy.org/).
 
-Two-level menu in omarchy.menu: pick a provider → pick a connection.
-Opens with a **SUPER+Shift+V** shortcut, a right click on the bar widget, or from its panel.
+A bar widget with a panel (left click) and an app window — **SUPER+Shift+V**, a right click on
+the widget, or `m` in the panel: every connection with search and ping on the left, the
+connection's state, protection checks and tools on the right.
 
 ## Features
 
@@ -32,8 +33,12 @@ Opens with a **SUPER+Shift+V** shortcut, a right click on the bar widget, or fro
   "Protected" show only once exit, DNS and IPv6 have all passed — until then
   "Unverified". ⚙ Settings → "Run the DNS leak test after every connect" (off by
   default) runs that test silently in the background and only notifies on a leak
-- **Two-level menu** — providers with `(active/total)` counters → connections;
-  `Disconnect ALL`, killswitch toggle and import/manage actions where supported
+- **App window** — Locations (all connections, filter, ping) next to Connection (state,
+  exit IP, protection badges) and Tools; same keys as the panel. Protocols (Happ, WireGuard,
+  AmneziaWG, VLESS, Shadowsocks, OpenVPN, NetworkManager — empty ones too) show as a tree
+  (default; the bar panel always uses it), tabs or a sidebar: ⚙ Settings → "Protocols in the
+  VPN window"; `[`/`]` switch tabs. Config import and profile
+  management (the old omarchy.menu menu, removed) move into the window next
 - **Happ headless** — full server list straight from the provider subscriptions,
   configs generated like the GUI does; connect/switch any server **without opening
   the Happ GUI** (it keeps working in parallel, state is shared via happd)
@@ -51,15 +56,12 @@ Opens with a **SUPER+Shift+V** shortcut, a right click on the bar widget, or fro
 - **Errors as notifications** — a config the installed xray rejects (e.g. after
   a Happ update), a tunnel that died for good, or a failed tool shows a critical
   notification with the reason instead of failing silently
-- **Config import** — WireGuard/OpenVPN (system dirs) and via `nmcli connection import`
-- **Profile management** — autostart toggle (systemd `wg-quick@` / NM autoconnect),
-  config delete, all from the menu
 - **User config** — hide providers, auto-killswitch mode, exit-IP refresh interval
   (`~/.config/vpn-manager/config.json`)
 - **NetworkManager provider** — shows/controls any VPN connection NM manages
   (openvpn, wireguard, vpnc, ikev2, openconnect, …)
-- **🛠 Tools submenu** — DNS Leak Test, IP Info, Speed Test, Refresh All,
-  Clear Caches, Settings and Killswitch, grouped off the main menu. The long
+- **Tools** — DNS Leak Test, IP Info, Speed Test, Refresh All, Clear Caches,
+  Settings and Killswitch, one button each in the app window. The long
   ones (DNS Leak Test, IP Info, Speed Test) report progress in one notification
   updated step by step
 - **DNS Leak Test** — bash.ws's protocol plus checks of its own: resolvers
@@ -70,7 +72,7 @@ Opens with a **SUPER+Shift+V** shortcut, a right click on the bar widget, or fro
 - **Pluggable IP sources** — multi-source exit-IP/reputation lookups (free
   sources on by default; keyed sources like AbuseIPDB/IPQualityScore once an
   API key is configured), managed from the same `~/.config/vpn-manager/config.json`
-- **Settings** — 🛠 Tools → ⚙ Settings opens a small floating terminal with
+- **Settings** — the window's Settings button opens a small floating terminal with
   every option and its current value: ↑/↓ to move, Space to change it in place,
   `s` to save, `q` to quit (`vpn_manager.py --settings` runs it in any terminal). The terminal wizard
   (`--configure`) asks the same questions one by one and runs as the last step
@@ -78,10 +80,10 @@ Opens with a **SUPER+Shift+V** shortcut, a right click on the bar widget, or fro
 
 ## Requirements
 
-**Core (menu, status, WireGuard/OpenVPN):**
+**Core (status, WireGuard/OpenVPN):**
 
 - [Omarchy](https://omarchy.org/) 4 — `omarchy-shell` (bar widget plugin) and
-  `omarchy-menu-select`/`omarchy-menu-input` (the menus)
+  `omarchy-menu-select`/`omarchy-menu-input` (tool results — DNS Leak Test, IP Info, Speed Test — until the window shows them)
 - `python` (stdlib only, no pip packages)
 - `wireguard-tools` (`wg-quick`), `openvpn`, `openresolv`
 - `iproute2` (`ip`, `ss`), `nftables` (killswitch), `sudo` (NOPASSWD rules from `install.sh`)
@@ -122,15 +124,15 @@ The installer:
    tools and IP sources to show, and optionally set IP-source API keys; safe to
    Ctrl-C or skip (e.g. non-interactive installs), re-run any time with:
    `python3 ~/.local/share/omarchy-vpn/src/vpn_manager.py --configure`, or via the
-   in-menu ⚙ Settings action
+   window's Settings button
 
 The shell and Hyprland pick everything up live — no restart needed.
 
 Widget settings (`bar.layout.right[]` entry in `~/.config/omarchy/shell.json`, or
 `omarchy bar set omarchy-vpn <key> <value>`): `interval` (seconds, default 3),
-`showLabel` (`false` = icon only), `labelFormat` (below). Clicks: left = panel, right = menu,
+`showLabel` (`false` = icon only), `labelFormat` (below). Clicks: left = panel, right = window,
 middle = refresh. Panel keys: `j`/`k` move, `Enter` connect/disconnect, `h`/`l` collapse/expand a
-group, `/` filter (`Esc` leaves it), `t` toggle, `m` menu, `d` DNS leak test, `f` cycle label
+group, `/` filter (`Esc` leaves it), `t` toggle, `m` window, `d` DNS leak test, `f` cycle label
 presets, `r` refresh, `Esc` close.
 
 #### Bar label template
@@ -169,7 +171,7 @@ same device as the app, so it never takes another slot. Nothing to set up, no
 sudo.
 
 A provider that still refuses (device limit reached, unsupported client) shows
-up in the Happ menu as `⚠️ <provider>: <its message>`. Free a device slot in
+up in the window's server list as `<provider> · ⚠ <its message>`. Free a device slot in
 the provider's bot. Only if the panel checks more than these headers, capture
 Happ's full request once from your own machine with a short-lived local CA and
 HTTPS server (nothing leaves the machine; needs sudo):
@@ -193,12 +195,12 @@ HTTPS server (nothing leaves the machine; needs sudo):
 
 After that the full server list, generated configs, ping and headless connect
 work out of the box; subscriptions refresh in the background (hourly, or
-🛠 Tools → 🔄 Refresh All) and new servers from the provider appear
+the window's Refresh subscriptions) and new servers from the provider appear
 automatically.
 
 ## Usage
 
-- **SUPER+Shift+V** or a right click on the bar widget → menu
+- **SUPER+Shift+V** or a right click on the bar widget → app window
 - Left click on the bar widget → panel (state, exit IP, protection badges)
 - Status tooltip: traffic, exit IP + country
 - Logs: `~/.local/state/vpn-manager/vpn-manager.log`
@@ -216,15 +218,15 @@ automatically.
   "exit_ip": {"enabled": true, "max_age_seconds": 600},
   "dns_mode": "tunnel",                 // "tunnel" | "subscription" — who routes xray's DNS
   "speed_test_urls": ["http://10.0.0.5/100MB.bin"],  // extra Speed Test targets
-  "ip_sources": {                       // 🛠 Tools → IP Info source configuration
+  "ip_sources": {                       // IP Info source configuration
     "abuseipdb": {"api_key": "..."},    // keyed sources: enabled by setting api_key
     "ipwhois": {"enabled": true}        // free sources: enabled by default, opt-out here
   },
-  "tools_visible": {"dns_leak_test": true, "killswitch": true}  // hide 🛠 Tools entries
+  "tools_visible": {"dns_leak_test": true, "killswitch": true}  // hide the window's Tools buttons
 }
 ```
 
-Use ⚙ Settings in the 🛠 Tools menu (or the terminal wizard, `--configure`) instead of
+Use the window's Settings button (or the terminal wizard, `--configure`) instead of
 hand-editing `ip_sources`/`tools_visible`/`dns_mode` if you'd rather be walked through it.
 
 `dns_mode: "tunnel"` (the default) costs a subscription's split DNS: `.ru` names
@@ -249,9 +251,9 @@ transaction, so a server switch never leaves a moment without rules.
 kill switch keeps blocking until you turn it off. With Lockdown off the rules exist only
 while a VPN is connected. Local networks stay reachable either way.
 
-Three modes (`killswitch_mode` in config, or the 🛠 Tools → Killswitch toggle):
+Three modes (`killswitch_mode` in config, or the window's Kill switch button):
 
-- **off** — managed manually from the menu, no auto behaviour
+- **off** — managed manually (the window's Kill switch button), no auto behaviour
 - **happ** — auto-enabled alongside Happ only; suspended while any other
   provider is connected, re-arms on the next Happ connect
 - **all** — auto-enabled for every connect; WireGuard/AmneziaWG/OpenVPN/
@@ -268,13 +270,13 @@ The script is root-owned in `/usr/local/bin`: changes reach it only with `make i
 ```
 omarchy-shell widget (plugin/Widget.qml)
   --(3 s)--> vpn_manager.py --status --> JSON (aggregated, cached exit IP)
-  click   --> vpn_manager.py --menu --> omarchy-menu-select (2-level) --> provider actions
+  panel + window (AppWindow.qml) --> --servers / --connect / --tool KEY
   <-- omarchy-shell omarchy-vpn refresh (after every action)
 Happ connect --> --happ-keeper (long-lived happd session owning xray)
               --> happd (root daemon) --> xray (TUN)
 
 src/
-  vpn_manager.py      entry point: status, menu, Tools submenu, configure wizard
+  vpn_manager.py      entry point: status, server list, connect, tools, configure wizard
   settings_tui.py     ⚙ Settings list (curses, in a floating terminal)
   config.py           user config load/save (providers, tools_visible, ip_sources, dns_mode, …)
   notifyutil.py       notify-send wrapper: text sanitising, in-place progress
@@ -352,7 +354,7 @@ class appears automatically (`vpn-<provider-lowercase>`).
 
 ## Adding a new IP-intelligence source
 
-Same shape, for `🛠 Tools → ℹ️ IP Info` and the background reputation sweep.
+Same shape, for the window's IP info and the background reputation sweep.
 Create `src/ipsources/mysource.py` implementing `IPInfoSource`:
 
 ```python

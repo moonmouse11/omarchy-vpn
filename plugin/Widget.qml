@@ -495,6 +495,11 @@ Panel {
       if (!checkWindow.backingWindowVisible) {
         checkWindow.visible = false
         checkWindow.visible = true
+      } else {
+        // already up, maybe behind other windows: bring it forward, like
+        // omarchy-launch-or-focus does
+        Quickshell.execDetached(["hyprctl", "dispatch",
+          'hl.dsp.focus({ window = "title:^VPN Check$" })'])
       }
     } else {
       checkOpen = true

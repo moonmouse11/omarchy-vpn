@@ -84,7 +84,7 @@ connection's state, protection checks and tools on the right.
 **Core (status, WireGuard/OpenVPN):**
 
 - [Omarchy](https://omarchy.org/) 4 — `omarchy-shell` (bar widget plugin) and
-  `omarchy-menu-select`/`omarchy-menu-input` (tool results — DNS Leak Test, IP Info, Speed Test — until the window shows them)
+  `omarchy-file-select` (the import file chooser)
 - `python` (stdlib only, no pip packages)
 - `wireguard-tools` (`wg-quick`), `openvpn`, `openresolv`
 - `iproute2` (`ip`, `ss`), `nftables` (killswitch), `sudo` (NOPASSWD rules from `install.sh`)

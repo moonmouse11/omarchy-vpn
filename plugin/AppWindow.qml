@@ -14,16 +14,6 @@ FloatingWindow {
   // the Widget scrolls this list while the window is open
   readonly property alias locations: locations
 
-  // the old 🛠 Tools submenu, one button each (--tool KEY)
-  readonly property var tools: [
-    { key: "dns_leak_test", label: "DNS leak test" },
-    { key: "ip_info", label: "IP info" },
-    { key: "speed_test", label: "Speed test" },
-    { key: "refresh_all", label: "Refresh subscriptions" },
-    { key: "clear_caches", label: "Clear caches" },
-    { key: "killswitch", label: "Kill switch on/off" },
-    { key: "settings", label: "Settings" }
-  ]
 
   title: "VPN"
   color: Color.background
@@ -33,7 +23,10 @@ FloatingWindow {
   visible: false  // Widget.openWindow() shows it; Esc or Hyprland's close hides it
 
   onVisibleChanged: {
-    if (visible) Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    if (visible) Qt.callLater(function() {
+      if (win.host.checkOpen) checkCard.focusKeys()
+      else keyCatcher.forceActiveFocus()
+    })
     else if (host) host.closeProfileBar()
   }
 
@@ -43,6 +36,10 @@ FloatingWindow {
     function onProfileModeChanged() {
       if (win.host.profileMode === "import") profileBar.focusInput()
       else if (win.host.profileMode === "") keyCatcher.forceActiveFocus()
+    }
+    function onCheckOpenChanged() {
+      if (win.host.checkOpen) checkCard.focusKeys()
+      else keyCatcher.forceActiveFocus()
     }
     function onDeleteConfirmOpenChanged() {
       if (win.host.deleteConfirmOpen) confirmKeys.forceActiveFocus()
@@ -68,6 +65,7 @@ FloatingWindow {
     anchors.margins: Style.space(20)
     // typing in the filter must not drive the cursor (j/k/h/l are moves)
     blocked: locations.filterFocused || profileBar.inputFocused || win.host.deleteConfirmOpen
+      || win.host.checkOpen
     onMoveRequested: function(dx, dy) {
       if (dy !== 0) win.host.moveServerCursor(dy)
       else win.host.openCursorGroup(dx > 0)
@@ -198,27 +196,9 @@ FloatingWindow {
             fontFamily: win.host.fontFamily
           }
 
-          Flow {
+          ToolButtons {
             width: parent.width
-            spacing: Style.space(8)
-
-            Repeater {
-              // ⚙ Settings hides tools; no kill switch under a NetworkManager VPN
-              // (panel_state's "tools"; all of them before the first status)
-              model: win.tools.filter(function(t) {
-                var keys = win.host.panelData.tools
-                return !(keys instanceof Array) || keys.indexOf(t.key) !== -1
-              })
-              Button {
-                required property var modelData
-                text: modelData.label
-                foreground: win.host.foreground
-                fontFamily: win.host.fontFamily
-                fontSize: Style.font.bodySmall
-                bordered: true
-                onClicked: win.host.runArgs(["--tool", modelData.key])
-              }
-            }
+            host: win.host
           }
         }
       }
@@ -240,6 +220,12 @@ FloatingWindow {
       font.pixelSize: Style.font.caption
       horizontalAlignment: Text.AlignHCenter
     }
+  }
+
+  CheckCard {
+    id: checkCard
+    anchors.fill: parent
+    host: win.host
   }
 
   // x / Delete…: a profile is gone for good (its config file or NM connection)

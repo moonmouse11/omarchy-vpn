@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import pytest
 
 import config
@@ -43,10 +41,6 @@ def patch_menu_env(monkeypatch, providers, picks):
     monkeypatch.setattr(vpn_manager, "iface_rate", lambda iface: None)
     monkeypatch.setattr(vpn_manager, "iface_traffic", lambda iface: None)
     monkeypatch.setattr(vpn_manager, "sample_iface_traffic", lambda iface: None)
-    iterator = iter(picks)
-    monkeypatch.setattr(
-        vpn_manager, "menu_select", lambda options, prompt="VPN": next(iterator, None)
-    )
 
 
 class HappLikeProvider:
@@ -313,71 +307,6 @@ def test_happ_connect_passes_resolved_server_ip(monkeypatch, tmp_path):
     assert calls == [["198.51.100.30", "3.3.3.3"]]
 
 
-def test_menu_select_timeout_hides_menu(monkeypatch):
-    """omarchy-menu-select polls its done-file forever: a menu that never
-    answers must not hang the VPN menu — timeout -> hide omarchy.menu."""
-    import subprocess
-
-    ran = []
-
-    def fake_run(cmd, **kwargs):
-        ran.append(cmd)
-        if cmd[0] == "omarchy-menu-select":
-            raise subprocess.TimeoutExpired(cmd, 1)
-        return SimpleNamespace(returncode=0, stdout="")
-
-    monkeypatch.setattr(vpn_manager.subprocess, "run", fake_run)
-    assert vpn_manager.menu_select(["a", "b"]) is None
-    assert ["omarchy-shell", "-q", "shell", "hide", "omarchy.menu"] in ran
-
-
-def test_menu_select_passes_size_args(monkeypatch):
-    """Regression: omarchy.menu's default 300-unit card cuts off server
-    names with ping/protocol info and DNS-leak resolver rows."""
-    captured = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return SimpleNamespace(returncode=0, stdout="a\n")
-
-    monkeypatch.setattr(vpn_manager.subprocess, "run", fake_run)
-    assert vpn_manager.menu_select(["a", "b"], prompt="P") == "a"
-    cmd = captured["cmd"]
-    assert cmd[:4] == ["omarchy-menu-select", "P", "a", "b"]
-    assert cmd[cmd.index("--") :] == vpn_manager.MENU_SIZE_ARGS
-    assert cmd[cmd.index("--width") + 1] == str(vpn_manager.MENU_WIDTH)
-
-
-def test_menu_select_flattens_tabs_and_newlines(monkeypatch):
-    """omarchy.menu reads "<glyph>\t<label>\t<subtext>": a TAB in a
-    subscription's server name would hide the name as a glyph."""
-    captured = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return SimpleNamespace(returncode=0, stdout="DE 1 Fast\n")
-
-    monkeypatch.setattr(vpn_manager.subprocess, "run", fake_run)
-    vpn_manager.menu_select(["DE\t1\nFast"])
-    assert captured["cmd"][2] == "DE 1 Fast"
-
-
-def test_menu_select_dismissed_returns_none(monkeypatch):
-    monkeypatch.setattr(
-        vpn_manager.subprocess, "run", lambda cmd, **k: SimpleNamespace(returncode=1, stdout="")
-    )
-    assert vpn_manager.menu_select(["a"]) is None
-
-
-def test_run_items_matches_a_label_with_a_tab(monkeypatch):
-    """The menu returns the flattened label — it must still find its action."""
-    monkeypatch.setattr(vpn_manager, "menu_select", lambda options, prompt="VPN": "DE 1")
-    monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
-    monkeypatch.setattr(vpn_manager, "notify", lambda *a, **k: None)
-    result = vpn_manager.run_items([("DE\t1", lambda: ActionResult(True, "picked"))], "VPN")
-    assert result.message == "picked"
-
-
 def test_refresh_bar_calls_the_widget_ipc(monkeypatch):
     ran = []
     monkeypatch.setattr(vpn_manager.subprocess, "run", lambda cmd, **k: ran.append(cmd))
@@ -397,12 +326,10 @@ def test_connect_disconnects_other_tunnels(monkeypatch):
     assert happ.disconnected == ["de"]  # torn down before the new connect
 
 
-def _speed_test_env(monkeypatch, *, measure, ks_on=False, active=(), urls=(), picks=()):
-    """picks: menu selections in order; once exhausted the menu returns None
-    (window closed). Returns (cfg, notes, windows) — windows is every
-    (prompt, rows) the menu was shown."""
-    notes, windows = [], []
-    picks = iter(picks)
+def _speed_test_env(monkeypatch, *, measure, ks_on=False, active=(), urls=()):
+    """Returns (cfg, notes, emitted) — emitted is every JSON line --check
+    printed for the window's card."""
+    notes, emitted = [], []
     cfg = config.Config(speed_test_urls=list(urls))
     monkeypatch.setattr(vpn_manager.config, "load_config", lambda: cfg)
     monkeypatch.setattr(vpn_manager, "notify", lambda t, m, urgent=False: notes.append(m))
@@ -417,12 +344,8 @@ def _speed_test_env(monkeypatch, *, measure, ks_on=False, active=(), urls=(), pi
     monkeypatch.setattr(vpn_manager.speedtest, "measure", measure)
     monkeypatch.setattr(vpn_manager.killswitch, "is_enabled", lambda: ks_on)
     monkeypatch.setattr(vpn_manager, "active_connections", lambda: list(active))
-    monkeypatch.setattr(
-        vpn_manager,
-        "menu_select",
-        lambda options, prompt="": windows.append((prompt, list(options))) or next(picks, None),
-    )
-    return cfg, notes, windows
+    monkeypatch.setattr(vpn_manager, "_emit", emitted.append)
+    return cfg, notes, emitted
 
 
 def _ok(mbps):
@@ -433,37 +356,40 @@ def _err(reason):
     return vpn_manager.speedtest.Measurement(error=reason)
 
 
-def test_speed_test_menu_lists_all_presets_custom_urls_and_custom_row(monkeypatch):
-    *_, windows = _speed_test_env(
+def _result_rows(emitted):
+    return [r["text"] for r in emitted[-1]["result"]["rows"]]
+
+
+def test_speed_test_choices_list_all_presets_and_custom_urls(monkeypatch):
+    *_, emitted = _speed_test_env(
         monkeypatch, measure=lambda url, d: _ok(1.0), urls=["http://10.0.0.5/f.bin"]
     )
-    vpn_manager.speed_test_menu()
-    rows = windows[0][1]
-    assert rows[0] == vpn_manager.SPEED_TEST_ALL_LABEL
+    vpn_manager.run_check("speed")
+    choices = emitted[0]["choices"]
+    assert choices[0] == {"key": "all", "label": vpn_manager.SPEED_TEST_ALL_LABEL}
     for s in vpn_manager.speedtest.SERVICES:
-        assert f"🌐 {s.name}" in rows
-    assert "🔗 http://10.0.0.5/f.bin" in rows
-    assert rows[-1] == vpn_manager.SPEED_TEST_CUSTOM_LABEL
+        assert {"key": s.name, "label": f"🌐 {s.name}"} in choices
+    assert {"key": "http://10.0.0.5/f.bin", "label": "🔗 http://10.0.0.5/f.bin"} in choices
 
 
-def test_speed_test_single_service_shows_result_in_window_not_notification(monkeypatch):
+def test_speed_test_single_service_shows_result_in_the_card_not_a_notification(monkeypatch):
     called = []
     svc = vpn_manager.speedtest.SERVICES[0]
-    _, notes, windows = _speed_test_env(
-        monkeypatch,
-        measure=lambda url, d: called.append((url, d)) or _ok(123.45),
-        picks=[f"🌐 {svc.name}"],
+    _, notes, emitted = _speed_test_env(
+        monkeypatch, measure=lambda url, d: called.append((url, d)) or _ok(123.45)
     )
-    result = vpn_manager.speed_test_menu()
+    result = vpn_manager.run_check("speed", svc.name)
     assert called == [(svc.url, vpn_manager.speedtest.DURATION)]
-    assert result.message == ""
+    assert result.success and result.message == ""
     assert not any("Mbit/s" in m for m in notes)  # only the progress bubble
-    prompt, rows = windows[1]
-    assert prompt == vpn_manager.SPEED_TEST_TITLE
+    rows = _result_rows(emitted)
     assert rows[0] == "Route: direct (no VPN)"
     assert f"{svc.name}: ⬇ 123.5 Mbit/s" in rows
     assert not any(r.startswith("🏆") for r in rows)  # single result — nothing to compare
-    assert rows[-2:] == ["🔁 Run again", "‹ Back"]
+    assert emitted[-1]["result"]["summary"] == {
+        "state": "ok",
+        "text": f"{svc.name}: ⬇ 123.5 Mbit/s",
+    }
 
 
 def test_speed_test_all_services_runs_each_in_turn_and_names_fastest(monkeypatch):
@@ -478,39 +404,30 @@ def test_speed_test_all_services_runs_each_in_turn_and_names_fastest(monkeypatch
         [vpn_manager.speedtest.Service(k.upper(), f"http://{k}") for k in "ab"],
     )
     called = []
-    _, notes, windows = _speed_test_env(
+    _, notes, emitted = _speed_test_env(
         monkeypatch,
         measure=lambda url, d: called.append((url, d)) or speeds[url],
         urls=["http://c"],
-        picks=[vpn_manager.SPEED_TEST_ALL_LABEL],
     )
-    vpn_manager.speed_test_menu()
+    vpn_manager.run_check("speed", "all")
     d = vpn_manager.SPEED_TEST_ALL_DURATION
     assert called == [("http://a", d), ("http://b", d), ("http://c", d)]
     assert [m.split(":")[0] for m in notes] == ["1/3 · A", "2/3 · B", "3/3 · http"]
-    rows = windows[1][1]
+    assert [e["step"] for e in emitted if "step" in e] == [1, 2, 3]  # the card's progress
+    rows = _result_rows(emitted)
     assert "A: ⬇ 50.0 Mbit/s" in rows
     assert "B: ✗ HTTPError: HTTP Error 403" in rows
     assert "http://c: ⬇ 90.0 Mbit/s" in rows
     assert "🏆 Fastest: http://c (90.0 Mbit/s)" in rows
-
-
-def test_speed_test_run_again_repeats_same_targets(monkeypatch):
-    called = []
-    _speed_test_env(
-        monkeypatch,
-        measure=lambda url, d: called.append(url) or _ok(1.0),
-        picks=["🔁 Run again"],
-    )
-    vpn_manager._run_speed_tests([("X", "http://x")])
-    assert called == ["http://x", "http://x"]
+    states = {r["text"]: r["state"] for r in emitted[-1]["result"]["rows"]}
+    assert states["B: ✗ HTTPError: HTTP Error 403"] == "bad"
 
 
 def test_speed_test_route_row_names_active_vpn(monkeypatch):
     conn = VPNConnection(name="de1", provider="WireGuard", active=True)
-    *_, windows = _speed_test_env(monkeypatch, measure=lambda url, d: _ok(1.0), active=[conn])
-    vpn_manager._run_speed_tests([("X", "http://x")])
-    assert windows[0][1][0] == f"Route: {conn.label}"
+    *_, emitted = _speed_test_env(monkeypatch, measure=lambda url, d: _ok(1.0), active=[conn])
+    vpn_manager.run_check("speed", "http://x/f")
+    assert _result_rows(emitted)[0] == f"Route: {conn.label}"
 
 
 def test_speed_test_custom_url_is_measured_and_remembered(monkeypatch):
@@ -521,10 +438,12 @@ def test_speed_test_custom_url_is_measured_and_remembered(monkeypatch):
         urls=["http://old/a", "http://new/b"],
     )
     monkeypatch.setattr(vpn_manager.config, "save_config", saved.append)
-    monkeypatch.setattr(vpn_manager, "menu_input", lambda prompt: "http://new/b")
-    assert vpn_manager._speed_test_custom_url().success
+    assert vpn_manager.run_check("speed", "http://new/b").success
     assert called == ["http://new/b"]
-    assert saved and saved[0].speed_test_urls == ["http://new/b", "http://old/a"]
+    # a remembered URL is a known target: measured, not re-saved
+    assert saved == []
+    assert vpn_manager.run_check("speed", "http://newer/c").success
+    assert saved[0].speed_test_urls == ["http://newer/c", "http://old/a", "http://new/b"]
 
 
 def test_speed_test_custom_urls_capped_newest_first(monkeypatch):
@@ -532,44 +451,42 @@ def test_speed_test_custom_urls_capped_newest_first(monkeypatch):
     old = [f"http://old/{i}" for i in range(vpn_manager.SPEED_TEST_MAX_URLS)]
     _speed_test_env(monkeypatch, measure=lambda url, d: _ok(5.0), urls=old)
     monkeypatch.setattr(vpn_manager.config, "save_config", saved.append)
-    monkeypatch.setattr(vpn_manager, "menu_input", lambda prompt: "http://new/x")
-    assert vpn_manager._speed_test_custom_url().success
+    assert vpn_manager.run_check("speed", "http://new/x").success
     assert saved[0].speed_test_urls == ["http://new/x", *old[:-1]]
 
 
 def test_speed_test_custom_url_matching_a_preset_is_not_listed_twice(monkeypatch):
     preset = vpn_manager.speedtest.SERVICES[0]
     called = []
-    *_, windows = _speed_test_env(
-        monkeypatch,
-        measure=lambda url, d: called.append(url) or _ok(1.0),
-        urls=[preset.url],
-        picks=[vpn_manager.SPEED_TEST_ALL_LABEL],
+    *_, emitted = _speed_test_env(
+        monkeypatch, measure=lambda url, d: called.append(url) or _ok(1.0), urls=[preset.url]
     )
-    vpn_manager.speed_test_menu()
-    assert not any(preset.url in row for row in windows[0][1])
+    vpn_manager.run_check("speed")
+    assert not any(preset.url in c["key"] for c in emitted[0]["choices"])
+    vpn_manager.run_check("speed", "all")
     assert called.count(preset.url) == 1
 
 
 def test_speed_test_custom_url_rejects_non_http(monkeypatch):
-    _speed_test_env(monkeypatch, measure=lambda url, d: _ok(5.0))
+    *_, emitted = _speed_test_env(monkeypatch, measure=lambda url, d: pytest.fail("measured"))
     monkeypatch.setattr(vpn_manager.config, "save_config", lambda cfg: pytest.fail("saved"))
-    monkeypatch.setattr(vpn_manager, "menu_input", lambda prompt: "file:///etc/passwd")
-    assert not vpn_manager._speed_test_custom_url().success
+    result = vpn_manager.run_check("speed", "file:///etc/passwd")
+    assert not result.success
+    assert result.message == ""  # the card shows it; _report must not notify too
+    assert emitted == [{"error": "Not an http(s) URL: file:///etc/passwd"}]
 
 
 def test_speed_test_failure_explains_killswitch_without_vpn(monkeypatch):
-    *_, windows = _speed_test_env(monkeypatch, measure=lambda url, d: _err("URLError"), ks_on=True)
-    vpn_manager._run_speed_tests([("X", "http://x")])
-    assert any("Killswitch is on" in r for r in windows[0][1])
+    *_, emitted = _speed_test_env(monkeypatch, measure=lambda url, d: _err("URLError"), ks_on=True)
+    vpn_manager.run_check("speed", "http://x/f")
+    assert "killswitch blocks all traffic" in emitted[-1]["error"]
 
 
-def test_speed_test_failure_without_killswitch_has_no_killswitch_row(monkeypatch):
-    *_, windows = _speed_test_env(monkeypatch, measure=lambda url, d: _err("URLError"))
-    vpn_manager._run_speed_tests([("X", "http://x")])
-    rows = windows[0][1]
-    assert "X: ✗ URLError" in rows
-    assert not any("Killswitch" in r for r in rows)
+def test_speed_test_failure_without_killswitch_names_the_error_only(monkeypatch):
+    *_, emitted = _speed_test_env(monkeypatch, measure=lambda url, d: _err("URLError"))
+    vpn_manager.run_check("speed", "http://x/f")
+    assert "URLError" in emitted[-1]["error"]
+    assert "killswitch" not in emitted[-1]["error"]
 
 
 def test_dns_leak_server_row_country_alone_is_not_a_leak():
@@ -578,12 +495,12 @@ def test_dns_leak_server_row_country_alone_is_not_a_leak():
     row = vpn_manager._dns_leak_server_row(
         {"ip": "198.51.100.40", "country": "ru", "org": "CloudFlare Inc"}
     )
-    assert row[0] == "🇷🇺 198.51.100.40 · CloudFlare Inc"
+    assert row == "🇷🇺 198.51.100.40 · CloudFlare Inc"
 
 
 def test_dns_leak_server_row_clean_no_warning():
     row = vpn_manager._dns_leak_server_row({"ip": "9.9.9.9", "country": "de", "org": "Quad9"})
-    label = row[0]
+    label = row
     assert label == "🇩🇪 9.9.9.9 · Quad9"
     assert "⚠RU" not in label
 
@@ -592,7 +509,7 @@ def test_dns_leak_server_row_falls_back_to_asn_without_org():
     row = vpn_manager._dns_leak_server_row(
         {"ip": "1.1.1.1", "country": "au", "asn": "AS13335 CloudFlare Inc"}
     )
-    assert "AS13335 CloudFlare Inc" in row[0]
+    assert "AS13335 CloudFlare Inc" in row
 
 
 class _FakeProgress:
@@ -617,7 +534,7 @@ class _FakeProgress:
 def _dns_leak_menu_env(
     monkeypatch, result, active=(), countries=None, ipv6_off=True, second_opinion=None
 ):
-    """Wire dns_leak_test_menu()'s collaborators; returns the captured rows list.
+    """Wire run_check("dns")'s collaborators; returns the captured rows list.
     second_opinion: what ipwho.is says about the exit IP's country."""
     monkeypatch.setattr(vpn_manager.ipinfo, "country_of_ip", lambda ip: second_opinion)
     monkeypatch.setattr(vpn_manager, "notify", lambda *a, **k: None)
@@ -630,8 +547,10 @@ def _dns_leak_menu_env(
     seen = []
     monkeypatch.setattr(
         vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or None,
+        "_emit",
+        lambda obj: (
+            seen.append([r["text"] for r in obj["result"]["rows"]]) if "result" in obj else None
+        ),
     )
     return seen
 
@@ -656,7 +575,7 @@ def test_dns_leak_server_row_adds_own_check_tags():
         ip_country="DE",
         ip_asn=24940,
     )
-    assert row[0].endswith("  Leaked")
+    assert row.endswith("  Leaked")
 
 
 def test_dns_leak_menu_own_verdict_flags_foreign_resolvers(monkeypatch):
@@ -670,7 +589,7 @@ def test_dns_leak_menu_own_verdict_flags_foreign_resolvers(monkeypatch):
         ),
         active=[_wg("de1")],
     )
-    vpn_manager.dns_leak_test_menu()
+    vpn_manager.run_check("dns")
     assert "Leaked: 1/2 DNS outside VPN/public resolvers" in seen[0]
 
 
@@ -680,7 +599,7 @@ def test_dns_leak_menu_own_verdict_clean(monkeypatch):
         _leak_result([{"ip": "198.51.100.40", "country": "nl", "asn": "AS13335 CloudFlare"}]),
         active=[_wg("de1")],
     )
-    vpn_manager.dns_leak_test_menu()
+    vpn_manager.run_check("dns")
     assert "DNS via VPN or public resolvers" in seen[0]
 
 
@@ -690,13 +609,13 @@ def test_dns_leak_menu_no_own_verdict_without_exit_ip_data(monkeypatch):
         _leak_result([{"ip": "9.9.9.9"}], ip_country="", ip_asn=None),
         active=[_wg("de1")],
     )
-    vpn_manager.dns_leak_test_menu()
+    vpn_manager.run_check("dns")
     assert not any("DNS via" in r or "DNS outside" in r for r in seen[0])
 
 
 def test_dns_leak_menu_warns_when_no_vpn_active(monkeypatch):
     seen = _dns_leak_menu_env(monkeypatch, _leak_result([]), active=[])
-    vpn_manager.dns_leak_test_menu()
+    vpn_manager.run_check("dns")
     assert "No VPN active — this is your real IP" in seen[0]
 
 
@@ -704,7 +623,7 @@ def test_dns_leak_menu_exit_country_matches_connection(monkeypatch):
     seen = _dns_leak_menu_env(
         monkeypatch, _leak_result([]), active=[_wg("de1")], countries={"de1": "DE"}
     )
-    vpn_manager.dns_leak_test_menu()
+    vpn_manager.run_check("dns")
     assert "Exit matches de1 🇩🇪" in seen[0]
 
 
@@ -715,29 +634,29 @@ def test_dns_leak_menu_exit_country_mismatch(monkeypatch):
         active=[_wg("de1")],
         countries={"de1": "DE"},
     )
-    vpn_manager.dns_leak_test_menu()
+    vpn_manager.run_check("dns")
     assert "Leaked: exit ≠ de1 🇩🇪" in seen[0]
 
 
 def test_dns_leak_menu_unknown_server_country_just_names_connection(monkeypatch):
     seen = _dns_leak_menu_env(monkeypatch, _leak_result([]), active=[_wg("de1")])
-    vpn_manager.dns_leak_test_menu()
+    vpn_manager.run_check("dns")
     assert "VPN: de1" in seen[0]
 
 
 def test_dns_leak_menu_ipv6_row_warns_only_with_active_vpn(monkeypatch):
     seen = _dns_leak_menu_env(monkeypatch, _leak_result([]), active=[_wg("de1")], ipv6_off=False)
-    vpn_manager.dns_leak_test_menu()
+    vpn_manager.run_check("dns")
     assert "Leaked: IPv6 enabled — bypasses the tunnel" in seen[0]
 
     seen = _dns_leak_menu_env(monkeypatch, _leak_result([]), active=[], ipv6_off=False)
-    vpn_manager.dns_leak_test_menu()
+    vpn_manager.run_check("dns")
     assert "IPv6: enabled" in seen[0]
 
 
 def test_dns_leak_menu_ipv6_disabled_row(monkeypatch):
     seen = _dns_leak_menu_env(monkeypatch, _leak_result([]), active=[_wg("de1")], ipv6_off=True)
-    vpn_manager.dns_leak_test_menu()
+    vpn_manager.run_check("dns")
     assert "IPv6: disabled" in seen[0]
 
 
@@ -763,10 +682,12 @@ def test_dns_leak_test_menu_builds_result_rows(monkeypatch):
     seen = []
     monkeypatch.setattr(
         vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or None,
+        "_emit",
+        lambda obj: (
+            seen.append([r["text"] for r in obj["result"]["rows"]]) if "result" in obj else None
+        ),
     )
-    result = vpn_manager.dns_leak_test_menu()
+    result = vpn_manager.run_check("dns")
     assert result.success
     rows = seen[0]
     assert rows[0] == "IP: 1.2.3.4 🇩🇪"
@@ -785,7 +706,7 @@ def test_dns_leak_test_menu_handles_network_failure(monkeypatch):
         raise vpn_manager.dnsleak.LeakTestError(1, "[Errno 101] Network is unreachable")
 
     monkeypatch.setattr(vpn_manager.dnsleak, "run", no_network)
-    result = vpn_manager.dns_leak_test_menu()
+    result = vpn_manager.run_check("dns")
     assert not result.success
     kind, message = _FakeProgress.last.events[-1]
     assert kind == "fail" and "Network is unreachable" in message
@@ -814,10 +735,12 @@ def test_ip_info_menu_builds_rows(monkeypatch):
     seen = []
     monkeypatch.setattr(
         vpn_manager,
-        "menu_select",
-        lambda options, prompt="VPN": seen.append(list(options)) or None,
+        "_emit",
+        lambda obj: (
+            seen.append([r["text"] for r in obj["result"]["rows"]]) if "result" in obj else None
+        ),
     )
-    result = vpn_manager.ip_info_menu()
+    result = vpn_manager.run_check("ip")
     assert result.success
     rows = seen[0]
     assert rows[0] == "IP: 1.2.3.4"
@@ -835,7 +758,7 @@ def test_ip_info_menu_handles_no_findings(monkeypatch):
     monkeypatch.setattr(
         vpn_manager.reputation, "lookup_self", lambda include_keyed=True, on_step=None: []
     )
-    result = vpn_manager.ip_info_menu()
+    result = vpn_manager.run_check("ip")
     assert not result.success
 
 
@@ -865,79 +788,6 @@ def test_killswitch_tool_refuses_under_a_networkmanager_vpn(monkeypatch):
     result = vpn_manager.run_tool("killswitch")
     assert not result.success
     assert "NetworkManager" in result.message
-
-
-def test_run_items_matches_indented_labels(monkeypatch):
-    """The menu may return the selected line trimmed (walker's did — log proof:
-    "no action matches ['Killswitch: …']"), so run_items
-    must compare labels stripped — the '  Killswitch: …' / '  Import …'
-    items otherwise can never be activated."""
-    seen = []
-    monkeypatch.setattr(
-        vpn_manager, "menu_select", lambda options, prompt="VPN": options[0].strip()
-    )
-    monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
-    monkeypatch.setattr(vpn_manager, "notify", lambda *a, **k: seen.append(a))
-    result = vpn_manager.run_items(
-        [("  Killswitch: OFF — click to enable (all)", lambda: ActionResult(True, "on"))],
-        prompt="VPN",
-    )
-    assert result.success
-    assert seen == [("VPN", "on")]  # action ran and notified
-
-
-def test_unique_labels_suffix_cannot_collide_with_genuine_label():
-    """A generated " (2)" disambiguator must not shadow a genuine later label."""
-    items = [
-        ("Same", lambda: 1),
-        ("Same", lambda: 2),
-        ("Same (2)", lambda: 3),
-    ]
-    labels = [label for label, _ in vpn_manager._unique_labels(items)]
-    assert labels == ["Same", "Same (2)", "Same (2) (2)"]
-    # actions stay attached to their original entry
-    unique = vpn_manager._unique_labels(items)
-    assert [a() for _, a in unique] == [1, 2, 3]
-
-
-def test_menu_input_returns_stripped_text(monkeypatch):
-    result = SimpleNamespace(returncode=0, stdout="  /home/user/config.conf  \n")
-    monkeypatch.setattr(vpn_manager.subprocess, "run", lambda cmd, **k: result)
-    assert vpn_manager.menu_input("Path") == "/home/user/config.conf"
-
-
-def test_menu_input_returns_none_when_empty(monkeypatch):
-    result = SimpleNamespace(returncode=0, stdout="\n")
-    monkeypatch.setattr(vpn_manager.subprocess, "run", lambda cmd, **k: result)
-    assert vpn_manager.menu_input("Path") is None
-
-
-def test_menu_input_returns_none_when_menu_missing(monkeypatch):
-    def boom(cmd, **k):
-        raise FileNotFoundError
-
-    notified = []
-    monkeypatch.setattr(vpn_manager.subprocess, "run", boom)
-    monkeypatch.setattr(vpn_manager, "notify", lambda *a, **k: notified.append(a))
-    assert vpn_manager.menu_input("Path") is None
-    assert "Omarchy 4" in notified[0][1]
-
-
-def test_menu_input_passes_width(monkeypatch):
-    captured = {}
-
-    def fake_run(cmd, **k):
-        captured["cmd"] = cmd
-        return SimpleNamespace(returncode=0, stdout="x\n")
-
-    monkeypatch.setattr(vpn_manager.subprocess, "run", fake_run)
-    vpn_manager.menu_input("Path")
-    assert captured["cmd"] == [
-        "omarchy-menu-input",
-        "Path",
-        "--width",
-        str(vpn_manager.MENU_WIDTH),
-    ]
 
 
 def test_refresh_all_menu_spawns_subs_unconditionally(monkeypatch):
@@ -1041,7 +891,7 @@ def test_dns_leak_exit_row_trusts_name_flag_over_bridge_entry_country(monkeypatc
         active=[_wg(bridge)],
         countries={bridge: "RU"},
     )
-    vpn_manager.dns_leak_test_menu()
+    vpn_manager.run_check("dns")
     assert f"Exit matches {bridge} 🇩🇪" in seen[0]
     assert not any(r.startswith("Leaked: exit") for r in seen[0])
 
@@ -1053,7 +903,7 @@ def test_dns_leak_exit_row_flags_exit_outside_the_name_flag_country(monkeypatch)
         active=[_wg("🇩🇪 Германия+")],
         countries={"🇩🇪 Германия+": "RU"},  # entry RU must not excuse a RU exit
     )
-    vpn_manager.dns_leak_test_menu()
+    vpn_manager.run_check("dns")
     assert "Leaked: exit ≠ 🇩🇪 Германия+ 🇩🇪" in seen[0]
 
 
@@ -1071,7 +921,7 @@ def test_dns_leak_exit_row_eu_flag_accepts_any_member_state(monkeypatch):
         seen = _dns_leak_menu_env(
             monkeypatch, _leak_result([], ip_country=exit_cc), active=[_wg("🇪🇺 Europe")]
         )
-        vpn_manager.dns_leak_test_menu()
+        vpn_manager.run_check("dns")
         assert row in seen[0], exit_cc
 
 
@@ -1085,7 +935,7 @@ def test_dns_leak_exit_row_second_geo_opinion_clears_a_geo_db_mismatch(monkeypat
         active=[_wg("🇵🇱 Польша 1")],
         second_opinion="PL",
     )
-    vpn_manager.dns_leak_test_menu()
+    vpn_manager.run_check("dns")
     assert "Exit matches 🇵🇱 Польша 1 🇵🇱 · bash.ws: 🇰🇷" in seen[0]
 
 
@@ -1097,7 +947,7 @@ def test_dns_leak_exit_row_still_leaks_when_second_opinion_disagrees_too(monkeyp
             active=[_wg("🇵🇱 Польша 1")],
             second_opinion=second,
         )
-        vpn_manager.dns_leak_test_menu()
+        vpn_manager.run_check("dns")
         assert "Leaked: exit ≠ 🇵🇱 Польша 1 🇵🇱" in seen[0], second
 
 
@@ -1109,11 +959,11 @@ def test_dns_leak_menu_shows_each_step_then_done(monkeypatch):
 
     seen = _dns_leak_menu_env(monkeypatch, None, active=[_wg("de1")])
     monkeypatch.setattr(vpn_manager.dnsleak, "run", run)
-    vpn_manager.dns_leak_test_menu()
+    vpn_manager.run_check("dns")
     events = _FakeProgress.last.events
     assert [e[1] for e in events if e[0] == "step"] == [1, 2, 3]
     assert events[-1][0] == "done"
-    assert seen  # the results window still opens
+    assert seen  # the result follows the steps
 
 
 def test_dns_leak_menu_failure_names_the_step_and_reason(monkeypatch):
@@ -1123,25 +973,30 @@ def test_dns_leak_menu_failure_names_the_step_and_reason(monkeypatch):
 
     seen = _dns_leak_menu_env(monkeypatch, None, active=[_wg("de1")])
     monkeypatch.setattr(vpn_manager.dnsleak, "run", run)
-    result = vpn_manager.dns_leak_test_menu()
+    result = vpn_manager.run_check("dns")
     kind, message = _FakeProgress.last.events[-1]
     assert kind == "fail"
     assert "1/3" in message and "handshake operation timed out" in message
     assert "slow" in message  # timeout hint: a slow or blocking exit, not "no network"
     assert not result.success and result.message == ""  # notified once, not twice
-    assert seen == []  # no empty results window
+    assert seen == []  # no result, an error line
 
 
 def test_speed_test_all_failed_ends_progress_with_the_reason(monkeypatch):
+    monkeypatch.setattr(
+        vpn_manager.speedtest,
+        "SERVICES",
+        [vpn_manager.speedtest.Service(k.upper(), f"http://{k}") for k in "ab"],
+    )
     _speed_test_env(monkeypatch, measure=lambda url, d: _err("URLError: timed out"))
-    vpn_manager._run_speed_tests([("A", "http://a"), ("B", "http://b")])
+    vpn_manager.run_check("speed", "all")
     kind, message = _FakeProgress.last.events[-1]
     assert kind == "fail" and "URLError: timed out" in message
 
 
 def test_speed_test_success_ends_progress_with_done(monkeypatch):
     _speed_test_env(monkeypatch, measure=lambda url, d: _ok(9.0))
-    vpn_manager._run_speed_tests([("A", "http://a")])
+    vpn_manager.run_check("speed", "http://a/f")
     assert _FakeProgress.last.events[-1][0] == "done"
 
 
@@ -1149,7 +1004,7 @@ def _ip_info_env(monkeypatch, lookup):
     monkeypatch.setattr(vpn_manager, "notify", lambda *a, **k: None)
     monkeypatch.setattr(vpn_manager.notifyutil, "Progress", _FakeProgress)
     monkeypatch.setattr(vpn_manager.reputation, "lookup_self", lookup)
-    monkeypatch.setattr(vpn_manager, "menu_select", lambda options, prompt="VPN": None)
+    monkeypatch.setattr(vpn_manager, "_emit", lambda obj: None)
 
 
 def test_ip_info_failure_says_the_own_ip_could_not_be_detected(monkeypatch):
@@ -1158,7 +1013,7 @@ def test_ip_info_failure_says_the_own_ip_could_not_be_detected(monkeypatch):
         return []
 
     _ip_info_env(monkeypatch, lookup)
-    result = vpn_manager.ip_info_menu()
+    result = vpn_manager.run_check("ip")
     kind, message = _FakeProgress.last.events[-1]
     assert kind == "fail" and "public IP" in message
     assert not result.success and result.message == ""
@@ -1171,7 +1026,7 @@ def test_ip_info_failure_says_no_source_answered(monkeypatch):
         return []
 
     _ip_info_env(monkeypatch, lookup)
-    vpn_manager.ip_info_menu()
+    vpn_manager.run_check("ip")
     kind, message = _FakeProgress.last.events[-1]
     assert kind == "fail" and "no IP source answered" in message
 
@@ -1414,3 +1269,38 @@ def test_tool_flag_runs_the_tools_action(monkeypatch):
     monkeypatch.setattr(vpn_manager, "TOOLS", tools)
     vpn_manager.run_tool("speed_test")
     assert ran == ["speed_test"]
+
+
+def test_dns_check_card_summary_names_the_first_leak(monkeypatch):
+    """The window's card leads with a verdict: the first leaking row, else
+    our resolver verdict — and never "ok" without data to judge."""
+    _dns_leak_menu_env(
+        monkeypatch,
+        _leak_result([{"ip": "5.6.7.8", "country": "de", "asn": "AS3320 Telekom"}]),
+        active=[_wg("de1")],
+    )
+    emitted = []
+    monkeypatch.setattr(vpn_manager, "_emit", emitted.append)
+    vpn_manager.run_check("dns")
+    summary = emitted[-1]["result"]["summary"]
+    assert summary["state"] == "bad"
+    assert summary["text"].startswith("Leaked")
+
+    _dns_leak_menu_env(monkeypatch, _leak_result([], ip_country="", ip_asn=None), active=[])
+    emitted.clear()
+    monkeypatch.setattr(vpn_manager, "_emit", emitted.append)
+    vpn_manager.run_check("dns")
+    assert emitted[-1]["result"]["summary"]["state"] == "unknown"
+
+
+def test_a_cancelled_check_tells_the_card_and_closes_the_bubble(monkeypatch):
+    def run(on_step=None):
+        raise vpn_manager.CheckCancelled
+
+    _dns_leak_menu_env(monkeypatch, None, active=[_wg("de1")])
+    monkeypatch.setattr(vpn_manager.dnsleak, "run", run)
+    emitted = []
+    monkeypatch.setattr(vpn_manager, "_emit", emitted.append)
+    assert not vpn_manager.run_check("dns").success
+    assert emitted == [{"error": vpn_manager.CANCELLED}]
+    assert _FakeProgress.last.events[-1] == ("done", vpn_manager.CANCELLED)

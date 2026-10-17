@@ -19,9 +19,8 @@ import subprocess
 import sys
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, NoReturn
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -68,9 +67,6 @@ def active_connections(providers=None) -> list[VPNConnection]:
         for conn in provider.connections()
         if conn.active
     ]
-
-
-BACK_LABEL = "‹ Back"
 
 
 # ── Status ────────────────────────────────────────────────────────────────────
@@ -380,7 +376,7 @@ PROC = Path("/proc")
 # background checks of the connection being left: their answers would
 # describe the old server (or time out on a dead one) — killed on a switch.
 # Not --update-reputation/--update-subs: those don't depend on which server is up.
-CHECK_FLAGS = ("--dns-autotest", "--dns-leak-test", "--update-ip")
+CHECK_FLAGS = ("--dns-autotest", "--check", "--update-ip")
 
 
 class SwitchBusy(Exception):
@@ -844,12 +840,8 @@ def _killswitch_toggle(on: bool) -> ActionResult:
 KILLSWITCH_ICON = settings_tui.KILLSWITCH_ICON
 
 
-def _dns_leak_server_row(
-    server: dict, ip_country: str = "", ip_asn: int | None = None
-) -> tuple[str, Callable]:
-    """One row per detected resolver — the wider menu card (see
-    MENU_WIDTH) is the actual fix for these getting truncated; no need to
-    collapse the list to make it fit. 'Leaked' when dnsleak.server_tags()
+def _dns_leak_server_row(server: dict, ip_country: str = "", ip_asn: int | None = None) -> str:
+    """One row per detected resolver. 'Leaked' when dnsleak.server_tags()
     finds the resolver is neither the VPN's nor a public one (ASN) or sits in
     another country than the exit IP (GEO) — wherever that country is."""
     country = (server.get("country") or "").upper()
@@ -860,7 +852,7 @@ def _dns_leak_server_row(
         label += f" · {org}"
     if dnsleak.server_tags(server, ip_country, ip_asn):
         label += "  Leaked"
-    return (label, lambda: ActionResult(True, ""))
+    return label
 
 
 _FLAG = re.compile("[\U0001f1e6-\U0001f1ff]{2}")  # a pair of regional indicators
@@ -1030,62 +1022,135 @@ def _cancel_check(signum, frame) -> None:
     raise CheckCancelled
 
 
-def dns_leak_test_menu() -> ActionResult:
-    """DNS leak test — same backend (bash.ws) as dnsleaktest.com. Runs
-    synchronously (a few seconds of DNS probes) and shows the result as a
-    submenu rather than a single notification, so a long DNS-server list
-    stays readable instead of getting truncated in a notify-send bubble."""
-    progress = notifyutil.Progress("DNS Leak Test", steps=len(dnsleak.STEPS))
-    # a switch SIGTERMs a running test (_abort_checks): it would test the
-    # server being left — close the bubble instead of leaving it spinning
+class CheckFailed(Exception):
+    """A check ended without a result; its bubble already says why."""
+
+
+def _emit(obj: dict) -> None:
+    """One JSON line for the app window's check card (Widget.qml checkProc)."""
+    print(json.dumps(obj, ensure_ascii=False), flush=True)
+
+
+class _CheckProgress:
+    """The progress bubble (notifyutil.Progress) and, for the window, one
+    JSON line per step — the user wanted both."""
+
+    def __init__(self, title: str, steps: int | None = None):
+        self.bubble = notifyutil.Progress(title, steps=steps)
+        self.steps = steps
+
+    def step(self, n: int, label: str) -> None:
+        self.bubble.step(n, label)
+        _emit({"step": n, "steps": self.steps, "label": label})
+
+    def done(self, text: str) -> None:
+        self.bubble.done(text)
+
+    def fail(self, text: str) -> NoReturn:
+        self.bubble.fail(text)
+        raise CheckFailed(text)
+
+
+def _check_rows(texts: list[str]) -> list[dict]:
+    """Result rows for the card; a row that reports a leak or a failure is
+    "bad" (the same words the old menu rows carried)."""
+    return [
+        {"text": t, "state": "bad" if "Leaked" in t or ": ✗ " in t or t.startswith("⚠") else ""}
+        for t in texts
+    ]
+
+
+CHECK_TITLES = {"dns": "DNS Leak Test", "ip": "IP Info", "speed": "Speed Test"}
+CANCELLED = "Cancelled — the connection changed"
+
+
+def run_check(kind: str, target: str | None = None) -> ActionResult:
+    """--check dns|ip|speed [TARGET]: one check for the app window's card —
+    JSON lines on stdout ({step, steps, label}…, then {result} or {error};
+    a bare `--check speed` answers {choices}) plus the usual progress bubble.
+    A switch SIGTERMs it (CHECK_FLAGS): it would test the server being left."""
+    title = CHECK_TITLES[kind]
+    steps: int | None = {"dns": len(dnsleak.STEPS), "ip": 2}.get(kind)
+    targets: list[tuple[str, str]] = []
+    duration = speedtest.DURATION
+    if kind == "speed":
+        if target is None:
+            _emit({"choices": _speed_choices()})
+            return ActionResult(True, "")
+        try:
+            targets, duration = _speed_targets(target)
+        except CheckFailed as e:
+            _emit({"error": str(e)})
+            return ActionResult(False, "")  # the card says it; no second bubble
+        steps = len(targets) if len(targets) > 1 else None
+    progress = _CheckProgress(title, steps)
     previous = signal.signal(signal.SIGTERM, _cancel_check)
+    try:
+        if kind == "dns":
+            result = _dns_check(progress)
+        elif kind == "ip":
+            result = _ip_check(progress)
+        else:
+            result = _speed_check(progress, targets, duration)
+    except CheckFailed as e:
+        _emit({"error": str(e)})
+        return ActionResult(False, "")  # already notified, with the reason
+    except CheckCancelled:
+        logutil.log(f"{title} cancelled: the connection changed")
+        progress.done(CANCELLED)
+        _emit({"error": CANCELLED})
+        return ActionResult(False, "")
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    _emit({"result": {"title": title, **result}})
+    return ActionResult(True, "")
+
+
+def _dns_check(progress: _CheckProgress) -> dict:
+    """DNS leak test — same backend (bash.ws) as dnsleaktest.com — plus our
+    own checks around bash.ws's conclusion (exit country, IPv6, resolvers)."""
     try:
         result = dnsleak.run(on_step=lambda n, label: progress.step(n, f"{label}…"))
     except dnsleak.LeakTestError as e:
         progress.fail(f"Test {e}{_failure_hint(e.reason)}")
-        return ActionResult(False, "")  # already notified, with the reason
-    except CheckCancelled:
-        logutil.log("DNS Leak Test cancelled: the connection changed")
-        progress.done("Cancelled — the connection changed")
-        return ActionResult(False, "")
-    finally:
-        signal.signal(signal.SIGTERM, previous)
     progress.done("Done")
 
     active = active_connections()
     ip_country, ip_asn = result["ip_country"], result.get("ip_asn")
-    items: list[tuple[str, Callable]] = []
+    texts = []
     if result["ip"]:
-        flag = ipinfo.flag_emoji(ip_country)
-        items.append((f"IP: {result['ip']} {flag}".strip(), lambda: ActionResult(True, "")))
-    exit_row = _dns_leak_exit_row(ip_country, active, result["ip"])
-    items.append((exit_row, lambda: ActionResult(True, "")))
-    items.append((_dns_leak_ipv6_row(bool(active)), lambda: ActionResult(True, "")))
+        texts.append(f"IP: {result['ip']} {ipinfo.flag_emoji(ip_country)}".strip())
+    texts.append(_dns_leak_exit_row(ip_country, active, result["ip"]))
+    texts.append(_dns_leak_ipv6_row(bool(active)))
     if result["dns_servers"]:
-        items.extend(_dns_leak_server_row(s, ip_country, ip_asn) for s in result["dns_servers"])
+        texts.extend(_dns_leak_server_row(s, ip_country, ip_asn) for s in result["dns_servers"])
     else:
-        items.append(("No DNS servers found", lambda: ActionResult(True, "")))
+        texts.append("No DNS servers found")
     verdict = _dns_leak_verdict_row(result)
     _save_dns_verdict(active, verdict)
     if verdict:
-        items.append((verdict, lambda: ActionResult(True, "")))
+        texts.append(verdict)
     if result["conclusion"]:
-        items.append((f"bash.ws: {result['conclusion']}", lambda: ActionResult(True, "")))
-    run_items(_unique_labels(items), prompt="DNS Leak Test")
-    return ActionResult(True, "")
+        texts.append(f"bash.ws: {result['conclusion']}")
+    rows = _check_rows(texts)
+    bad = any(r["state"] == "bad" for r in rows)
+    state = "bad" if bad else ("ok" if verdict else "unknown")
+    # lead with a verdict line (exit, IPv6, resolvers), not one resolver's row
+    text = next((r["text"] for r in rows if r["text"].startswith("Leaked")), verdict)
+    return {
+        "summary": {"state": state, "text": text or "No verdict: the exit IP is unknown"},
+        "rows": rows,
+    }
 
 
-def _ip_info_flag_row(label: str, value: bool | None) -> tuple[str, Callable]:
-    text = "Yes" if value else "No"
-    return (f"{label}: {text}", lambda: ActionResult(True, ""))
+def _ip_info_flag_row(label: str, value: bool | None) -> str:
+    return f"{label}: {'Yes' if value else 'No'}"
 
 
-def ip_info_menu() -> ActionResult:
-    """Multi-source exit-IP report — one row group per enabled ipsources
-    source (free ones on by default; keyed ones once their API key is
-    set). A single ad-hoc lookup for the current public IP, not the
-    background reputation sweep."""
-    progress = notifyutil.Progress("IP Info", steps=2)
+def _ip_check(progress: _CheckProgress) -> dict:
+    """Multi-source exit-IP report — one row per enabled ipsources source
+    (free ones on by default; keyed ones once their API key is set). A single
+    ad-hoc lookup for the current public IP, not the background sweep."""
     reached: list[int] = []
 
     def on_step(n: int, label: str) -> None:
@@ -1099,26 +1164,26 @@ def ip_info_menu() -> ActionResult:
         else:
             reason = f"no IP source answered within {reputation.LOOKUP_TIMEOUT:.0f} s"
         progress.fail(f"Failed: {reason}{_failure_hint(reason)}")
-        return ActionResult(False, "")  # already notified, with the reason
     progress.done("Done")
 
-    items: list[tuple[str, Callable]] = [(f"IP: {findings[0].ip}", lambda: ActionResult(True, ""))]
+    texts = [f"IP: {findings[0].ip}"]
     for finding in findings:
         parts = [p for p in (finding.country_name, finding.org) if p]
         if finding.abuse_score is not None:
             parts.append(f"abuse {finding.abuse_score}/100")
-        label = f"{finding.source}: {' · '.join(parts)}" if parts else finding.source
-        items.append((label, lambda: ActionResult(True, "")))
-    items.append(_ip_info_flag_row("🏢 Datacenter/Hosting", any(f.hosting for f in findings)))
-    items.append(_ip_info_flag_row("🕵️ Proxy/VPN detected", any(f.proxy for f in findings)))
-    items.append(_ip_info_flag_row("📱 Mobile network", any(f.mobile for f in findings)))
-    run_items(_unique_labels(items), prompt="IP Info")
-    return ActionResult(True, "")
+        texts.append(f"{finding.source}: {' · '.join(parts)}" if parts else finding.source)
+    texts.append(_ip_info_flag_row("🏢 Datacenter/Hosting", any(f.hosting for f in findings)))
+    texts.append(_ip_info_flag_row("🕵️ Proxy/VPN detected", any(f.proxy for f in findings)))
+    texts.append(_ip_info_flag_row("📱 Mobile network", any(f.mobile for f in findings)))
+    first = findings[0]
+    where = " · ".join(p for p in (first.country_name, first.org) if p)
+    return {
+        "summary": {"state": "", "text": f"{first.ip} · {where}" if where else first.ip},
+        "rows": _check_rows(texts),
+    }
 
 
-SPEED_TEST_TITLE = "Speed Test"  # menu prompt + progress notification title
 SPEED_TEST_ALL_LABEL = "🌍 All services"
-SPEED_TEST_CUSTOM_LABEL = "✏️ Custom URL…"
 SPEED_TEST_MAX_URLS = 5  # remembered custom URLs, newest first
 # per service in "All services" — run one after another (in parallel they'd
 # split the same uplink and each report a fraction of it), so this keeps
@@ -1126,79 +1191,73 @@ SPEED_TEST_MAX_URLS = 5  # remembered custom URLs, newest first
 SPEED_TEST_ALL_DURATION = 5.0
 
 
-def speed_test_menu() -> ActionResult:
-    """Pick a service (or all of them), then measure download throughput
-    through whatever the current route is (tunnel or, with no VPN up, the
-    plain uplink). Results open in their own menu, like the DNS
-    leak test — a multi-service comparison doesn't fit a notify bubble."""
-    # public presets, then custom URLs remembered in config.json
-    # (`speed_test_urls` — e.g. a test stand's own file server)
-    targets = [("🌐", s.name, s.url) for s in speedtest.SERVICES]
+def _speed_targets_all() -> list[tuple[str, str]]:
+    """Public presets, then custom URLs remembered in config.json
+    (`speed_test_urls` — e.g. a test stand's own file server)."""
+    targets = [(s.name, s.url) for s in speedtest.SERVICES]
     preset_urls = {s.url for s in speedtest.SERVICES}
     targets += [
-        ("🔗", url, url)
+        (url, url)
         for url in config.load_config().speed_test_urls
         if url not in preset_urls  # its preset row already covers it
     ]
-    every = [(name, url) for _icon, name, url in targets]
-    items: list[tuple[str, Callable]] = [
-        (SPEED_TEST_ALL_LABEL, lambda: _run_speed_tests(every, SPEED_TEST_ALL_DURATION))
-    ]
-    items += [
-        (f"{icon} {name}", lambda t=(name, url): _run_speed_tests([t]))
-        for icon, name, url in targets
-    ]
-    items.append((SPEED_TEST_CUSTOM_LABEL, _speed_test_custom_url))
-    run_items(_unique_labels(items), prompt=SPEED_TEST_TITLE)
-    return ActionResult(True, "")
+    return targets
 
 
-def _speed_test_custom_url() -> ActionResult:
-    url = menu_input("Speed test URL (http/https, large file)")
-    if not url:
-        return ActionResult(False, "No URL entered")
-    if not speedtest.is_valid_url(url):
-        return ActionResult(False, f"Not an http(s) URL: {url}")
+def _speed_choices() -> list[dict]:
+    """What the card offers before a speed test: every service, each one,
+    and (in the card itself) a custom URL field."""
+    preset = {s.name for s in speedtest.SERVICES}
+    return [{"key": "all", "label": SPEED_TEST_ALL_LABEL}] + [
+        {"key": name, "label": f"{'🌐' if name in preset else '🔗'} {name}"}
+        for name, _url in _speed_targets_all()
+    ]
+
+
+def _speed_targets(target: str) -> tuple[list[tuple[str, str]], float]:
+    """`all`, a preset's name or a remembered URL — else a new custom URL,
+    remembered (newest first) once it is a valid http(s) URL."""
+    every = _speed_targets_all()
+    if target == "all":
+        return every, SPEED_TEST_ALL_DURATION
+    known = [(name, url) for name, url in every if target == name]
+    if known:
+        return known, speedtest.DURATION
+    if not speedtest.is_valid_url(target):
+        raise CheckFailed(f"Not an http(s) URL: {target}")
     cfg = config.load_config()
-    cfg.speed_test_urls = [url, *(u for u in cfg.speed_test_urls if u != url)][:SPEED_TEST_MAX_URLS]
+    cfg.speed_test_urls = [target, *(u for u in cfg.speed_test_urls if u != target)][
+        :SPEED_TEST_MAX_URLS
+    ]
     config.save_config(cfg)
-    return _run_speed_tests([(url, url)])
+    return [(target, target)], speedtest.DURATION
 
 
-def _run_speed_tests(
-    targets: list[tuple[str, str]], duration: float = speedtest.DURATION
-) -> ActionResult:
-    """Measure each target in turn (progress in one notification replaced
-    step by step — the menu can't update while a test runs), then
-    show every result in one window."""
-    steps = len(targets) if len(targets) > 1 else None
-    progress = notifyutil.Progress(SPEED_TEST_TITLE, steps=steps)
+def _speed_check(progress: _CheckProgress, targets: list[tuple[str, str]], duration: float) -> dict:
+    """Download throughput through whatever the current route is (tunnel or,
+    with no VPN up, the plain uplink), one target after another."""
     results = []
     for i, (name, url) in enumerate(targets, 1):
         progress.step(i, f"{name}: measuring for ~{duration:.0f} s…")
         results.append((name, speedtest.measure(url, duration)))
 
-    noop = lambda: ActionResult(True, "")  # noqa: E731 — info rows do nothing
     active = active_connections()
-    items: list[tuple[str, Callable]] = [
-        (_speed_test_route_row(active), noop),
-        *((_speed_test_result_row(name, m), noop) for name, m in results),
+    texts = [
+        _speed_test_route_row(active),
+        *(_speed_test_result_row(name, m) for name, m in results),
     ]
     ok = [(name, m.mbps) for name, m in results if m.mbps is not None]
-    if ok:
-        progress.done(f"Done — {len(ok)}/{len(results)} measured")
-    else:
+    if not ok:
         first = next(m.error for _name, m in results if m.error)
         progress.fail(f"All {len(results)} failed — {first}{_failure_hint(first)}")
-    if len(results) > 1 and ok:
-        best = max(ok, key=lambda r: r[1])
-        items.append((f"🏆 Fastest: {best[0]} ({best[1]:.1f} Mbit/s)", noop))
-    if not ok and killswitch.is_enabled() and not active:
-        items.append(("⚠ Killswitch is on and no VPN is active — traffic is blocked", noop))
-    items.append(("🔁 Run again", lambda: _run_speed_tests(targets, duration)))
-    items.append((BACK_LABEL, speed_test_menu))
-    run_items(_unique_labels(items), prompt=SPEED_TEST_TITLE)
-    return ActionResult(True, "")
+    progress.done(f"Done — {len(ok)}/{len(results)} measured")
+    best = max(ok, key=lambda r: r[1])
+    if len(results) > 1:
+        texts.append(f"🏆 Fastest: {best[0]} ({best[1]:.1f} Mbit/s)")
+    return {
+        "summary": {"state": "ok", "text": f"{best[0]}: ⬇ {best[1]:.1f} Mbit/s"},
+        "rows": _check_rows(texts),
+    }
 
 
 def _speed_test_route_row(active: list[VPNConnection]) -> str:
@@ -1601,9 +1660,11 @@ def run_settings_window() -> None:
 # separately in both places since its row reflects live on/off state
 # (_killswitch_item()), not a fixed action function.
 TOOLS = [
-    ("dns_leak_test", "🔍 DNS Leak Test", dns_leak_test_menu),
-    ("ip_info", "ℹ️ IP Info", ip_info_menu),
-    ("speed_test", "⚡ Speed Test", speed_test_menu),
+    # the window opens these as its check card (--check); --tool runs them
+    # with the progress bubble only (speed: every service)
+    ("dns_leak_test", "🔍 DNS Leak Test", lambda: run_check("dns")),
+    ("ip_info", "ℹ️ IP Info", lambda: run_check("ip")),
+    ("speed_test", "⚡ Speed Test", lambda: run_check("speed", "all")),
     ("refresh_all", "🔄 Refresh All", refresh_all_menu),
     ("clear_caches", "🗑️ Clear Caches", clear_caches_menu),
     ("settings", "⚙️ Settings", settings_menu),
@@ -1910,119 +1971,6 @@ def subscription_report(failed: dict[str, str]) -> tuple[str, str]:
     return title, "\n".join(lines) or "No Happ subscriptions"
 
 
-def _unique_labels(items: list[tuple[str, Callable]]) -> list[tuple[str, Callable]]:
-    """Disambiguate repeated labels so every menu entry stays reachable.
-
-    Two servers can render identically (same remarks + same info suffix) and
-    the menu returns the picked label text — without this the later entry could never
-    be selected. First occurrence keeps its label; repeats get " (2)", " (3)"…"""
-    seen: set[str] = set()
-    counts: dict[str, int] = {}
-    unique = []
-    for label, action in items:
-        if label not in seen:
-            seen.add(label)
-            unique.append((label, action))
-            continue
-        # loop the suffix upward: a generated " (2)" can collide with a
-        # genuine later label like "Same (2)"
-        n = counts.get(label, 1) + 1
-        candidate = f"{label} ({n})"
-        while candidate in seen:
-            n += 1
-            candidate = f"{label} ({n})"
-        counts[label] = n
-        seen.add(candidate)
-        unique.append((candidate, action))
-    return unique
-
-
-def run_items(items: list[tuple[str, Callable]], prompt: str) -> ActionResult:
-    """Show one menu, run the chosen action, notify + refresh the bar widget."""
-    if not items:
-        notify("VPN", "Nothing available")
-        return ActionResult(False, "nothing available")
-
-    selected = menu_select([label for label, _ in items], prompt=prompt)
-    if not selected:
-        return ActionResult(True, "")
-
-    # match the label as menu_select() sent it (TAB/newlines flattened),
-    # stripped-to-stripped: labels like "  Import …" keep their indent for
-    # display only, so no two labels may differ only in surrounding
-    # whitespace.
-    selected = selected.strip()
-    action = next((fn for label, fn in items if _menu_option(label).strip() == selected), None)
-    if action is None:
-        logutil.log(f"menu [{prompt}]: no action matches [{selected!r}]")
-        return ActionResult(True, "")
-
-    result: ActionResult = action()
-    logutil.log(f"menu [{prompt}]: [{selected}] -> success={result.success}: {result.message}")
-    if result.message:
-        if result.success:
-            notify("VPN", result.message)
-        else:
-            notify("VPN — Error", result.message, urgent=True)
-
-    refresh_bar()
-    return result
-
-
-MENU_TIMEOUT = 300  # seconds — omarchy-menu-select waits for its done-file forever
-# omarchy.menu's dmenu card is 300 units wide by default — server names with
-# ping/protocol info and DNS-leak resolver rows get cut off at that width.
-MENU_WIDTH = 640
-MENU_MAX_HEIGHT = 560
-MENU_SIZE_ARGS = ["--", "--width", str(MENU_WIDTH), "--maxheight", str(MENU_MAX_HEIGHT)]
-_MENU_UNSAFE = re.compile(r"[\t\r\n]+")
-
-
-def _menu_option(label: str) -> str:
-    """omarchy.menu splits an option on TAB into glyph/label/subtext, and a
-    subscription can name a server anything — flatten TAB/newlines so a
-    label is always shown (and returned) as one plain label."""
-    return _MENU_UNSAFE.sub(" ", label)
-
-
-def _run_menu_cmd(cmd: list[str], what: str) -> str | None:
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=MENU_TIMEOUT, check=False
-        )
-    except subprocess.TimeoutExpired:
-        logutil.log(f"{cmd[0]} timed out after {MENU_TIMEOUT}s")
-        subprocess.run(["omarchy-shell", "-q", "shell", "hide", "omarchy.menu"], check=False)
-        return None
-    except FileNotFoundError:
-        notify("VPN — Error", f"{cmd[0]} not found — omarchy-vpn needs Omarchy 4", urgent=True)
-        return None
-    # exit 1 = dismissed (Esc / click outside); stdout is the picked label only
-    selected = result.stdout.rstrip("\n") if result.returncode == 0 else ""
-    if not selected:
-        logutil.log(f"menu {what}: no selection")
-    return selected or None
-
-
-def menu_select(options: list[str], prompt: str = "VPN") -> str | None:
-    """One omarchy.menu list (omarchy-menu-select); the picked label or None."""
-    if not options:
-        return None
-    return _run_menu_cmd(
-        ["omarchy-menu-select", prompt, *map(_menu_option, options), *MENU_SIZE_ARGS],
-        f"[{prompt}]",
-    )
-
-
-def menu_input(prompt: str) -> str | None:
-    """Single-field text input (omarchy-menu-input). None on any failure or
-    empty input."""
-    text = _run_menu_cmd(
-        ["omarchy-menu-input", prompt, "--width", str(MENU_WIDTH)], f"input [{prompt}]"
-    )
-    return text.strip() or None if text else None
-
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -2100,7 +2048,10 @@ def main():
         help="Toggle a profile's autostart or delete it (a server row's right click)",
     )
     group.add_argument(
-        "--dns-leak-test", action="store_true", help="Run the DNS leak test (the panel's DNS badge)"
+        "--check",
+        nargs="+",
+        metavar="dns|ip|speed [TARGET]",
+        help="Run a check for the app window's card (JSON lines); speed: all|NAME|URL",
     )
     group.add_argument(
         "--dns-autotest",
@@ -2184,9 +2135,10 @@ def main():
         if args.profile[0] not in ("autostart", "delete"):
             parser.error("--profile takes autostart|delete PROVIDER NAME")
         _report(run_profile_action(*args.profile))
-    elif args.dns_leak_test:
-        dns_leak_test_menu()
-        refresh_bar()
+    elif args.check is not None:
+        if args.check[0] not in CHECK_TITLES or len(args.check) > 2:
+            parser.error("--check takes dns|ip|speed [TARGET]")
+        _report(run_check(*args.check))
     elif args.dns_autotest:
         run_dns_autotest()
     elif args.update_ip:

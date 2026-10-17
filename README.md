@@ -37,8 +37,9 @@ connection's state, protection checks and tools on the right.
   exit IP, protection badges) and Tools; same keys as the panel. Protocols (Happ, WireGuard,
   AmneziaWG, VLESS, Shadowsocks, OpenVPN, NetworkManager — empty ones too) show as a tree
   (default; the bar panel always uses it), tabs or a sidebar: ⚙ Settings → "Protocols in the
-  VPN window"; `[`/`]` switch tabs. Config import and profile
-  management (the old omarchy.menu menu, removed) move into the window next
+  VPN window"; `[`/`]` switch tabs. **+ Import** (or `i`) on a protocol imports a config —
+  a path or the desktop file chooser — or a pasted VLESS/SS key; a right click on a
+  WireGuard/AmneziaWG/NetworkManager server (or `a` / `x`) toggles its autostart or deletes it.
 - **Happ headless** — full server list straight from the provider subscriptions,
   configs generated like the GUI does; connect/switch any server **without opening
   the Happ GUI** (it keeps working in parallel, state is shared via happd)

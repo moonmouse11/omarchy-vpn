@@ -48,6 +48,11 @@ Column {
     referenceItem: list.flick
   }
 
+  QuickConnect {
+    width: parent.width
+    host: list.host
+  }
+
   Item {
     width: parent.width
     implicitHeight: Math.max(serversHeader.implicitHeight, pingButton.implicitHeight)

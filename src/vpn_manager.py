@@ -36,6 +36,7 @@ import killswitch
 import logutil
 import notifyutil
 import providers.happ as happ_provider
+import quickconnect
 import reputation
 import settings_tui
 import speedtest
@@ -1870,6 +1871,46 @@ def server_list() -> dict:
         "groups": groups,
         "providers": providers,
         "layout": config.load_config().locations_layout,
+        "quick": _quick_connect(groups),
+    }
+
+
+def _quick_connect(groups: list[dict]) -> dict:
+    """QUICK CONNECT: favourites and recent servers that are still in the list
+    (with their ping and state), marking each starred row `favourite`; recent
+    leaves out the favourites, `last` (the power switch) doesn't."""
+    quick = quickconnect.load()
+    starred = {(e["provider"], e["name"], e["sub_id"]) for e in quick["favourites"]}
+    index: dict[tuple, tuple[dict, dict]] = {}
+    for g in groups:
+        for row in g["servers"]:
+            key = (g["provider"], row["name"], g["subscription_id"])
+            row["favourite"] = key in starred
+            index.setdefault(key, (g, row))
+
+    def chips(entries: list[dict]) -> list[dict]:
+        out = []
+        for e in entries:
+            hit = index.get((e["provider"], e["name"], e["sub_id"]))
+            if hit:
+                g, row = hit
+                out.append(
+                    {
+                        "provider": g["provider"],
+                        "name": row["name"],
+                        "sub_id": e["sub_id"],
+                        "group": g["title"],
+                        "active": row["active"],
+                        "ping": row["ping"],
+                    }
+                )
+        return out
+
+    recent = chips(quick["recent"])
+    return {
+        "favourites": chips(quick["favourites"]),
+        "recent": [c for c in recent if (c["provider"], c["name"], c["sub_id"]) not in starred],
+        "last": recent[0] if recent else None,
     }
 
 
@@ -1897,7 +1938,10 @@ def panel_connect(provider_name: str, name: str, sub_id: str | None = None) -> A
         if found is None:
             return ActionResult(False, f"{provider_name}: {name} not found")
         conn = found
-    return guarded_connect(provider, conn)
+    result = guarded_connect(provider, conn)
+    if result.success:  # QUICK CONNECT's recent, and the power switch's "last server"
+        quickconnect.remember(provider.name, name, sub_id if provider.name == "Happ" else None)
+    return result
 
 
 def panel_disconnect(provider_name: str, name: str) -> ActionResult:
@@ -2035,6 +2079,12 @@ def main():
         help="Run one tool (the app window's Tools buttons; killswitch toggles it)",
     )
     group.add_argument(
+        "--favourite",
+        nargs="+",
+        metavar="PROVIDER NAME [SUBSCRIPTION_ID]",
+        help="Star or unstar a server (QUICK CONNECT)",
+    )
+    group.add_argument(
         "--import",
         dest="import_",
         nargs="+",
@@ -2127,6 +2177,11 @@ def main():
         refresh_bar()
     elif args.tool:
         _report(run_tool(args.tool))
+    elif args.favourite is not None:
+        if len(args.favourite) not in (2, 3):
+            parser.error("--favourite takes PROVIDER NAME [SUBSCRIPTION_ID]")
+        quickconnect.toggle_favourite(*args.favourite)
+        refresh_bar()  # the widget reloads the list: the star and the chips
     elif args.import_ is not None:
         if len(args.import_) not in (1, 2):
             parser.error("--import takes PROVIDER [PATH|-]")

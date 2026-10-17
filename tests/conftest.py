@@ -67,5 +67,6 @@ def _no_real_panel_caches(monkeypatch, tmp_path):
     monkeypatch.setattr(vpn_manager.delayping, "QUEUE", tmp_path / "ping-queue.json")
     monkeypatch.setattr(vpn_manager.delayping, "QUEUE_LOCK", tmp_path / "ping-queue.lock")
     monkeypatch.setattr(vpn_manager, "PROC", tmp_path / "proc")  # never signal real processes
+    monkeypatch.setattr(vpn_manager.quickconnect, "QUICK_FILE", tmp_path / "quick.json")
     # whose Happ connection it is (panel badge) — never the live keeper's state
     monkeypatch.setattr(vpn_manager.happ_provider, "KEEPER_STATE", tmp_path / "happ-keeper.json")

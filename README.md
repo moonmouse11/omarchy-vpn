@@ -40,6 +40,8 @@ connection's state, protection checks and tools on the right.
   VPN window"; `[`/`]` switch tabs. **+ Import** (or `i`) on a protocol imports a config —
   a path or the desktop file chooser — or a pasted VLESS/SS key; a right click on a
   WireGuard/AmneziaWG/NetworkManager server (or `a` / `x`) toggles its autostart or deletes it.
+  **Quick connect**: star a server (☆ on the row, or `s`) and it gets a chip above the list, next to
+  the last three servers you connected; the power switch reconnects the last one.
 - **Happ headless** — full server list straight from the provider subscriptions,
   configs generated like the GUI does; connect/switch any server **without opening
   the Happ GUI** (it keeps working in parallel, state is shared via happd)

@@ -381,9 +381,10 @@ sweep — a present `api_key` in config *is* "enabled", no separate flag needed.
 make uninstall
 ```
 
-Disables and removes the bar widget plugin, the backend, the SUPER+Shift+V
-binding block in `bindings.lua` and the sudoers rule. `/usr/local/bin/happ-killswitch`,
-`openvpn-dns-updown` and `~/.config/vpn-manager` (keys, settings) are kept.
+Turns the kill switch off (with Lockdown its rules would otherwise block all traffic until a
+reboot), then removes the bar widget plugin, the backend, the SUPER+Shift+V binding block in
+`bindings.lua`, `/usr/local/bin/happ-killswitch`, `openvpn-dns-updown` and the sudoers rule.
+`~/.config/vpn-manager` (keys, settings, favourites) is kept.
 
 ## License
 

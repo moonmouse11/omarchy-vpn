@@ -397,3 +397,15 @@ def test_panel_carries_the_key_hints_setting(env, monkeypatch, hints):
     """⚙ Settings → "Show key hints in the panel" hides the panel's key line."""
     cfg = vpn_manager.config.Config(panel_key_hints=hints)
     assert vpn_manager.panel_state([], cfg)["key_hints"] is hints
+
+
+def test_window_tools_follow_settings_and_the_kill_switch_support(env):
+    """⚙ Settings hides tools (never Settings itself); no kill switch button
+    while a NetworkManager VPN is up — the badge is hidden then too."""
+    cfg = vpn_manager.config.Config(tools_visible={"speed_test": False, "settings": False})
+    tools = vpn_manager.panel_state([], cfg)["tools"]
+    assert "speed_test" not in tools
+    assert "settings" in tools
+    assert "killswitch" in tools
+    nm = VPNConnection(name="office", provider="NetworkManager", active=True)
+    assert "killswitch" not in vpn_manager.panel_state([nm], cfg)["tools"]

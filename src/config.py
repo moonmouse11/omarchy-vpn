@@ -12,7 +12,8 @@ All keys optional; missing file means defaults:
   "speed_test_urls": ["http://10.0.0.5/100MB.bin"],    // extra Speed Test targets
   "dns_mode": "tunnel",                 // "tunnel" | "subscription": who routes xray's DNS
   "dns_autotest": false,                // run the DNS leak test in the background after a connect
-  "panel_key_hints": true               // the key line at the bottom of the bar panel
+  "panel_key_hints": true,              // the key line at the bottom of the bar panel
+  "locations_layout": "tree"            // "tree" | "tabs" | "sidebar": protocols in the app window
 }
 """
 
@@ -25,6 +26,7 @@ import fsutil
 
 CONFIG_PATH = Path.home() / ".config" / "vpn-manager" / "config.json"
 DNS_MODES = ("tunnel", "subscription")
+LOCATIONS_LAYOUTS = ("tree", "tabs", "sidebar")
 
 
 @dataclass
@@ -45,6 +47,7 @@ class Config:
     # off by default: it sends ~30 lookups to bash.ws after every connect
     dns_autotest: bool = False
     panel_key_hints: bool = True
+    locations_layout: str = "tree"
 
     def provider_visible(self, name: str) -> bool:
         return self.providers.get(name.lower(), True)
@@ -97,6 +100,8 @@ def load_config() -> Config:
         cfg.dns_autotest = bool(raw["dns_autotest"])
     if "panel_key_hints" in raw:
         cfg.panel_key_hints = bool(raw["panel_key_hints"])
+    if raw.get("locations_layout") in LOCATIONS_LAYOUTS:
+        cfg.locations_layout = raw["locations_layout"]
     return cfg
 
 
@@ -115,5 +120,6 @@ def save_config(cfg: Config) -> None:
         "dns_mode": cfg.dns_mode,
         "dns_autotest": cfg.dns_autotest,
         "panel_key_hints": cfg.panel_key_hints,
+        "locations_layout": cfg.locations_layout,
     }
     fsutil.write_json_atomic(CONFIG_PATH, raw, indent=2)

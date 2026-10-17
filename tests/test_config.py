@@ -1,3 +1,5 @@
+import pytest
+
 import config
 from config import Config, load_config, save_config
 
@@ -115,3 +117,11 @@ def test_dns_autotest_is_off_by_default_and_roundtrips(tmp_path, monkeypatch):
     assert load_config().dns_autotest is False
     save_config(Config(dns_autotest=True))
     assert load_config().dns_autotest is True
+
+
+@pytest.mark.parametrize(("raw", "layout"), [('"sidebar"', "sidebar"), ('"grid"', "tree")])
+def test_locations_layout_loads_known_values_only(tmp_path, monkeypatch, raw, layout):
+    p = tmp_path / "config.json"
+    p.write_text(f'{{"locations_layout": {raw}}}')
+    monkeypatch.setattr(config, "CONFIG_PATH", p)
+    assert load_config().locations_layout == layout

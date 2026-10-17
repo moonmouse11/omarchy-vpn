@@ -115,27 +115,33 @@ cp -r "$REPO_DIR/src" "$INSTALL_DIR/"
 
 echo "==> Installing bar widget to $PLUGIN_DIR..."
 mkdir -p "$PLUGIN_DIR"
-cp "$REPO_DIR/plugin/manifest.json" "$REPO_DIR/plugin/Widget.qml" "$PLUGIN_DIR/"
+cp "$REPO_DIR/plugin/manifest.json" "$REPO_DIR"/plugin/*.qml "$PLUGIN_DIR/"
 omarchy-shell -q shell rescanPlugins
 if ! omarchy plugin list | grep -qE "^$PLUGIN_ID[[:space:]]+enabled"; then
     omarchy plugin enable "$PLUGIN_ID" --before omarchy.network \
         || omarchy plugin enable "$PLUGIN_ID" --section right \
         || echo "    could not enable it — run: omarchy plugin enable $PLUGIN_ID"
 fi
+# the hot reload keeps an already-built widget on its old code (new IPC methods missing)
+if omarchy-shell shell ping >/dev/null 2>&1; then
+    omarchy restart shell >/dev/null || echo "    restart the shell to load the new widget: omarchy restart shell"
+fi
 
 # ── Keybinding (Hyprland Lua config) ──────────────────────────────────────────
 
+# Rewritten on every install: an older block opened the omarchy.menu menu.
 BINDINGS="$HOME/.config/hypr/bindings.lua"
-if [[ -f "$BINDINGS" ]] && ! grep -q '>>> omarchy-vpn' "$BINDINGS"; then
-    echo "==> Adding SUPER+Shift+V binding to $BINDINGS"
+if [[ -f "$BINDINGS" ]]; then
+    echo "==> SUPER+Shift+V opens the VPN window ($BINDINGS)"
+    sed -i '/^-- >>> omarchy-vpn$/,/^-- <<< omarchy-vpn$/d' "$BINDINGS"
     cat >> "$BINDINGS" <<EOF
-
 -- >>> omarchy-vpn
-o.bind("SUPER + SHIFT + V", "VPN menu", "python3 $INSTALL_DIR/src/vpn_manager.py --menu")
+o.bind("SUPER + SHIFT + V", "VPN window", "omarchy-shell -q $PLUGIN_ID window")
+o.window({ class = "^org.quickshell$", title = "^VPN$" }, { tag = "+floating-window" })
 -- <<< omarchy-vpn
 EOF
 else
-    echo "==> keybinding already present or bindings.lua missing, skipping."
+    echo "==> bindings.lua missing, skipping the SUPER+Shift+V binding."
 fi
 
 # ── Legacy waybar install ─────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ import qs.Ui
 // shell hot-reloads plugins on any write here, __pycache__ included):
 //   --status          JSON {text, tooltip, class, panel}, polled every `interval`;
 //                     `panel` = hero (title/meta/detail/rate) + protection badges
-//   --menu            the omarchy.menu-driven VPN menu (servers, tools, settings)
+//   --tool KEY        the app window's Tools buttons (AppWindow.qml)
 //   --disconnect-all  the hero switch, when on
 //   --dns-leak-test   the DNS badge, when not yet green
 //   --ping-now        Ping next to SERVERS (everything), on a group, a click on a
@@ -53,21 +53,42 @@ Panel {
   property var panelData: ({})
   property bool refreshPending: false
   property bool busy: false
+  // the app window (AppWindow.qml): SUPER+Shift+V, right click, `m`
+  // the real window, not `visible`: Hyprland's close (SUPER+W) leaves `visible` true
+  readonly property bool windowOpen: appWindow.backingWindowVisible
 
   // Server list (--servers, loaded when the panel opens and after a connect
   // or disconnect — not on the 3 s tick). One flat row model: group headers,
   // an "Auto — best ping" row per open group, servers.
   property var serverGroups: []
+  // every visible protocol {name, total, active}, empty ones too
+  property var serverProviders: []
+  // ⚙ Settings → "Protocols in the VPN window": tree | tabs | sidebar.
+  // The bar panel is too narrow for a sidebar: always the tree.
+  property string windowLayout: "tree"
+  // the open panel wins: it shares the rows, and a tabs/sidebar list has no
+  // picker there (the window shows the tree meanwhile)
+  readonly property string rowsLayout: windowOpen && !opened ? windowLayout : "tree"
+  // tabs/sidebar: the picked protocol, "" = All
+  property string providerFilter: ""
+  readonly property var providerChoices: [{ name: "", total: 0, active: false }].concat(serverProviders)
   property var expandedGroups: ({})
   property string serverFilter: ""
   property int serverCursor: -1
+  // the cursor was put there by the keyboard (j/k, the filter), not by a
+  // passing pointer — only then may the power switch connect it
+  property bool keyboardCursor: false
   property string pendingKey: ""
   // rows whose ping was just asked for: "…" until the backend has queued it
   // (then the list's own `pinging` carries it) — cleared by the first list
   // load started after pingSettle
   property var pendingPing: ({})
   property bool clearPendingOnLoad: false
-  readonly property var serverRows: buildServerRows(serverGroups, expandedGroups, serverFilter)
+  readonly property var serverRows: buildServerRows(serverGroups, serverProviders, expandedGroups,
+    serverFilter, rowsLayout, providerFilter)
+  readonly property bool serversLoading: serversProc.running
+  // the list the keyboard cursor scrolls: the window's while it is open
+  readonly property var activeList: windowOpen && !opened ? appWindow.locations : panelList
 
   readonly property var badges: panelData && panelData.badges instanceof Array ? panelData.badges : []
   // protected | unverified | at_risk | off | blocked — the lock only once
@@ -114,39 +135,98 @@ Panel {
     return String(group.id) + "\n" + (server ? String(server.name) : "")
   }
 
-  // A group is open when the user opened it, else when it holds the active
-  // server; a filter opens every group with a match and hides the rest.
-  function buildServerRows(groups, expanded, filter) {
+  function matchingServers(g, q) {
+    var servers = g.servers || []
+    if (q === "") return servers
+    return servers.filter(function(s) {
+      var hay = String(s.name) + " " + String(s.protocol || "") + " " + String(s.country || "")
+      return hay.toLowerCase().indexOf(q) !== -1
+    })
+  }
+
+  // A header is open when the user opened it, else when it holds the active
+  // server; a filter opens every one with a match and hides the rest.
+  function isOpen(expanded, key, active, q) {
+    return q !== "" || (expanded[key] === undefined ? active === true : expanded[key] === true)
+  }
+
+  // One group's rows: its header (unless the protocol row stands for it),
+  // an "Auto — best ping" row when open, its servers. `depth` indents.
+  function pushGroup(rows, g, servers, open, depth, header) {
+    if (header) rows.push({ kind: "group", group: g, open: open, count: servers.length, depth: depth })
+    if (!open) return
+    var inner = header ? depth + 1 : depth
+    var best = null
+    for (var j = 0; j < servers.length; j++) {
+      var s = servers[j]
+      if (s.ping_ms === null || s.ping_ms === undefined || s.active) continue
+      if (!best || s.ping_ms < best.ping_ms) best = s
+    }
+    if (best && servers.length > 1) rows.push({ kind: "auto", group: g, server: best, depth: inner })
+    for (var k = 0; k < servers.length; k++)
+      rows.push({ kind: "server", group: g, server: servers[k], depth: inner })
+  }
+
+  // tree: protocol → (Happ: subscription →) server; tabs/sidebar: the
+  // groups of the picked protocol (all for "All"), flat.
+  function buildServerRows(groups, providers, expanded, filter, layout, picked) {
     var q = String(filter || "").trim().toLowerCase()
     var rows = []
-    for (var i = 0; i < groups.length; i++) {
-      var g = groups[i]
-      var servers = g.servers || []
-      if (q !== "") servers = servers.filter(function(s) {
-        var hay = String(s.name) + " " + String(s.protocol || "") + " " + String(s.country || "")
-        return hay.toLowerCase().indexOf(q) !== -1
-      })
-      if (q !== "" && servers.length === 0) continue
-      var open = q !== "" || (expanded[g.id] === undefined ? g.active === true : expanded[g.id] === true)
-      rows.push({ kind: "group", group: g, open: open, count: servers.length })
-      if (!open) continue
-      var best = null
-      for (var j = 0; j < servers.length; j++) {
-        var s = servers[j]
-        if (s.ping_ms === null || s.ping_ms === undefined || s.active) continue
-        if (!best || s.ping_ms < best.ping_ms) best = s
+    if (layout !== "tree") {
+      for (var i = 0; i < groups.length; i++) {
+        var g = groups[i]
+        if (picked !== "" && g.provider !== picked) continue
+        var servers = matchingServers(g, q)
+        if (q !== "" && servers.length === 0) continue
+        pushGroup(rows, g, servers, isOpen(expanded, g.id, g.active, q), 0, true)
       }
-      if (best && servers.length > 1) rows.push({ kind: "auto", group: g, server: best })
-      for (var k = 0; k < servers.length; k++) rows.push({ kind: "server", group: g, server: servers[k] })
+      return rows
+    }
+    for (var p = 0; p < providers.length; p++) {
+      var prov = providers[p]
+      var mine = [], count = 0
+      for (var m = 0; m < groups.length; m++) {
+        if (groups[m].provider !== prov.name) continue
+        var found = matchingServers(groups[m], q)
+        if (q !== "" && found.length === 0) continue
+        mine.push({ group: groups[m], servers: found })
+        count += found.length
+      }
+      if (q !== "" && mine.length === 0) continue
+      var key = "provider:" + prov.name
+      // a protocol with only notice groups (rejected subscriptions, no headers) opens too
+      var open = mine.length > 0 && isOpen(expanded, key, prov.active, q)
+      rows.push({ kind: "provider", provider: prov, key: key, open: open, count: count, depth: 0 })
+      if (!open) continue
+      // a subscription is a level of its own; WireGuard's one group is the protocol itself
+      var nested = prov.name === "Happ"
+      for (var n = 0; n < mine.length; n++) {
+        var mg = mine[n].group
+        pushGroup(rows, mg, mine[n].servers,
+          !nested || isOpen(expanded, mg.id, mg.active, q), 1, nested)
+      }
     }
     return rows
   }
 
-  function setGroupOpen(group, open) {
+  function setExpanded(key, open) {
     var next = {}
-    for (var key in expandedGroups) next[key] = expandedGroups[key]
-    next[group.id] = open
+    for (var k in expandedGroups) next[k] = expandedGroups[k]
+    next[key] = open
     expandedGroups = next
+  }
+
+  function rowOpenKey(row) {
+    return row.kind === "provider" ? row.key : row.group.id
+  }
+
+  // [ / ]: the previous / next protocol of the tabs or sidebar
+  function stepProvider(dir) {
+    if (rowsLayout === "tree") return
+    var names = providerChoices.map(function(c) { return c.name })
+    var i = names.indexOf(providerFilter)
+    providerFilter = names[(Math.max(0, i) + dir + names.length) % names.length]
+    serverCursor = -1
   }
 
   function loadServers() {
@@ -159,7 +239,7 @@ Panel {
 
   // A group's or a server's ping (click on its ping, its group button, `p`).
   function pingRow(row) {
-    if (!row) return
+    if (!row || row.kind === "provider") return
     var g = row.group
     var args = ["--ping-now"]
     var key
@@ -182,7 +262,7 @@ Panel {
   // the run that covers it (the backend's per-row `pinging`) — a result
   // already in shows while the rest of the group is measured.
   function rowPinging(row) {
-    if (!row) return false
+    if (!row || row.kind === "provider") return false
     var g = row.group
     if (pendingPing[rowKey(g, null)] === true) return true
     if (row.kind === "group") return g.pinging === true
@@ -191,7 +271,7 @@ Panel {
 
   function activateServerRow(row) {
     if (!row) return
-    if (row.kind === "group") { setGroupOpen(row.group, !row.open); return }
+    if (row.kind === "group" || row.kind === "provider") { setExpanded(rowOpenKey(row), !row.open); return }
     var g = row.group, s = row.server
     pendingKey = rowKey(g, s)
     if (row.kind === "server" && s.active) {
@@ -204,31 +284,17 @@ Panel {
   }
 
   function moveServerCursor(dy) {
-    pointerGate.reset()
+    activeList.resetPointer()
     if (serverRows.length === 0) return
+    keyboardCursor = true
     serverCursor = Math.max(0, Math.min(serverRows.length - 1, serverCursor + dy))
-    scrollRowIntoView(serverCursor)
+    activeList.scrollToRow(serverCursor)
   }
 
-  // h/l on a group header: collapse/expand, like a file tree
+  // h/l on a protocol or group header: collapse/expand, like a file tree
   function openCursorGroup(open) {
     var row = serverRows[serverCursor]
-    if (row && row.kind === "group") setGroupOpen(row.group, open)
-  }
-
-  function scrollRowIntoView(index) {
-    if (!panelFlick || index < 0 || index >= serverColumn.children.length) return
-    Qt.callLater(function() {
-      var item = serverColumn.children[index]
-      if (!item) return
-      var top = item.mapToItem(panelFlick.contentItem, 0, 0).y
-      var bottom = top + item.height
-      var margin = Style.space(6)
-      var maxY = Math.max(0, panelFlick.contentHeight - panelFlick.height)
-      if (top < panelFlick.contentY + margin) panelFlick.contentY = Math.max(0, top - margin)
-      else if (bottom > panelFlick.contentY + panelFlick.height - margin)
-        panelFlick.contentY = Math.min(maxY, bottom + margin - panelFlick.height)
-    })
+    if (row && (row.kind === "group" || row.kind === "provider")) setExpanded(rowOpenKey(row), open)
   }
 
   // What the backend is busy with ("ping 23/150"): next to the connection
@@ -236,8 +302,8 @@ Panel {
   // Not while the panel is open: the panel is centred under this button, so
   // a label growing mid-ping slid it sideways — and the panel shows the
   // progress itself ("…" on the rows).
-  readonly property string activity: root.opened ? ""
-    : String((panelData.fields || {}).activity || "")
+  readonly property string pingActivity: String((panelData.fields || {}).activity || "")
+  readonly property string activity: root.opened ? "" : pingActivity
   readonly property string barLabel: {
     if (!connected) return activity
     var text = formatLabel(labelFormat)
@@ -307,20 +373,37 @@ Panel {
     Quickshell.execDetached(["python3", root.backend, flag])
   }
 
-  function openMenu() {
+  function openWindow() {
     close()
-    run("--menu")
+    refresh()
+    loadServers()
+    // Hyprland's close (SUPER+W) leaves `visible` true with no window behind
+    // it, so set it false first: that remaps a stale one, and an open one
+    // comes back to the front (focus) — never an early return on `visible`
+    appWindow.visible = false
+    appWindow.visible = true
   }
 
   // The switch: off disconnects everything; on has no "last server" to go
-  // back to yet, so it opens the server menu.
+  // back to yet, so it puts the cursor on the server list.
   function togglePower() {
     if (connected) {
       busy = true
       run("--disconnect-all")
+    } else if (cursorServerRow()) {
+      activateServerRow(cursorServerRow())
     } else {
-      openMenu()
+      moveServerCursor(1)
     }
+  }
+
+  // the server row ("Auto" included) the keyboard put the cursor on, else
+  // null: on its way to the switch the pointer crosses rows and drags the
+  // cursor along — a click must not connect whatever it passed last
+  function cursorServerRow() {
+    if (!keyboardCursor) return null
+    var row = serverRows[serverCursor]
+    return row && (row.kind === "server" || row.kind === "auto") ? row : null
   }
 
   function runDnsTest() {
@@ -373,17 +456,15 @@ Panel {
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
   onServerRowsChanged: {
-    pointerGate.reset()  // rows just moved under a still pointer — not a hover
+    // rows just moved under a still pointer — not a hover
+    panelList.resetPointer()
+    appWindow.locations.resetPointer()
     if (serverCursor >= serverRows.length) serverCursor = serverRows.length - 1
   }
 
-  // Hover moves the cursor only when the pointer itself moved: a rebuilt or
-  // scrolled list slides rows under a still pointer, and each one used to
-  // grab the cursor (the filter jumped it to row 27). Measured against the
-  // viewport, so scrolling isn't movement.
-  PointerMoveGate {
-    id: pointerGate
-    referenceItem: panelFlick
+  AppWindow {
+    id: appWindow
+    host: root
   }
 
   IpcHandler {
@@ -394,7 +475,7 @@ Panel {
       root.refresh()
       if (root.opened) root.loadServers()
     }
-    function menu(): void { root.openMenu() }
+    function window(): void { root.openWindow() }
     function open(): void { root.open() }
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }
@@ -423,6 +504,8 @@ Panel {
         var data = null
         try { data = JSON.parse(String(text || "")) } catch (e) {}
         root.serverGroups = data && data.groups instanceof Array ? data.groups : []
+        root.serverProviders = data && data.providers instanceof Array ? data.providers : []
+        root.windowLayout = data && data.layout ? String(data.layout) : "tree"
         if (root.clearPendingOnLoad) {
           root.pendingPing = ({})
           root.clearPendingOnLoad = false
@@ -463,7 +546,7 @@ Panel {
     fontSize: Style.font.caption
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.MiddleButton) root.refresh()
-      else if (buttonCode === Qt.RightButton) root.openMenu()
+      else if (buttonCode === Qt.RightButton) root.openWindow()
       else root.toggle()
     }
   }
@@ -481,25 +564,27 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // typing in the filter must not drive the cursor (j/k/h/l are moves)
+      blocked: panelList.filterFocused
       onMoveRequested: function(dx, dy) {
         if (dy !== 0) root.moveServerCursor(dy)
         else root.openCursorGroup(dx > 0)
       }
       onActivateRequested: {
         if (root.serverCursor >= 0) root.activateServerRow(root.serverRows[root.serverCursor])
-        else root.openMenu()
+        else root.moveServerCursor(1)
       }
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         var k = String(t).toLowerCase()
         if (k === "t") root.togglePower()
-        else if (k === "m") root.openMenu()
+        else if (k === "m") root.openWindow()
         else if (k === "d") root.runDnsTest()
         else if (k === "r") { root.refresh(); root.loadServers() }
         else if (k === "f") root.cycleLabelFormat()
         else if (k === "p" && root.serverCursor >= 0) root.pingRow(root.serverRows[root.serverCursor])
-        else if (k === "/") filterField.forceActiveFocus()
+        else if (k === "/") panelList.filterField.forceActiveFocus()
       }
 
       Flickable {
@@ -518,224 +603,19 @@ Panel {
         width: panelFlick.width
         spacing: Style.space(12)
 
-        Item {
-          id: header
+        ConnectionSummary {
           width: parent.width
-          implicitHeight: hero.implicitHeight
-
-          PanelHero {
-            id: hero
-            width: parent.width
-            title: String(root.panelData.title || "VPN")
-            meta: String(root.panelData.meta || "")
-            detail: String(root.panelData.detail || "")
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            iconComponent: Component {
-              Text {
-                text: root.stateGlyph
-                color: root.atRisk ? root.urgent : (root.connected ? root.foreground : root.dim)
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.display
-              }
-            }
-            trailingControl: Component {
-              ToggleSwitch {
-                id: powerSwitch
-                checked: root.connected
-                busy: root.busy
-                foreground: hero.foreground
-                onToggled: root.togglePower()
-
-                PanelToolTip {
-                  visible: powerSwitch.containsMouse
-                  text: root.connected ? "Disconnect all VPNs" : "Choose a server"
-                  fontFamily: hero.fontFamily
-                }
-              }
-            }
-          }
-        }
-
-        Text {
-          textFormat: Text.PlainText
-          visible: text !== ""
-          width: parent.width
-          text: root.exitLine
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-        }
-
-        Text {
-          textFormat: Text.PlainText
-          visible: text !== ""
-          width: parent.width
-          text: root.trafficLine
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          elide: Text.ElideRight
+          host: root
         }
 
         PanelSeparator { foreground: root.foreground }
 
-        PanelSectionHeader {
-          text: "PROTECTION"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-        }
-
-        Flow {
+        ServerList {
+          id: panelList
           width: parent.width
-          spacing: Style.space(8)
-
-          Repeater {
-            model: root.badges
-
-            BorderSurface {
-              id: badge
-              required property var modelData
-              readonly property bool actionable: modelData.id === "dns" && modelData.state !== "ok"
-              implicitWidth: badgeRow.implicitWidth + Style.space(16)
-              implicitHeight: badgeRow.implicitHeight + Style.space(8)
-              color: badgeMouse.containsMouse && actionable
-                ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
-              borderSpec: Border.controlSpec("normal", root.badgeColor(modelData.state), root.badgeColor(modelData.state))
-              radius: Style.cornerRadius
-
-              Row {
-                id: badgeRow
-                anchors.centerIn: parent
-                spacing: Style.space(6)
-
-                Text {
-                  text: root.badgeGlyph(badge.modelData.state)
-                  color: root.badgeColor(badge.modelData.state)
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  anchors.verticalCenter: parent.verticalCenter
-                }
-                Text {
-                  textFormat: Text.PlainText
-                  text: String(badge.modelData.label || "")
-                  color: badge.modelData.state === "bad" ? root.urgent
-                    : (badge.modelData.state === "ok" ? root.foreground : root.dim)
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  font.bold: badge.modelData.state === "bad"
-                }
-              }
-
-              MouseArea {
-                id: badgeMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: badge.actionable ? Qt.PointingHandCursor : Qt.ArrowCursor
-                onClicked: if (badge.actionable) root.runDnsTest()
-              }
-
-              PanelToolTip {
-                visible: badgeMouse.containsMouse && text !== ""
-                text: String(badge.modelData.hint || "") + (badge.actionable ? " — click to run" : "")
-                fontFamily: root.fontFamily
-              }
-            }
-          }
-        }
-
-        PanelSeparator { foreground: root.foreground }
-
-        Item {
-          width: parent.width
-          implicitHeight: Math.max(serversHeader.implicitHeight, pingButton.implicitHeight)
-
-          PanelSectionHeader {
-            id: serversHeader
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            text: "SERVERS"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-          }
-
-          Text {
-            id: pingButton
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            textFormat: Text.PlainText
-            text: "\uf021 Ping"  // nf-fa-refresh
-            color: pingMouse.containsMouse ? root.foreground : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
-          MouseArea {
-            id: pingMouse
-            anchors.fill: pingButton
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.run("--ping-now")
-          }
-
-          PanelToolTip {
-            visible: pingMouse.containsMouse
-            text: root.activity !== "" ? "Measuring: " + root.activity
-                                       : "Measure every server's delay through xray"
-            fontFamily: root.fontFamily
-          }
-        }
-
-        TextField {
-          id: filterField
-          width: parent.width
-          foreground: root.foreground
-          placeholderText: "Filter servers — press /"
-          text: root.serverFilter
-          onTextChanged: {
-            root.serverFilter = text
-            root.serverCursor = text !== "" ? 0 : -1
-          }
-          onAccepted: {
-            root.activateServerRow(root.serverRows[Math.max(0, root.serverCursor)])
-          }
-          Keys.onPressed: function(event) {
-            if (event.key === Qt.Key_Down) { root.moveServerCursor(1); event.accepted = true }
-            else if (event.key === Qt.Key_Up) { root.moveServerCursor(-1); event.accepted = true }
-            else if (event.key === Qt.Key_Escape) {
-              if (text !== "") text = ""
-              keyCatcher.forceActiveFocus()
-              event.accepted = true
-            }
-          }
-        }
-
-        Text {
-          visible: root.serverRows.length === 0
-          width: parent.width
-          textFormat: Text.PlainText
-          text: root.serverFilter !== "" ? "No servers match." : (serversProc.running ? "Loading servers…" : "No servers.")
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          horizontalAlignment: Text.AlignHCenter
-        }
-
-        Column {
-          id: serverColumn
-          width: parent.width
-          spacing: Style.space(2)
-
-          Repeater {
-            model: root.serverRows
-            ServerRow {
-              required property var modelData
-              required property int index
-              width: serverColumn.width
-              row: modelData
-              rowIndex: index
-            }
-          }
+          host: root
+          flick: panelFlick
+          keyTarget: keyCatcher
         }
 
         PanelSeparator { foreground: root.foreground }
@@ -753,7 +633,7 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             anchors.margins: Style.space(12)
             textFormat: Text.PlainText
-            text: "Servers, tools and settings"
+            text: "Open the VPN window"
             color: root.foreground
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
@@ -762,7 +642,7 @@ Panel {
           MouseArea {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
-            onClicked: root.openMenu()
+            onClicked: root.openWindow()
           }
         }
 
@@ -771,7 +651,7 @@ Panel {
           visible: root.panelData.key_hints !== false
           textFormat: Text.PlainText
           width: parent.width
-          text: "j/k move · enter connect · p ping · / filter · t toggle · m menu · d DNS · f label · r refresh"
+          text: "j/k move · enter connect · p ping · / filter · t toggle · m window · d DNS · f label · r refresh"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -780,146 +660,6 @@ Panel {
         }
       }
       }
-    }
-  }
-
-  component ServerRow: CursorSurface {
-    id: serverRow
-    property var row: null
-    property int rowIndex: 0
-    readonly property bool isGroup: row && row.kind === "group"
-    readonly property bool isAuto: row && row.kind === "auto"
-    readonly property var server: row && row.server ? row.server : null
-    readonly property bool isActive: row && row.kind === "server" && server && server.active === true
-    readonly property bool pending: row && !isGroup && root.pendingKey === root.rowKey(row.group, server)
-    readonly property string leftText: {
-      if (!row) return ""
-      if (isGroup) return row.group.title
-      if (isAuto) return "Auto — best ping · " + server.name
-      return server.name
-    }
-    readonly property bool pinging: root.rowPinging(row)
-    readonly property string rightText: {
-      if (!row) return ""
-      if (pending || pinging) return "…"
-      if (isGroup) return row.group.summary || (row.count + " servers")
-      return String(server.ping || "")
-    }
-
-    hasCursor: root.serverCursor === rowIndex
-    current: isActive
-    foreground: root.foreground
-    implicitHeight: rowInner.implicitHeight + (isGroup ? Style.spacing.lg : Style.spacing.md)
-
-    MouseArea {
-      id: rowMouse
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onPositionChanged: function(mouse) {
-        if (pointerGate.moved(rowMouse, mouse)) root.serverCursor = serverRow.rowIndex
-      }
-      onClicked: root.activateServerRow(serverRow.row)
-    }
-
-    Row {
-      id: rowInner
-      anchors.left: parent.left
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(6)
-      anchors.rightMargin: Style.space(8)
-      spacing: Style.space(8)
-
-      Text {
-        id: rowGlyph
-        // nf-fa-caret_down / caret_right / bolt / circle
-        text: serverRow.isGroup ? (serverRow.row.open ? "\uf0d7" : "\uf0da")
-          : (serverRow.isAuto ? "\uf0e7" : (serverRow.isActive ? "\uf111" : ""))
-        color: serverRow.isActive || serverRow.isGroup ? root.foreground : root.dim
-        font.family: root.fontFamily
-        font.pixelSize: serverRow.isActive ? Style.font.caption : Style.font.body
-        width: Style.space(16)
-        horizontalAlignment: Text.AlignHCenter
-        anchors.verticalCenter: parent.verticalCenter
-      }
-
-      Text {
-        textFormat: Text.PlainText
-        text: serverRow.leftText
-        color: serverRow.isAuto ? root.dim : root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: serverRow.isGroup ? Style.font.body : Style.font.bodySmall
-        font.bold: serverRow.isGroup || serverRow.isActive
-        elide: Text.ElideRight
-        width: parent.width - rowGlyph.width - rightLabel.width - groupPing.width
-          - parent.spacing * (groupPing.visible ? 3 : 2)
-        anchors.verticalCenter: parent.verticalCenter
-      }
-
-      Text {
-        id: rightLabel
-        textFormat: Text.PlainText
-        // never measured: a ping glyph on hover, so there is still something to click
-        text: serverRow.rightText !== "" || serverRow.isGroup ? serverRow.rightText
-          : (rowMouse.containsMouse ? "\uf021" : "")  // nf-fa-refresh
-        color: pingMouse.containsMouse && !serverRow.isGroup ? root.foreground
-          : (serverRow.server && (serverRow.server.stale || serverRow.server.ping_ms === null)
-            ? root.dim : (serverRow.isGroup ? root.dim : root.foreground))
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        anchors.verticalCenter: parent.verticalCenter
-
-        // a server's ping is its own button: click = measure it (the rest
-        // of the row connects)
-        MouseArea {
-          id: pingMouse
-          anchors.fill: parent
-          anchors.margins: -Style.space(4)
-          enabled: !serverRow.isGroup && !serverRow.pending
-          hoverEnabled: true
-          cursorShape: Qt.PointingHandCursor
-          onClicked: root.pingRow(serverRow.row)
-        }
-      }
-
-      // a group's ping button, next to its summary
-      Text {
-        id: groupPing
-        visible: serverRow.isGroup
-        textFormat: Text.PlainText
-        text: "\uf021"  // nf-fa-refresh
-        color: groupPingMouse.containsMouse ? root.foreground : root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        anchors.verticalCenter: parent.verticalCenter
-
-        MouseArea {
-          id: groupPingMouse
-          anchors.fill: parent
-          anchors.margins: -Style.space(4)
-          enabled: serverRow.isGroup
-          hoverEnabled: true
-          cursorShape: Qt.PointingHandCursor
-          onClicked: root.pingRow(serverRow.row)
-        }
-      }
-    }
-
-    PanelToolTip {
-      visible: pingMouse.containsMouse || groupPingMouse.containsMouse
-      text: serverRow.pinging ? "Measuring…"
-        : (serverRow.isGroup ? "Ping every server of " + serverRow.row.group.title : "Click to ping")
-      fontFamily: root.fontFamily
-    }
-
-    PanelToolTip {
-      visible: rowMouse.containsMouse && !pingMouse.containsMouse && !serverRow.isGroup
-        && serverRow.server !== null
-      text: serverRow.server
-        ? (serverRow.isActive ? "Disconnect" : "Connect") + (serverRow.server.protocol ? " · " + serverRow.server.protocol : "")
-        : ""
-      fontFamily: root.fontFamily
     }
   }
 }

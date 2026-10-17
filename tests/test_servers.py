@@ -34,6 +34,7 @@ def env(monkeypatch, tmp_path):
     pings = {}
     monkeypatch.setattr(happmeta, "_read_pings", lambda: pings)
     monkeypatch.setattr(happmeta, "request_subscription_update", lambda: None)
+    monkeypatch.setattr(happmeta, "providers", dict)
     monkeypatch.setattr(vpn_manager.config, "load_config", config.Config)
     return pings
 
@@ -88,11 +89,19 @@ def test_server_list_groups_happ_per_subscription_and_other_providers(env, monke
             },
         ),
     )
-    groups = vpn_manager.server_list()["groups"]
+    listing = vpn_manager.server_list()
+    groups = listing["groups"]
     assert [(g["provider"], g["title"], g["active"]) for g in groups] == [
         ("Happ", "Unlock VPN", True),
         ("WireGuard", "WireGuard", True),
-    ]  # a provider with nothing to show is left out
+    ]  # a provider with nothing to show has no group…
+    # …but is still a protocol of the window's tree/tabs/sidebar
+    assert listing["providers"] == [
+        {"name": "Happ", "total": 2, "active": True},
+        {"name": "WireGuard", "total": 1, "active": True},
+        {"name": "OpenVPN", "total": 0, "active": False},
+    ]
+    assert listing["layout"] == "tree"
     unlock = groups[0]
     assert unlock["subscription_id"] == "15"
     assert unlock["summary"] == "✓ 2/2 · 60 ms"  # median of reachable
@@ -203,3 +212,57 @@ def test_server_row_marks_a_ping_skipped_under_the_killswitch(env):
     row = vpn_manager._server_row({"name": "home", "active": False})
     assert (row["ping"], row["ping_ms"]) == ("—", None)
     assert happmeta.ping_mark("home") == ""
+
+
+def test_server_list_says_why_a_subscription_sent_no_servers(env, monkeypatch):
+    """A device-limited panel answers stub rows: its group says so in the
+    panel's words (the old Happ menu's "⚠️ <provider>: …" row)."""
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("Happ", [])])
+    monkeypatch.setattr(
+        vpn_manager,
+        "happ_server_groups",
+        lambda provider: ([], {"OK": [{"name": "🇩🇪 DE", "active": False, "provider_id": "8"}]}),
+    )
+    monkeypatch.setattr(
+        happmeta, "providers", lambda: {"7": {"name": "WireCat"}, "8": {"name": "OK"}}
+    )
+    monkeypatch.setattr(
+        happmeta,
+        "subscription_rejection",
+        lambda sub_id: ["⚠️ Достигнут лимит устройств: 4"] if sub_id in ("7", "8") else [],
+    )
+    titles = [g["title"] for g in vpn_manager.server_list()["groups"]]
+    # OK still has (last known) servers: no extra group for it
+    assert titles == ["OK", "WireCat · ⚠ Достигнут лимит устройств: 4"]
+
+
+def test_server_list_never_blocks_on_the_network(env, monkeypatch):
+    """The window/panel list reads subscriptions cache-only and refreshes them
+    in the background — allow_fetch=True fetches every stale subscription
+    synchronously (measured 15 s against a real stale cache, see CLAUDE.md)."""
+    calls = []
+    monkeypatch.setattr(
+        happmeta, "request_subscription_update", lambda: calls.append("background refresh")
+    )
+
+    def fake_all_servers(allow_fetch=True):
+        assert not allow_fetch, "the server list must never fetch subscriptions synchronously"
+        return []
+
+    monkeypatch.setattr(happmeta, "all_servers", fake_all_servers)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("Happ", [])])
+    vpn_manager.server_list()
+    assert calls == ["background refresh"]
+
+
+@pytest.mark.parametrize(("captured", "hint"), [(False, True), (True, False)])
+def test_server_list_explains_an_empty_happ_without_captured_headers(
+    env, monkeypatch, captured, hint
+):
+    """No servers at all with Happ's default headers: the panel may need the
+    device's own (the old menu's "No servers" row) — said once, as a group."""
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("Happ", [])])
+    monkeypatch.setattr(vpn_manager, "happ_server_groups", lambda provider: ([], {}))
+    monkeypatch.setattr(happmeta, "has_headers", lambda: captured)
+    titles = [g["title"] for g in vpn_manager.server_list()["groups"]]
+    assert titles == ([vpn_manager.HAPP_NO_HEADERS_TITLE] if hint else [])

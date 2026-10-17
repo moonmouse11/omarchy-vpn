@@ -64,6 +64,8 @@ Panel {
   property var serverGroups: []
   // every visible protocol {name, total, active}, empty ones too
   property var serverProviders: []
+  // QUICK CONNECT (--servers' `quick`): favourites, recent, the switch's last server
+  property var quick: ({ favourites: [], recent: [], last: null })
   // ⚙ Settings → "Protocols in the VPN window": tree | tabs | sidebar.
   // The bar panel is too narrow for a sidebar: always the tree.
   property string windowLayout: "tree"
@@ -349,8 +351,13 @@ Panel {
       runArgs(["--disconnect", g.provider, s.name])
       return
     }
-    var args = ["--connect", g.provider, s.name]
-    if (g.subscription_id) args.push(g.subscription_id)
+    connectServer(g.provider, s.name, g.subscription_id)
+  }
+
+  // the one place --connect's args are built (rows, chips, the switch)
+  function connectServer(provider, name, subId) {
+    var args = ["--connect", String(provider), String(name)]
+    if (subId) args.push(String(subId))
     runArgs(args)
   }
 
@@ -455,17 +462,33 @@ Panel {
     appWindow.visible = true
   }
 
-  // The switch: off disconnects everything; on has no "last server" to go
-  // back to yet, so it puts the cursor on the server list.
+  // The switch: off disconnects everything; on connects the keyboard-picked
+  // server, else QUICK CONNECT's last one, else puts the cursor in the list.
   function togglePower() {
     if (connected) {
       busy = true
       run("--disconnect-all")
     } else if (cursorServerRow()) {
       activateServerRow(cursorServerRow())
+    } else if (quick.last) {
+      quickConnect(quick.last)  // like Mullvad/Proton: the last server
     } else {
       moveServerCursor(1)
     }
+  }
+
+  // a QUICK CONNECT chip (or the switch's last server)
+  function quickConnect(chip) {
+    connectServer(chip.provider, chip.name, chip.sub_id)
+  }
+
+  // the row's star, `s`: (un)star a server for QUICK CONNECT
+  function toggleFavourite(row) {
+    // not "Auto": that's whichever server pings best right now, not one to keep
+    if (!row || row.kind !== "server") return
+    var args = ["--favourite", String(row.group.provider), String(row.server.name)]
+    if (row.group.subscription_id) args.push(String(row.group.subscription_id))
+    runArgs(args)
   }
 
   // the server row ("Auto" included) the keyboard put the cursor on, else
@@ -677,6 +700,7 @@ Panel {
         try { data = JSON.parse(String(text || "")) } catch (e) {}
         root.serverGroups = data && data.groups instanceof Array ? data.groups : []
         root.serverProviders = data && data.providers instanceof Array ? data.providers : []
+        root.quick = data && data.quick ? data.quick : { favourites: [], recent: [], last: null }
         root.windowLayout = data && data.layout ? String(data.layout) : "tree"
         if (root.clearPendingOnLoad) {
           root.pendingPing = ({})
@@ -756,6 +780,7 @@ Panel {
         else if (k === "r") { root.refresh(); root.loadServers() }
         else if (k === "f") root.cycleLabelFormat()
         else if (k === "p" && root.serverCursor >= 0) root.pingRow(root.serverRows[root.serverCursor])
+        else if (k === "s" && root.serverCursor >= 0) root.toggleFavourite(root.serverRows[root.serverCursor])
         else if (k === "/") panelList.filterField.forceActiveFocus()
       }
 
@@ -837,7 +862,7 @@ Panel {
           visible: root.panelData.key_hints !== false
           textFormat: Text.PlainText
           width: parent.width
-          text: "j/k move · enter connect · p ping · / filter · t toggle · m window · d DNS · f label · r refresh"
+          text: "j/k move · enter connect · p ping · s star · / filter · t toggle · m window · d DNS · f label · r refresh"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

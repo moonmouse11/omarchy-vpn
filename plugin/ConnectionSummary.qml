@@ -42,7 +42,9 @@ Column {
           PanelToolTip {
             visible: powerSwitch.containsMouse
             text: summary.host.connected ? "Disconnect all VPNs"
-              : (summary.host.cursorServerRow() ? "Connect the selected server" : "Choose a server below")
+              : summary.host.cursorServerRow() ? "Connect the selected server"
+              : summary.host.quick.last ? "Connect " + summary.host.quick.last.name
+              : "Choose a server below"
             fontFamily: hero.fontFamily
           }
         }

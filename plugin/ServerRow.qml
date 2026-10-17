@@ -97,6 +97,7 @@ CursorSurface {
       width: parent.width - rowGlyph.width - rightLabel.width
         - (groupPing.visible ? groupPing.width + parent.spacing : 0)
         - (importButton.visible ? importButton.width + parent.spacing : 0)
+        - (starButton.visible ? starButton.width + parent.spacing : 0)
         - parent.spacing * 2
       anchors.verticalCenter: parent.verticalCenter
     }
@@ -124,6 +125,30 @@ CursorSurface {
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         onClicked: serverRow.host.pingRow(serverRow.row)
+      }
+    }
+
+    // ★ a favourite (always), ☆ on hover: click (or `s`) stars it — QUICK CONNECT
+    Text {
+      id: starButton
+      visible: !!serverRow.server && serverRow.row.kind === "server"
+        && (serverRow.server.favourite === true || rowMouse.containsMouse || starMouse.containsMouse)
+      textFormat: Text.PlainText
+      text: serverRow.server && serverRow.server.favourite ? "\uf005" : "\uf006"  // nf-fa-star / star_o
+      color: starMouse.containsMouse || (serverRow.server && serverRow.server.favourite)
+        ? serverRow.host.foreground : serverRow.host.dim
+      font.family: serverRow.host.fontFamily
+      font.pixelSize: Style.font.caption
+      anchors.verticalCenter: parent.verticalCenter
+
+      MouseArea {
+        id: starMouse
+        anchors.fill: parent
+        anchors.margins: -Style.space(4)
+        enabled: starButton.visible
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: serverRow.host.toggleFavourite(serverRow.row)
       }
     }
 

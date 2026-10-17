@@ -7,21 +7,23 @@ import qs.Ui
 // Test, IP Info, Speed Test (--check, Widget.checkProc). Speed asks first —
 // every service, one of them, or a custom URL. The state lives on the
 // Widget, so a check outlives a closed window and shows when it reopens.
-// Esc closes, r runs it again.
+// Esc closes, r runs it again. `standalone`: the whole of CheckWindow.qml
+// (a check from the bar panel) — no scrim, the card fills the window.
 Item {
   id: card
   property var host: null
+  property bool standalone: false
   readonly property bool urlFocused: urlField.activeFocus
   readonly property var titles: ({ dns: "DNS Leak Test", ip: "IP Info", speed: "Speed Test" })
   readonly property string phase: host.checkPhase
 
-  visible: host.checkOpen
+  visible: standalone || host.checkOpen
 
   function focusKeys() { Qt.callLater(function() { keys.forceActiveFocus() }) }
 
   function runAgain() {
     if (phase === "running") return
-    if (host.checkKind === "speed" && host.checkTarget === "") host.openCheck("speed")
+    if (host.checkKind === "speed" && host.checkTarget === "") host.openCheck("speed", standalone)
     else host.runCheck(host.checkKind, host.checkTarget)
   }
 
@@ -34,16 +36,17 @@ Item {
   }
 
   Rectangle {
+    visible: !card.standalone
     anchors.fill: parent
     color: Util.alpha(Color.background, 0.7)
-    MouseArea { anchors.fill: parent; onClicked: card.host.closeCheck() }
+    MouseArea { anchors.fill: parent; onClicked: card.host.closeCheck(false) }
   }
 
   Item {
     id: keys
     anchors.fill: parent
     Keys.onPressed: function(event) {
-      if (event.key === Qt.Key_Escape) { card.host.closeCheck(); event.accepted = true }
+      if (event.key === Qt.Key_Escape) { card.host.closeCheck(card.standalone); event.accepted = true }
       else if (event.text.toLowerCase() === "r") { card.runAgain(); event.accepted = true }
     }
   }
@@ -51,8 +54,10 @@ Item {
   BorderSurface {
     id: box
     anchors.centerIn: parent
-    width: Math.min(parent.width - Style.space(48), Style.space(620))
-    height: Math.min(parent.height - Style.space(48), body.implicitHeight + Style.space(32))
+    // in its own window the card is the window; over the app window, a box
+    width: card.standalone ? parent.width : Math.min(parent.width - Style.space(48), Style.space(620))
+    height: card.standalone ? parent.height
+      : Math.min(parent.height - Style.space(48), body.implicitHeight + Style.space(32))
     // opaque: a theme's background may carry alpha, and the window showed through
     color: Qt.rgba(Color.background.r, Color.background.g, Color.background.b, 1)
     borderSpec: Border.controlSpec("normal", card.host.foreground, Color.accent)
@@ -114,9 +119,20 @@ Item {
               foreground: card.host.foreground
               fontFamily: card.host.fontFamily
               fontSize: Style.font.bodySmall
-              onClicked: card.host.closeCheck()
+              onClicked: card.host.closeCheck(card.standalone)
             }
           }
+        }
+
+        Text {
+          visible: card.host.checkNotice !== ""
+          width: parent.width
+          textFormat: Text.PlainText
+          wrapMode: Text.Wrap
+          text: card.host.checkNotice
+          color: card.host.urgent
+          font.family: card.host.fontFamily
+          font.pixelSize: Style.font.bodySmall
         }
 
         // ── speed: what to measure ─────────────────────────────────────

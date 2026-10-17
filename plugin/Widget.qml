@@ -90,6 +90,8 @@ Panel {
   property var checkResult: null
   property string checkError: ""
   property double checkAt: 0
+  // another check was asked for while one runs: say it didn't start
+  property string checkNotice: ""
   property string serverFilter: ""
   property int serverCursor: -1
   // the cursor was put there by the keyboard (j/k, the filter), not by a
@@ -475,18 +477,34 @@ Panel {
     return row && (row.kind === "server" || row.kind === "auto") ? row : null
   }
 
-  // the DNS badge, `d`: the window's check card
+  // the DNS badge, `d`: from the panel its own check window, in the app
+  // window its card
   function runDnsTest() {
-    openCheck("dns")
+    openCheck("dns", opened)
   }
 
   // Tools → DNS leak test / IP info / Speed test. A running check just
   // shows its card again: one at a time.
-  function openCheck(kind) {
-    close()  // from the panel's DNS badge / `d`
-    if (!windowOpen) openWindow()  // an open window would remap (flicker)
-    checkOpen = true
-    if (checkProc.running) return
+  // standalone: from the bar panel — just the check, in CheckWindow.qml (the
+  // whole app window was one window too many); else the app window's card
+  function openCheck(kind, standalone) {
+    if (standalone) {
+      close()
+      // Hyprland's close leaves `visible` true (see openWindow()); an open one
+      // stays put — remapping it would flicker
+      if (!checkWindow.backingWindowVisible) {
+        checkWindow.visible = false
+        checkWindow.visible = true
+      }
+    } else {
+      checkOpen = true
+    }
+    if (checkProc.running) {
+      var titles = { dns: "DNS Leak Test", ip: "IP Info", speed: "Speed Test" }
+      checkNotice = kind !== checkKind
+        ? titles[kind] + " didn't start: " + titles[checkKind] + " is still running" : ""
+      return
+    }
     if (kind === "speed") {
       checkKind = "speed"
       checkTarget = ""
@@ -503,6 +521,7 @@ Panel {
     checkKind = kind
     checkTarget = target
     checkPhase = "running"
+    checkNotice = ""
     checkProgress = null
     checkResult = null
     checkError = ""
@@ -515,8 +534,10 @@ Panel {
   }
 
   // the check keeps running (its bubble too); the card shows it on reopen
-  function closeCheck() {
-    checkOpen = false
+  function closeCheck(standalone) {
+    if (standalone) checkWindow.visible = false
+    else checkOpen = false
+    checkNotice = ""
   }
 
   function checkLine(line) {
@@ -582,6 +603,11 @@ Panel {
 
   AppWindow {
     id: appWindow
+    host: root
+  }
+
+  CheckWindow {
+    id: checkWindow
     host: root
   }
 
@@ -747,6 +773,20 @@ Panel {
         ConnectionSummary {
           width: parent.width
           host: root
+        }
+
+        PanelSeparator { foreground: root.foreground }
+
+        PanelSectionHeader {
+          text: "TOOLS"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+        }
+
+        ToolButtons {
+          width: parent.width
+          host: root
+          standalone: true
         }
 
         PanelSeparator { foreground: root.foreground }

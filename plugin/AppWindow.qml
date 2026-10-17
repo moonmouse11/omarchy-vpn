@@ -14,16 +14,6 @@ FloatingWindow {
   // the Widget scrolls this list while the window is open
   readonly property alias locations: locations
 
-  // the old 🛠 Tools submenu, one button each (--tool KEY)
-  readonly property var tools: [
-    { key: "dns_leak_test", label: "DNS leak test" },
-    { key: "ip_info", label: "IP info" },
-    { key: "speed_test", label: "Speed test" },
-    { key: "refresh_all", label: "Refresh subscriptions" },
-    { key: "clear_caches", label: "Clear caches" },
-    { key: "killswitch", label: "Kill switch on/off" },
-    { key: "settings", label: "Settings" }
-  ]
 
   title: "VPN"
   color: Color.background
@@ -206,32 +196,9 @@ FloatingWindow {
             fontFamily: win.host.fontFamily
           }
 
-          Flow {
+          ToolButtons {
             width: parent.width
-            spacing: Style.space(8)
-
-            Repeater {
-              // ⚙ Settings hides tools; no kill switch under a NetworkManager VPN
-              // (panel_state's "tools"; all of them before the first status)
-              model: win.tools.filter(function(t) {
-                var keys = win.host.panelData.tools
-                return !(keys instanceof Array) || keys.indexOf(t.key) !== -1
-              })
-              Button {
-                required property var modelData
-                text: modelData.label
-                foreground: win.host.foreground
-                fontFamily: win.host.fontFamily
-                fontSize: Style.font.bodySmall
-                bordered: true
-                // the three checks open the card; the rest just run
-                onClicked: {
-                  var check = { dns_leak_test: "dns", ip_info: "ip", speed_test: "speed" }[modelData.key]
-                  if (check) win.host.openCheck(check)
-                  else win.host.runArgs(["--tool", modelData.key])
-                }
-              }
-            }
+            host: win.host
           }
         }
       }

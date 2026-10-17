@@ -1081,7 +1081,7 @@ def run_check(kind: str, target: str | None = None) -> ActionResult:
             targets, duration = _speed_targets(target)
         except CheckFailed as e:
             _emit({"error": str(e)})
-            return ActionResult(False, str(e))
+            return ActionResult(False, "")  # the card says it; no second bubble
         steps = len(targets) if len(targets) > 1 else None
     progress = _CheckProgress(title, steps)
     previous = signal.signal(signal.SIGTERM, _cancel_check)

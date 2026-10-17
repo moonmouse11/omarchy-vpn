@@ -472,6 +472,7 @@ def test_speed_test_custom_url_rejects_non_http(monkeypatch):
     monkeypatch.setattr(vpn_manager.config, "save_config", lambda cfg: pytest.fail("saved"))
     result = vpn_manager.run_check("speed", "file:///etc/passwd")
     assert not result.success
+    assert result.message == ""  # the card shows it; _report must not notify too
     assert emitted == [{"error": "Not an http(s) URL: file:///etc/passwd"}]
 
 

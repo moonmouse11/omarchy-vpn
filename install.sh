@@ -137,7 +137,7 @@ if [[ -f "$BINDINGS" ]]; then
     cat >> "$BINDINGS" <<EOF
 -- >>> omarchy-vpn
 o.bind("SUPER + SHIFT + V", "VPN window", "omarchy-shell -q $PLUGIN_ID window")
-o.window({ class = "^org.quickshell$", title = "^VPN$" }, { tag = "+floating-window" })
+o.window({ class = "^org.quickshell$", title = "^VPN( Check)?$" }, { tag = "+floating-window" })
 -- <<< omarchy-vpn
 EOF
 else

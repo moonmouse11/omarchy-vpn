@@ -2180,8 +2180,15 @@ def main():
     elif args.favourite is not None:
         if len(args.favourite) not in (2, 3):
             parser.error("--favourite takes PROVIDER NAME [SUBSCRIPTION_ID]")
-        quickconnect.toggle_favourite(*args.favourite)
-        refresh_bar()  # the widget reloads the list: the star and the chips
+        if args.favourite[0] == "Happ" and len(args.favourite) != 3:
+            # a Happ server is (subscription, name): without it no row ever matches
+            parser.error("--favourite Happ takes NAME SUBSCRIPTION_ID")
+        try:
+            quickconnect.toggle_favourite(*args.favourite)
+            result = ActionResult(True, "")
+        except OSError as e:
+            result = ActionResult(False, f"Favourite not saved: {e}")
+        _report(result)  # the widget reloads the list: the star and the chips
     elif args.import_ is not None:
         if len(args.import_) not in (1, 2):
             parser.error("--import takes PROVIDER [PATH|-]")

@@ -9,7 +9,9 @@ sub_id is "" for every other provider.
 """
 
 import contextlib
+import fcntl
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import fsutil
@@ -45,26 +47,36 @@ def load() -> dict:
     return {"favourites": entries("favourites"), "recent": entries("recent")[:RECENT_MAX]}
 
 
-def _save(data: dict) -> None:
-    with contextlib.suppress(OSError):
+# a connect's remember() and a star's toggle run in separate processes: one
+# read-modify-write at a time, or the later save drops the other's change
+@contextlib.contextmanager
+def _locked() -> Iterator[dict]:
+    """load() under an flock, saved on exit (OSError propagates)."""
+    QUICK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with QUICK_FILE.with_suffix(".lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = load()
+        yield data
         fsutil.write_json_atomic(QUICK_FILE, data, indent=2)
 
 
 def remember(provider: str, name: str, sub_id: str | None = None) -> None:
-    """A successful connect: first in recent, no duplicates, RECENT_MAX kept."""
-    data = load()
+    """A successful connect: first in recent, no duplicates, RECENT_MAX kept.
+    Best effort — a full disk must not turn a working connect into an error."""
     entry = _entry(provider, name, sub_id)
-    data["recent"] = [entry, *(e for e in data["recent"] if e != entry)][:RECENT_MAX]
-    _save(data)
+    with contextlib.suppress(OSError), _locked() as data:
+        data["recent"] = [entry, *(e for e in data["recent"] if e != entry)][:RECENT_MAX]
 
 
 def toggle_favourite(provider: str, name: str, sub_id: str | None = None) -> bool:
-    """Star / unstar a server; True when it is a favourite now."""
-    data = load()
+    """Star / unstar a server; True when it is a favourite now. Raises
+    OSError when it couldn't be saved (the caller says so)."""
     entry = _entry(provider, name, sub_id)
-    starred = entry not in data["favourites"]
-    data["favourites"] = (
-        [*data["favourites"], entry] if starred else [e for e in data["favourites"] if e != entry]
-    )
-    _save(data)
+    with _locked() as data:
+        starred = entry not in data["favourites"]
+        data["favourites"] = (
+            [*data["favourites"], entry]
+            if starred
+            else [e for e in data["favourites"] if e != entry]
+        )
     return starred

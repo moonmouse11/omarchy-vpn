@@ -351,8 +351,13 @@ Panel {
       runArgs(["--disconnect", g.provider, s.name])
       return
     }
-    var args = ["--connect", g.provider, s.name]
-    if (g.subscription_id) args.push(g.subscription_id)
+    connectServer(g.provider, s.name, g.subscription_id)
+  }
+
+  // the one place --connect's args are built (rows, chips, the switch)
+  function connectServer(provider, name, subId) {
+    var args = ["--connect", String(provider), String(name)]
+    if (subId) args.push(String(subId))
     runArgs(args)
   }
 
@@ -457,8 +462,8 @@ Panel {
     appWindow.visible = true
   }
 
-  // The switch: off disconnects everything; on has no "last server" to go
-  // back to yet, so it puts the cursor on the server list.
+  // The switch: off disconnects everything; on connects the keyboard-picked
+  // server, else QUICK CONNECT's last one, else puts the cursor in the list.
   function togglePower() {
     if (connected) {
       busy = true
@@ -474,14 +479,13 @@ Panel {
 
   // a QUICK CONNECT chip (or the switch's last server)
   function quickConnect(chip) {
-    var args = ["--connect", String(chip.provider), String(chip.name)]
-    if (chip.sub_id) args.push(String(chip.sub_id))
-    runArgs(args)
+    connectServer(chip.provider, chip.name, chip.sub_id)
   }
 
   // the row's star, `s`: (un)star a server for QUICK CONNECT
   function toggleFavourite(row) {
-    if (!row || (row.kind !== "server" && row.kind !== "auto")) return
+    // not "Auto": that's whichever server pings best right now, not one to keep
+    if (!row || row.kind !== "server") return
     var args = ["--favourite", String(row.group.provider), String(row.server.name)]
     if (row.group.subscription_id) args.push(String(row.group.subscription_id))
     runArgs(args)

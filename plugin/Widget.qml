@@ -73,6 +73,11 @@ Panel {
   property string providerFilter: ""
   readonly property var providerChoices: [{ name: "", total: 0, active: false }].concat(serverProviders)
   property var expandedGroups: ({})
+  // the window's Profiles strip (ProfileBar.qml): "" | "import" (target: a
+  // protocol of serverProviders) | "profile" (target: a server row)
+  property string profileMode: ""
+  property var profileTarget: null
+  property bool deleteConfirmOpen: false
   property string serverFilter: ""
   property int serverCursor: -1
   // the cursor was put there by the keyboard (j/k, the filter), not by a
@@ -218,6 +223,58 @@ Panel {
 
   function rowOpenKey(row) {
     return row.kind === "provider" ? row.key : row.group.id
+  }
+
+  function providerInfo(name) {
+    for (var i = 0; i < serverProviders.length; i++)
+      if (serverProviders[i].name === name) return serverProviders[i]
+    return null
+  }
+
+  // "+ Import" on a protocol (the window only)
+  function startImport(prov) {
+    if (!prov || !prov.importer) return
+    profileTarget = prov
+    profileMode = "import"
+  }
+
+  // right click / a / x on a server whose protocol manages profiles
+  function showProfile(row) {
+    if (!row || row.kind !== "server") return false
+    var info = providerInfo(row.group.provider)
+    if (!info || !info.manage) return false
+    profileTarget = row
+    profileMode = "profile"
+    return true
+  }
+
+  function closeProfileBar() {
+    deleteConfirmOpen = false
+    profileMode = ""
+    profileTarget = null
+  }
+
+  // "" = the desktop file chooser (the backend runs it)
+  function importFile(path) {
+    var args = ["--import", String(profileTarget.name)]
+    if (path !== "") args.push(path)
+    runArgs(args)
+    closeProfileBar()
+  }
+
+  // over stdin, never argv: a key is a password (the network panel does the same)
+  function importKey(key) {
+    importProc.secret = String(key)
+    importProc.stdinEnabled = true
+    importProc.command = ["python3", root.backend, "--import", String(profileTarget.name), "-"]
+    importProc.running = true
+    closeProfileBar()
+  }
+
+  function profileAction(action) {
+    var row = profileTarget
+    runArgs(["--profile", action, String(row.group.provider), String(row.server.name)])
+    closeProfileBar()
   }
 
   // [ / ]: the previous / next protocol of the tabs or sidebar
@@ -467,13 +524,24 @@ Panel {
     host: root
   }
 
+  Process {
+    id: importProc
+    property string secret: ""
+    stdinEnabled: true
+    onStarted: {
+      write(secret + "\n")
+      secret = ""
+      stdinEnabled = false  // EOF: the backend reads stdin to the end
+    }
+  }
+
   IpcHandler {
     target: root.ipcTarget
 
     // the backend calls this after every connect/disconnect
     function refresh(): void {
       root.refresh()
-      if (root.opened) root.loadServers()
+      if (root.opened || root.windowOpen) root.loadServers()
     }
     function window(): void { root.openWindow() }
     function open(): void { root.open() }

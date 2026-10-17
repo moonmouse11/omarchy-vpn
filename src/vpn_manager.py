@@ -1224,6 +1224,69 @@ def run_tool(key: str) -> ActionResult:
     return next(fn for k, _label, fn in TOOLS if k == key)()
 
 
+# The window's "+ Import": a config file, or a pasted key (Happ: its own app)
+IMPORT_KINDS = {
+    "WireGuard": "file",
+    "AmneziaWG": "file",
+    "OpenVPN": "file",
+    "NetworkManager": "file",
+    "VLESS": "key",
+    "Shadowsocks": "key",
+}
+IMPORT_EXTENSIONS = {"OpenVPN": "ovpn conf", "NetworkManager": "conf ovpn"}  # else "conf"
+# right click on a server: Toggle autostart / Delete
+MANAGED_PROVIDERS = ("WireGuard", "AmneziaWG", "NetworkManager")
+FILE_SELECT_TIMEOUT = 660  # omarchy-file-select gives up on an unanswered chooser at 600 s
+
+
+def run_import(provider_name: str, source: str | None = None) -> ActionResult:
+    """--import PROVIDER [PATH | -]: the window's "+ Import". No PATH opens the
+    desktop file chooser (omarchy-file-select, through the portal); "-" reads
+    a key or path from stdin — a key in argv would show in `ps`."""
+    provider = _provider_named(provider_name)
+    if provider is None or provider_name not in IMPORT_KINDS:
+        return ActionResult(False, f"{provider_name}: import not supported")
+    if source == "-":
+        source = sys.stdin.read()
+    elif source is None:
+        cmd = [
+            "omarchy-file-select",
+            "--title",
+            f"Import {provider_name} config",
+            "--extensions",
+            IMPORT_EXTENSIONS.get(provider_name, "conf"),
+        ]
+        try:
+            picked = subprocess.run(
+                cmd, check=False, capture_output=True, text=True, timeout=FILE_SELECT_TIMEOUT
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return ActionResult(False, f"File chooser failed: {e}")
+        if picked.returncode == 1:  # nothing picked: the user's decision, no bubble
+            return ActionResult(True, "")
+        if picked.returncode != 0:
+            return ActionResult(False, f"File chooser failed: {picked.stderr.strip()}")
+        source = picked.stdout.splitlines()[0] if picked.stdout.strip() else ""
+    source = source.strip()
+    if not source:
+        return ActionResult(False, "Nothing to import")
+    return provider.import_config(source)
+
+
+def run_profile_action(action: str, provider_name: str, name: str) -> ActionResult:
+    """--profile autostart|delete PROVIDER NAME: a server row's right click.
+    The providers refuse to delete an active profile themselves."""
+    provider = _provider_named(provider_name)
+    if provider is None or provider_name not in MANAGED_PROVIDERS:
+        return ActionResult(False, f"{provider_name}: profiles can't be managed here")
+    conn = next((c for c in provider.connections() if c.name == name), None)
+    if conn is None:
+        return ActionResult(False, f"{provider_name}: {name} not found")
+    if action == "autostart":
+        return provider.toggle_autostart(conn)
+    return provider.delete_config(conn)
+
+
 def _ping_scope_targets(
     scope: dict,
 ) -> tuple[list[tuple[str, dict]], list[tuple[str, str, int]]]:
@@ -1696,7 +1759,13 @@ def server_list() -> dict:
     providers: list[dict] = []
     for provider in visible_providers():
         first = len(groups)
-        providers.append({"name": provider.name})
+        providers.append(
+            {
+                "name": provider.name,
+                "importer": IMPORT_KINDS.get(provider.name),
+                "manage": provider.name in MANAGED_PROVIDERS,
+            }
+        )
         if provider.name == "Happ":
             _servers, happ_groups = happ_server_groups(provider)
             for pname, entries in happ_groups.items():
@@ -2018,6 +2087,19 @@ def main():
         help="Run one tool (the app window's Tools buttons; killswitch toggles it)",
     )
     group.add_argument(
+        "--import",
+        dest="import_",
+        nargs="+",
+        metavar="PROVIDER [PATH|-]",
+        help="Import a config (no PATH: file chooser; -: a key or path on stdin)",
+    )
+    group.add_argument(
+        "--profile",
+        nargs=3,
+        metavar=("autostart|delete", "PROVIDER", "NAME"),
+        help="Toggle a profile's autostart or delete it (a server row's right click)",
+    )
+    group.add_argument(
         "--dns-leak-test", action="store_true", help="Run the DNS leak test (the panel's DNS badge)"
     )
     group.add_argument(
@@ -2094,6 +2176,14 @@ def main():
         refresh_bar()
     elif args.tool:
         _report(run_tool(args.tool))
+    elif args.import_ is not None:
+        if len(args.import_) not in (1, 2):
+            parser.error("--import takes PROVIDER [PATH|-]")
+        _report(run_import(*args.import_))
+    elif args.profile is not None:
+        if args.profile[0] not in ("autostart", "delete"):
+            parser.error("--profile takes autostart|delete PROVIDER NAME")
+        _report(run_profile_action(*args.profile))
     elif args.dns_leak_test:
         dns_leak_test_menu()
         refresh_bar()

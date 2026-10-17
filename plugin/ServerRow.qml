@@ -11,6 +11,9 @@ CursorSurface {
   property var gate: null
   property var row: null
   property int rowIndex: 0
+  // in the app window: "+ Import" on protocols, right click for profiles
+  property bool inWindow: false
+  readonly property bool canImport: inWindow && isProvider && !!row.provider.importer
   readonly property bool isGroup: row && row.kind === "group"
   // the tree layout's top level: a protocol (Happ, WireGuard, …)
   readonly property bool isProvider: row && row.kind === "provider"
@@ -45,13 +48,20 @@ CursorSurface {
     anchors.fill: parent
     hoverEnabled: true
     cursorShape: Qt.PointingHandCursor
+    acceptedButtons: Qt.LeftButton | Qt.RightButton
     onPositionChanged: function(mouse) {
       if (serverRow.gate.moved(rowMouse, mouse)) {
         serverRow.host.keyboardCursor = false
         serverRow.host.serverCursor = serverRow.rowIndex
       }
     }
-    onClicked: serverRow.host.activateServerRow(serverRow.row)
+    onClicked: function(mouse) {
+      if (mouse.button === Qt.RightButton) {
+        if (serverRow.inWindow) serverRow.host.showProfile(serverRow.row)
+        return
+      }
+      serverRow.host.activateServerRow(serverRow.row)
+    }
   }
 
   Row {
@@ -84,8 +94,10 @@ CursorSurface {
       font.pixelSize: serverRow.isHeader ? Style.font.body : Style.font.bodySmall
       font.bold: serverRow.isHeader || serverRow.isActive
       elide: Text.ElideRight
-      width: parent.width - rowGlyph.width - rightLabel.width - groupPing.width
-        - parent.spacing * (groupPing.visible ? 3 : 2)
+      width: parent.width - rowGlyph.width - rightLabel.width
+        - (groupPing.visible ? groupPing.width + parent.spacing : 0)
+        - (importButton.visible ? importButton.width + parent.spacing : 0)
+        - parent.spacing * 2
       anchors.verticalCenter: parent.verticalCenter
     }
 
@@ -112,6 +124,28 @@ CursorSurface {
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         onClicked: serverRow.host.pingRow(serverRow.row)
+      }
+    }
+
+    // a protocol's "+ Import" (the window only)
+    Text {
+      id: importButton
+      visible: serverRow.canImport
+      textFormat: Text.PlainText
+      text: "+ Import"
+      color: importMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
+      font.family: serverRow.host.fontFamily
+      font.pixelSize: Style.font.caption
+      anchors.verticalCenter: parent.verticalCenter
+
+      MouseArea {
+        id: importMouse
+        anchors.fill: parent
+        anchors.margins: -Style.space(4)
+        enabled: serverRow.canImport
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: serverRow.host.startImport(serverRow.row.provider)
       }
     }
 

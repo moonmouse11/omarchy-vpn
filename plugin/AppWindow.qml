@@ -32,23 +32,56 @@ FloatingWindow {
   minimumSize: Qt.size(720, 480)
   visible: false  // Widget.openWindow() shows it; Esc or Hyprland's close hides it
 
-  onVisibleChanged: if (visible) Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  onVisibleChanged: {
+    if (visible) Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    else if (host) host.closeProfileBar()
+  }
+
+  // the Profiles strip takes the keyboard while it asks for something
+  Connections {
+    target: win.host
+    function onProfileModeChanged() {
+      if (win.host.profileMode === "import") profileBar.focusInput()
+      else if (win.host.profileMode === "") keyCatcher.forceActiveFocus()
+    }
+    function onDeleteConfirmOpenChanged() {
+      if (win.host.deleteConfirmOpen) confirmKeys.forceActiveFocus()
+      else if (win.host.profileMode !== "") keyCatcher.forceActiveFocus()
+    }
+  }
+
+  // `i`: the cursor's protocol (its own row, or the one of the server/group
+  // under it), else the tabs/sidebar pick
+  function importTarget() {
+    var row = cursorRow()
+    if (!row) return locations.pickedProvider
+    return row.kind === "provider" ? row.provider : host.providerInfo(row.group.provider)
+  }
+
+  function cursorRow() {
+    return host.serverCursor >= 0 ? host.serverRows[host.serverCursor] : null
+  }
 
   PanelKeyCatcher {
     id: keyCatcher
     anchors.fill: parent
     anchors.margins: Style.space(20)
     // typing in the filter must not drive the cursor (j/k/h/l are moves)
-    blocked: locations.filterFocused
+    blocked: locations.filterFocused || profileBar.inputFocused || win.host.deleteConfirmOpen
     onMoveRequested: function(dx, dy) {
       if (dy !== 0) win.host.moveServerCursor(dy)
       else win.host.openCursorGroup(dx > 0)
     }
     onActivateRequested: {
+      // the profile strip is open: Enter must not connect the row behind it
+      if (win.host.profileMode !== "") return
       if (win.host.serverCursor >= 0) win.host.activateServerRow(win.host.serverRows[win.host.serverCursor])
       else win.host.moveServerCursor(1)
     }
-    onCloseRequested: win.visible = false
+    onCloseRequested: {
+      if (win.host.profileMode !== "") win.host.closeProfileBar()
+      else win.visible = false
+    }
     onTextKey: function(t) {
       var k = String(t).toLowerCase()
       if (k === "t") win.host.togglePower()
@@ -56,6 +89,9 @@ FloatingWindow {
       else if (k === "r") { win.host.refresh(); win.host.loadServers() }
       else if (k === "p" && win.host.serverCursor >= 0) win.host.pingRow(win.host.serverRows[win.host.serverCursor])
       else if (k === "/") locations.filterField.forceActiveFocus()
+      else if (k === "i") win.host.startImport(win.importTarget())
+      else if (k === "a" && win.host.showProfile(win.cursorRow())) win.host.profileAction("autostart")
+      else if (k === "x" && win.host.showProfile(win.cursorRow())) win.host.deleteConfirmOpen = true
       else if (k === "[") win.host.stepProvider(-1)
       else if (k === "]") win.host.stepProvider(1)
     }
@@ -97,10 +133,20 @@ FloatingWindow {
           anchors.right: parent.right
         }
 
-        Flickable {
-          id: locationsFlick
+        ProfileBar {
+          id: profileBar
+          host: win.host
           anchors.top: tabs.bottom
           anchors.topMargin: tabs.visible ? Style.space(12) : 0
+          anchors.left: sidebar.right
+          anchors.leftMargin: sidebar.visible ? Style.space(16) : 0
+          anchors.right: parent.right
+        }
+
+        Flickable {
+          id: locationsFlick
+          anchors.top: profileBar.bottom
+          anchors.topMargin: tabs.visible || profileBar.visible ? Style.space(12) : 0
           anchors.bottom: parent.bottom
           anchors.left: sidebar.right
           anchors.leftMargin: sidebar.visible ? Style.space(16) : 0
@@ -118,6 +164,7 @@ FloatingWindow {
             host: win.host
             flick: locationsFlick
             keyTarget: keyCatcher
+            inWindow: true
           }
         }
       }
@@ -185,13 +232,35 @@ FloatingWindow {
       anchors.right: parent.right
       anchors.bottom: parent.bottom
       textFormat: Text.PlainText
-      text: "j/k move · h/l fold · enter connect · p ping · / filter"
+      text: "j/k move · h/l fold · enter connect · p ping · / filter · i import · a autostart · x delete"
         + (win.host.windowLayout !== "tree" ? " · [ ] protocol" : "")
         + " · t toggle · d DNS · r refresh · esc close"
       color: win.host.dim
       font.family: win.host.fontFamily
       font.pixelSize: Style.font.caption
       horizontalAlignment: Text.AlignHCenter
+    }
+  }
+
+  // x / Delete…: a profile is gone for good (its config file or NM connection)
+  Item {
+    id: confirmKeys
+    anchors.fill: parent
+    visible: win.host.deleteConfirmOpen
+    Keys.onPressed: function(event) { if (deleteConfirm.handleKey(event)) event.accepted = true }
+
+    ConfirmDialog {
+      id: deleteConfirm
+      anchors.fill: parent
+      opened: win.host.deleteConfirmOpen
+      message: win.host.profileTarget && win.host.profileTarget.server
+        ? "Delete " + win.host.profileTarget.server.name + " (" + win.host.profileTarget.group.provider + ")?"
+        : ""
+      confirmText: "Delete"
+      foreground: win.host.foreground
+      fontFamily: win.host.fontFamily
+      onConfirmed: win.host.profileAction("delete")
+      onCanceled: win.host.deleteConfirmOpen = false
     }
   }
 }

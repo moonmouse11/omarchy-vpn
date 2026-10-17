@@ -14,6 +14,11 @@ Column {
   readonly property bool filterFocused: filterField.activeFocus
   // where Esc in the filter hands the keyboard back to
   property Item keyTarget: null
+  // the app window's list: "+ Import" and right-click profiles
+  property bool inWindow: false
+  // tabs/sidebar with one protocol picked: its "+ Import" sits by Ping
+  readonly property var pickedProvider: inWindow && host.rowsLayout !== "tree" && host.providerFilter !== ""
+    ? host.providerInfo(host.providerFilter) : null
 
   spacing: Style.space(12)
 
@@ -54,6 +59,28 @@ Column {
       text: "SERVERS"
       foreground: list.host.foreground
       fontFamily: list.host.fontFamily
+    }
+
+    Text {
+      id: headerImport
+      visible: !!list.pickedProvider && !!list.pickedProvider.importer
+      anchors.right: pingButton.left
+      anchors.rightMargin: Style.space(12)
+      anchors.verticalCenter: parent.verticalCenter
+      textFormat: Text.PlainText
+      text: "+ Import"
+      color: headerImportMouse.containsMouse ? list.host.foreground : list.host.dim
+      font.family: list.host.fontFamily
+      font.pixelSize: Style.font.caption
+
+      MouseArea {
+        id: headerImportMouse
+        anchors.fill: parent
+        enabled: headerImport.visible
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: list.host.startImport(list.pickedProvider)
+      }
     }
 
     Text {
@@ -133,6 +160,7 @@ Column {
         width: serverColumn.width
         host: list.host
         gate: pointerGate
+        inWindow: list.inWindow
         row: modelData
         rowIndex: index
       }

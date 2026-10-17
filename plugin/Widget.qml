@@ -12,7 +12,8 @@ import qs.Ui
 //                     `panel` = hero (title/meta/detail/rate) + protection badges
 //   --tool KEY        the app window's Tools buttons (AppWindow.qml)
 //   --disconnect-all  the hero switch, when on
-//   --dns-leak-test   the DNS badge, when not yet green
+//   --check KIND      DNS leak test / IP info / speed test: the window's check card
+//                     (CheckCard.qml), JSON lines read by checkProc
 //   --ping-now        Ping next to SERVERS (everything), on a group, a click on a
 //                     row's ping, or `p` (group/server scope, queued) — the only
 //                     time pings are measured (through xray under happd, so also
@@ -78,6 +79,17 @@ Panel {
   property string profileMode: ""
   property var profileTarget: null
   property bool deleteConfirmOpen: false
+  // the window's check card (CheckCard.qml); kept here, so a check outlives a
+  // closed window. phase: choose (speed) | running | done | error
+  property bool checkOpen: false
+  property string checkKind: ""
+  property string checkTarget: ""
+  property string checkPhase: ""
+  property var checkChoices: []
+  property var checkProgress: null
+  property var checkResult: null
+  property string checkError: ""
+  property double checkAt: 0
   property string serverFilter: ""
   property int serverCursor: -1
   // the cursor was put there by the keyboard (j/k, the filter), not by a
@@ -463,9 +475,58 @@ Panel {
     return row && (row.kind === "server" || row.kind === "auto") ? row : null
   }
 
+  // the DNS badge, `d`: the window's check card
   function runDnsTest() {
-    close()
-    run("--dns-leak-test")
+    openCheck("dns")
+  }
+
+  // Tools → DNS leak test / IP info / Speed test. A running check just
+  // shows its card again: one at a time.
+  function openCheck(kind) {
+    close()  // from the panel's DNS badge / `d`
+    if (!windowOpen) openWindow()  // an open window would remap (flicker)
+    checkOpen = true
+    if (checkProc.running) return
+    if (kind === "speed") {
+      checkKind = "speed"
+      checkTarget = ""
+      checkChoices = []
+      checkPhase = "choose"
+      startCheck(["speed"])
+    } else {
+      runCheck(kind, "")
+    }
+  }
+
+  function runCheck(kind, target) {
+    if (checkProc.running) return
+    checkKind = kind
+    checkTarget = target
+    checkPhase = "running"
+    checkProgress = null
+    checkResult = null
+    checkError = ""
+    startCheck(target !== "" ? [kind, target] : [kind])
+  }
+
+  function startCheck(args) {
+    checkProc.command = ["python3", root.backend, "--check"].concat(args)
+    checkProc.running = true
+  }
+
+  // the check keeps running (its bubble too); the card shows it on reopen
+  function closeCheck() {
+    checkOpen = false
+  }
+
+  function checkLine(line) {
+    var o = null
+    try { o = JSON.parse(String(line)) } catch (e) { return }
+    if (!o) return
+    if (o.choices) checkChoices = o.choices
+    else if (o.step !== undefined) checkProgress = o
+    else if (o.result) { checkResult = o.result; checkAt = Date.now(); checkPhase = "done" }
+    else if (o.error) { checkError = String(o.error); checkPhase = "error" }
   }
 
   // Shape carries the state, colour only reinforces it: many themes have a
@@ -522,6 +583,18 @@ Panel {
   AppWindow {
     id: appWindow
     host: root
+  }
+
+  Process {
+    id: checkProc
+    stdout: SplitParser { onRead: function(data) { root.checkLine(data) } }
+    onExited: {
+      // killed by a switch before it could say so, or crashed
+      if (root.checkPhase === "running") {
+        root.checkError = "The check stopped without a result"
+        root.checkPhase = "error"
+      }
+    }
   }
 
   Process {

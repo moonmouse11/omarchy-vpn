@@ -204,7 +204,7 @@ def test_a_switch_aborts_the_checks_of_the_connection_being_left(env, monkeypatc
     for pid, argv in {
         "101": ["python3", script, "--dns-autotest"],
         "102": ["python3", script, "--update-ip", "🇩🇪 DE"],
-        "103": ["python3", script, "--dns-leak-test"],
+        "103": ["python3", script, "--check", "dns"],
         "104": ["python3", script, "--ping-now"],  # tied to no connection
         "105": ["python3", script, "--happ-keeper", "🇩🇪 DE", "15"],  # the tunnel itself
         "106": ["python3", script, "--update-subs"],

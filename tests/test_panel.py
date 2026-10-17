@@ -187,19 +187,21 @@ def test_killswitch_state_is_cached_and_dropped_on_change(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("flag", "called"),
-    [("--disconnect-all", "disconnect_all"), ("--dns-leak-test", "dns_leak_test_menu")],
+    ("argv", "called"),
+    [(["--disconnect-all"], "disconnect_all"), (["--check", "dns"], "run_check dns")],
 )
-def test_panel_cli_actions(monkeypatch, flag, called):
+def test_panel_cli_actions(monkeypatch, argv, called):
     calls = []
-    monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", flag])
+    monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", *argv])
     monkeypatch.setattr(
         vpn_manager,
         "disconnect_all",
         lambda: calls.append("disconnect_all") or ActionResult(True, "ok"),
     )
     monkeypatch.setattr(
-        vpn_manager, "dns_leak_test_menu", lambda: calls.append("dns_leak_test_menu")
+        vpn_manager,
+        "run_check",
+        lambda *a: calls.append(" ".join(("run_check", *a))) or ActionResult(True, ""),
     )
     monkeypatch.setattr(vpn_manager, "notify", lambda *a, **kw: None)
     monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: calls.append("refresh"))

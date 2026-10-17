@@ -33,7 +33,10 @@ FloatingWindow {
   visible: false  // Widget.openWindow() shows it; Esc or Hyprland's close hides it
 
   onVisibleChanged: {
-    if (visible) Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    if (visible) Qt.callLater(function() {
+      if (win.host.checkOpen) checkCard.focusKeys()
+      else keyCatcher.forceActiveFocus()
+    })
     else if (host) host.closeProfileBar()
   }
 
@@ -43,6 +46,10 @@ FloatingWindow {
     function onProfileModeChanged() {
       if (win.host.profileMode === "import") profileBar.focusInput()
       else if (win.host.profileMode === "") keyCatcher.forceActiveFocus()
+    }
+    function onCheckOpenChanged() {
+      if (win.host.checkOpen) checkCard.focusKeys()
+      else keyCatcher.forceActiveFocus()
     }
     function onDeleteConfirmOpenChanged() {
       if (win.host.deleteConfirmOpen) confirmKeys.forceActiveFocus()
@@ -68,6 +75,7 @@ FloatingWindow {
     anchors.margins: Style.space(20)
     // typing in the filter must not drive the cursor (j/k/h/l are moves)
     blocked: locations.filterFocused || profileBar.inputFocused || win.host.deleteConfirmOpen
+      || win.host.checkOpen
     onMoveRequested: function(dx, dy) {
       if (dy !== 0) win.host.moveServerCursor(dy)
       else win.host.openCursorGroup(dx > 0)
@@ -216,7 +224,12 @@ FloatingWindow {
                 fontFamily: win.host.fontFamily
                 fontSize: Style.font.bodySmall
                 bordered: true
-                onClicked: win.host.runArgs(["--tool", modelData.key])
+                // the three checks open the card; the rest just run
+                onClicked: {
+                  var check = { dns_leak_test: "dns", ip_info: "ip", speed_test: "speed" }[modelData.key]
+                  if (check) win.host.openCheck(check)
+                  else win.host.runArgs(["--tool", modelData.key])
+                }
               }
             }
           }
@@ -240,6 +253,12 @@ FloatingWindow {
       font.pixelSize: Style.font.caption
       horizontalAlignment: Text.AlignHCenter
     }
+  }
+
+  CheckCard {
+    id: checkCard
+    anchors.fill: parent
+    host: win.host
   }
 
   // x / Delete…: a profile is gone for good (its config file or NM connection)

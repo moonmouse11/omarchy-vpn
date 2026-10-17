@@ -9,8 +9,8 @@ PLUGIN_ID="omarchy-vpn"
 PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 LEGACY_DIR="$HOME/.config/waybar/vpn-manager"   # Omarchy 3 / waybar install
 
-if ! command -v omarchy-shell >/dev/null || ! command -v omarchy-menu-select >/dev/null; then
-    echo "error: omarchy-shell / omarchy-menu-select not found — this version needs Omarchy 4" >&2
+if ! command -v omarchy-shell >/dev/null; then
+    echo "error: omarchy-shell not found — this version needs Omarchy 4" >&2
     echo "       (the Omarchy 3 / waybar version lives in its own repository)" >&2
     exit 1
 fi

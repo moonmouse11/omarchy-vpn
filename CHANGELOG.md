@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- The sudoers rule no longer gives passwordless root to anything running as the user. It used
+  to allow `wg-quick` with any arguments (a config's `PostUp` runs as root), `cp`/`cat` with
+  wildcards that span `..` (any file, the private keys) and `kill` of any process. Now it allows
+  three fixed entry points: the new root-owned `omarchy-vpn-helper` (profile names only, never
+  paths), `happ-killswitch` and the IPv6 guard's `sysctl`. Run `make install` to replace the rule.
+- Importing a WireGuard config with `PreUp`/`PostUp`/`PreDown`/`PostDown`, or an OpenVPN config
+  that runs scripts or writes files (`up`, `route-up`, `plugin`, `log`, …), is refused — those
+  run as root.
+
 ## [0.2.0] - 2026-10-18
 
 Omarchy 4 port. `make install` again after updating: it rewrites the SUPER+Shift+V binding, adds the

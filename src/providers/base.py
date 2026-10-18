@@ -7,33 +7,50 @@ from pathlib import Path
 
 import fsutil
 
+# The one root entry point for WireGuard/AmneziaWG/OpenVPN (scripts/omarchy-vpn-helper,
+# installed by install.sh): profile names only, never paths — the old sudoers rule
+# (`wg-quick *`, `cp * /etc/wireguard/*`, `cat …`, `kill`) was root for any process.
+HELPER = "/usr/local/bin/omarchy-vpn-helper"
+# config directory -> the helper's KIND
+HELPER_KINDS = {
+    "/etc/wireguard": "wg",
+    "/etc/amnezia/amneziawg": "awg",
+    "/etc/openvpn/client": "ovpn",
+}
+
+
+def run_helper(*args: str, stdin: str | None = None, timeout: float = 60) -> tuple[int, str]:
+    """`sudo -n omarchy-vpn-helper ARGS` → (returncode, stdout+stderr)."""
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", HELPER, *args],
+            input=stdin,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return 1, str(e)
+    return result.returncode, (result.stdout + result.stderr).strip()
+
 
 def read_config_text(path) -> str | None:
-    """Text of a provider config: direct read first, else 'sudo -n cat'.
-
-    Configs imported through the menu are copied root:0600, so the
-    unprivileged background ping sweep cannot read them directly — the
-    sudoers rule grants NOPASSWD cat for the config globs. None when both
-    attempts fail (missing file, no cached sudo credentials)."""
+    """Text of a provider config: direct read first, else the helper's
+    `endpoints` (configs are root:0600) — only the Endpoint/remote lines and
+    section headers, never the keys, which is all the ping and the kill
+    switch whitelist read. None when neither works."""
     p = Path(path)
     try:
         return p.read_text(errors="replace")
     except OSError:
         pass
-    try:
-        result = subprocess.run(
-            ["sudo", "-n", "cat", str(p)],
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=10,
-            check=False,
-        )
-        if result.returncode == 0:
-            return result.stdout
-    except OSError, subprocess.SubprocessError:
-        pass
-    return None
+    kind = HELPER_KINDS.get(str(p.parent))
+    if kind is None:
+        return None
+    code, out = run_helper("endpoints", kind, p.stem, timeout=10)
+    return out if code == 0 else None
 
 
 @dataclass

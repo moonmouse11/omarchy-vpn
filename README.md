@@ -113,9 +113,11 @@ make install
 
 The installer:
 1. Installs dependencies via `pacman`
-2. Writes a narrowed `sudoers` rule (commands used by the providers only, validated
-   with `visudo -cf`)
-3. Installs the `happ-killswitch` script root-owned to `/usr/local/bin`
+2. Writes a `sudoers` rule for three fixed entry points only (validated with `visudo -cf`):
+   `omarchy-vpn-helper`, `happ-killswitch` and the IPv6 guard's `sysctl` calls
+3. Installs `omarchy-vpn-helper` (WireGuard/AmneziaWG/OpenVPN: profile names only, never
+   paths; refuses imports with WireGuard `PostUp`/`PreUp`/… or OpenVPN `up`/`plugin`/… lines —
+   they would run as root) and `happ-killswitch`, root-owned, to `/usr/local/bin`
 4. Copies the backend to `~/.local/share/omarchy-vpn/src/`
 5. Installs the bar widget plugin to `~/.config/omarchy/plugins/omarchy-vpn/` and
    enables it right before `omarchy.network` (move it with `omarchy bar move omarchy-vpn …`,
@@ -383,7 +385,8 @@ make uninstall
 
 Turns the kill switch off (with Lockdown its rules would otherwise block all traffic until a
 reboot), then removes the bar widget plugin, the backend, the SUPER+Shift+V binding block in
-`bindings.lua`, `/usr/local/bin/happ-killswitch`, `openvpn-dns-updown` and the sudoers rule.
+`bindings.lua`, `/usr/local/bin/omarchy-vpn-helper`, `happ-killswitch`, `openvpn-dns-updown`
+and the sudoers rule.
 `~/.config/vpn-manager` (keys, settings, favourites) is kept.
 
 ## License

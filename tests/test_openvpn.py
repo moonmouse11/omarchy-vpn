@@ -3,39 +3,45 @@ from providers.base import VPNConnection
 from providers.openvpn import OpenVPNProvider
 
 
-def test_connect_wires_dns_updown_script(tmp_path, monkeypatch):
-    monkeypatch.setattr(openvpn, "PID_DIR", tmp_path)
+def _conn():
+    return VPNConnection(name="nl", provider="OpenVPN", active=False)
+
+
+def test_connect_and_disconnect_go_through_the_helper(monkeypatch):
+    """Profile names only: the helper finds the config and the PID file and
+    runs openvpn with its fixed flags (openvpn-dns-updown, see test_helper)."""
     calls = []
-
-    def fake_run(cmd):
-        calls.append(cmd)
-        return (0, "")
-
-    monkeypatch.setattr(openvpn, "_run", fake_run)
+    monkeypatch.setattr(openvpn, "run_helper", lambda *a, **kw: calls.append(a) or (0, ""))
     provider = OpenVPNProvider()
-    conn = VPNConnection(
-        name="nl", provider="OpenVPN", active=False, config_path=str(tmp_path / "nl.conf")
-    )
-
-    result = provider.connect(conn)
-
-    assert result.success
-    launch = calls[-1]
-    assert launch[:2] == ["sudo", "openvpn"]
-    assert "--script-security" in launch
-    assert launch[launch.index("--script-security") + 1] == "2"
-    assert launch[launch.index("--up") + 1] == f"{openvpn.DNS_UPDOWN} up"
-    assert launch[launch.index("--down") + 1] == f"{openvpn.DNS_UPDOWN} down"
+    assert provider.connect(_conn()).success
+    assert provider.disconnect(_conn()).success
+    assert calls == [("up", "ovpn", "nl"), ("down", "ovpn", "nl")]
 
 
-def test_connect_failure_surfaces_message(tmp_path, monkeypatch):
-    monkeypatch.setattr(openvpn, "PID_DIR", tmp_path)
-    monkeypatch.setattr(openvpn, "_run", lambda cmd: (1, "boom"))
-    provider = OpenVPNProvider()
-    conn = VPNConnection(
-        name="nl", provider="OpenVPN", active=False, config_path=str(tmp_path / "nl.conf")
-    )
-
-    result = provider.connect(conn)
+def test_connect_failure_surfaces_message(monkeypatch):
+    monkeypatch.setattr(openvpn, "run_helper", lambda *a, **kw: (1, "boom"))
+    result = OpenVPNProvider().connect(_conn())
     assert not result.success
     assert result.message == "boom"
+
+
+def test_disconnect_not_running(monkeypatch):
+    monkeypatch.setattr(openvpn, "run_helper", lambda *a, **kw: (1, "error: not running: nl"))
+    assert OpenVPNProvider().disconnect(_conn()).message == "Not running: nl"
+
+
+def test_import_pipes_the_config_and_reports_a_refusal(tmp_path, monkeypatch):
+    monkeypatch.setattr(openvpn, "OVPN_DIR", tmp_path / "dest")
+    src = tmp_path / "us.ovpn"
+    src.write_text("client\nremote h 1194\nup /tmp/x\n")
+    seen = []
+
+    def helper(*args, stdin=None, **kw):
+        seen.append((args, stdin))
+        return 1, "error: this OpenVPN config runs scripts or writes files as root (up)"
+
+    monkeypatch.setattr(openvpn, "run_helper", helper)
+    result = OpenVPNProvider().import_config(str(src))
+    assert seen == [(("import", "ovpn", "us"), src.read_text())]
+    assert not result.success
+    assert result.message.startswith("this OpenVPN config runs scripts")

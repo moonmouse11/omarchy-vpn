@@ -2,12 +2,14 @@
 ping cache writer."""
 
 import json
+import pathlib
 import time
 
 from test_menu import FakeProvider
 
 import happmeta
 import vpn_manager
+from providers import base
 from providers.openvpn import ovpn_endpoint
 from providers.wireguard import wg_endpoint
 
@@ -230,7 +232,8 @@ def test_collect_ping_targets_skips_broken_provider(monkeypatch):
 
 
 def _stub_privileged_read(monkeypatch, text, returncode=0):
-    """Make base.read_config_text take the sudo-cat path and return `text`."""
+    """Make base.read_config_text take the helper's `endpoints` path and
+    return `text` (configs are root:0600)."""
     from providers import base
 
     class DeniedPath:
@@ -243,10 +246,19 @@ def _stub_privileged_read(monkeypatch, text, returncode=0):
         def __str__(self):
             return self._p
 
+        @property
+        def parent(self):
+            return pathlib.PurePath(self._p).parent
+
+        @property
+        def stem(self):
+            return pathlib.PurePath(self._p).stem
+
     class FakeResult:
         def __init__(self):
             self.returncode = returncode
             self.stdout = text
+            self.stderr = ""
 
     ran = []
 
@@ -262,13 +274,13 @@ def _stub_privileged_read(monkeypatch, text, returncode=0):
 def test_elevated_read_fallback_parses_endpoint(monkeypatch):
     ran = _stub_privileged_read(monkeypatch, "[Peer]\nEndpoint = vpn.example.com:51820\n")
     assert wg_endpoint("/etc/wireguard/stale.conf") == ("vpn.example.com", 51820)
-    assert ran == [["sudo", "-n", "cat", "/etc/wireguard/stale.conf"]]
+    assert ran == [["sudo", "-n", base.HELPER, "endpoints", "wg", "stale"]]
 
 
 def test_elevated_read_fallback_openvpn(monkeypatch):
     ran = _stub_privileged_read(monkeypatch, "client\nremote vpn.example.com 443\n")
     assert ovpn_endpoint("/etc/openvpn/client/stale.conf") == ("vpn.example.com", 443)
-    assert ran == [["sudo", "-n", "cat", "/etc/openvpn/client/stale.conf"]]
+    assert ran == [["sudo", "-n", base.HELPER, "endpoints", "ovpn", "stale"]]
 
 
 def test_elevated_read_sudo_failure_returns_none(monkeypatch):

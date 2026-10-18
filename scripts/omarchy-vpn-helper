@@ -36,8 +36,9 @@ MAX_IMPORT=1048576  # 1 MiB — a config, not a disk filler
 # limehawk/omarchy-vpn's helper; NetworkManager drops them on import instead).
 WG_HOOKS='^[[:space:]]*(PreUp|PostUp|PreDown|PostDown)[[:space:]]*='
 # OpenVPN directives that run a program or write a file as root (openvpn runs
-# with --script-security 2 for openvpn-dns-updown), or pull in another config.
-OVPN_UNSAFE='^[[:space:]]*(up|down|route-up|route-pre-down|ipchange|tls-verify|auth-user-pass-verify|client-connect|client-disconnect|learn-address|plugin|script-security|iproute|config|cd|chroot|log|log-append|status|writepid|replay-persist|ifconfig-pool-persist|tmp-dir)([[:space:]]|$)'
+# with --script-security 2 for openvpn-dns-updown), pull in another config, or
+# open a control port on the root daemon (management).
+OVPN_UNSAFE='^[[:space:]]*(management|up|down|route-up|route-pre-down|ipchange|tls-verify|auth-user-pass-verify|client-connect|client-disconnect|learn-address|plugin|script-security|iproute|config|cd|chroot|log|log-append|status|writepid|replay-persist|ifconfig-pool-persist|tmp-dir)([[:space:]]|$)'
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -119,10 +120,12 @@ cmd_down() {
 }
 
 cmd_import() {
-    local dir tmp
+    local dir
     dir=$(dir_of "$1")
     [[ -z $(conf_of "$1" "$2") ]] || die "a $1 profile named ${2@Q} already exists"
     [[ -d $dir ]] || die "no directory $dir"
+    # global, not local: the EXIT trap runs after this function returns and
+    # removes it — after the link below the profile lives on under its name
     tmp=$(mktemp "$dir/.import.XXXXXX")  # 0600 from the start: it holds keys
     trap 'rm -f "$tmp"' EXIT
     head -c $((MAX_IMPORT + 1)) >"$tmp"
@@ -134,8 +137,9 @@ cmd_import() {
     elif grep -Eiq "$WG_HOOKS" "$tmp"; then
         die "this config has PreUp/PostUp/PreDown/PostDown commands, which would run as root; refusing to import. Import it into NetworkManager instead (it drops them), or copy it into $dir yourself with sudo if you trust it."
     fi
-    mv "$tmp" "$dir/$2.conf"
-    trap - EXIT
+    # a hard link fails if the name appeared meanwhile (two imports racing);
+    # mv would silently replace the other one
+    ln "$tmp" "$dir/$2.conf" 2>/dev/null || die "a $1 profile named ${2@Q} already exists"
 }
 
 cmd_rm() {

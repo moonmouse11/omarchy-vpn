@@ -41,6 +41,12 @@ SUDOERS_FILE="/etc/sudoers.d/vpn-manager"
 # (and could read the private keys). plugins.omarchy.org's scanner blocks that.
 # openvpn-dns-updown (root-owned) applies OpenVPN-pushed DNS via systemd-resolved;
 # openvpn runs as root, so its --up/--down child needs no entry of its own.
+# the helper first: a rule pointing at a missing (or old) helper breaks connects
+echo "==> Installing omarchy-vpn-helper to /usr/local/bin..."
+sudo cp "$REPO_DIR/scripts/omarchy-vpn-helper" /usr/local/bin/omarchy-vpn-helper
+sudo chown root:root /usr/local/bin/omarchy-vpn-helper
+sudo chmod 755 /usr/local/bin/omarchy-vpn-helper
+
 echo "==> Writing sudoers rule..."
 echo "$USER ALL=(root) NOPASSWD: /usr/local/bin/omarchy-vpn-helper, /usr/local/bin/happ-killswitch, /usr/bin/sysctl -w net.ipv6.conf.all.disable_ipv6=1, /usr/bin/sysctl -w net.ipv6.conf.all.disable_ipv6=0, /usr/bin/sysctl -w net.ipv6.conf.default.disable_ipv6=1, /usr/bin/sysctl -w net.ipv6.conf.default.disable_ipv6=0" \
     | sudo tee "$SUDOERS_FILE" > /dev/null
@@ -55,11 +61,6 @@ sudo chown root:root /usr/local/bin/happ-killswitch
 sudo chmod 755 /usr/local/bin/happ-killswitch
 # Remove the user-writable copy if it exists (superseded by the root-owned one)
 rm -f "$HOME/.local/bin/happ-killswitch"
-
-echo "==> Installing omarchy-vpn-helper to /usr/local/bin..."
-sudo cp "$REPO_DIR/scripts/omarchy-vpn-helper" /usr/local/bin/omarchy-vpn-helper
-sudo chown root:root /usr/local/bin/omarchy-vpn-helper
-sudo chmod 755 /usr/local/bin/omarchy-vpn-helper
 
 echo "==> Installing openvpn-dns-updown to /usr/local/bin..."
 sudo cp "$REPO_DIR/scripts/openvpn-dns-updown" /usr/local/bin/openvpn-dns-updown

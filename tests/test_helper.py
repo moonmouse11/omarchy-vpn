@@ -65,7 +65,10 @@ def test_import_refuses_wireguard_hooks(tree, hook):
     assert list(tree.dirs["wg"].iterdir()) == []  # not even the temp file
 
 
-@pytest.mark.parametrize("line", ["up /tmp/x", "route-up /tmp/x", "plugin /x.so", "log /etc/x"])
+@pytest.mark.parametrize(
+    "line",
+    ["up /tmp/x", "route-up /tmp/x", "plugin /x.so", "log /etc/x", "management 0.0.0.0 1337"],
+)
 def test_import_refuses_openvpn_scripts_and_file_writes(tree, line):
     result = tree("import", "ovpn", "evil", stdin=f"client\nremote h 1194\n{line}\n")
     assert result.returncode != 0
@@ -76,6 +79,21 @@ def test_openvpn_import_keeps_harmless_lookalikes(tree):
     ok = "client\nremote vpn.example 1194 udp\nremote-cert-tls server\ndown-pre\n"
     assert tree("import", "ovpn", "us.east_udp", stdin=ok).returncode == 0
     assert tree("endpoints", "ovpn", "us.east_udp").stdout == "remote vpn.example 1194 udp\n"
+
+
+def test_import_never_replaces_a_profile_that_appears_meanwhile(tree, tmp_path):
+    """Two imports racing: both pass the "exists?" check; the hard link makes
+    the later one fail instead of silently replacing the first."""
+    dest = tree.dirs["wg"] / "home.conf"
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    # stands in for the other import: the profile appears right after the check
+    (shim / "head").write_text(f'#!/bin/sh\necho first > "{dest}"\nexec /usr/bin/head "$@"\n')
+    (shim / "head").chmod(0o755)
+    result = tree("import", "wg", "home", stdin=WG, extra_env={"PATH": f"{shim}:/usr/bin:/bin"})
+    assert "already exists" in result.stderr
+    assert dest.read_text() == "first\n"
+    assert [p.name for p in tree.dirs["wg"].iterdir()] == ["home.conf"]  # no temp left
 
 
 def test_import_refuses_an_existing_profile_and_a_huge_one(tree):

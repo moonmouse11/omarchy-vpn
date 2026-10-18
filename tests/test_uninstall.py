@@ -29,9 +29,9 @@ def test_uninstall_turns_the_kill_switch_off_before_removing_it():
     gone = at("nft list table inet happ-ks")
     # nothing is removed before the rules are gone: a failure keeps the plugin
     assert (off, gone) == (0, 1)
-    assert (
-        gone < at("rm -f /usr/local/bin/happ-killswitch") < at("rm -f /etc/sudoers.d/vpn-manager")
-    )
+    sudoers = at("rm -f /etc/sudoers.d/vpn-manager")
+    assert gone < at("rm -f /usr/local/bin/happ-killswitch") < sudoers
+    assert gone < at("/usr/local/bin/omarchy-vpn-helper") < sudoers
     # a failed off must stop the recipe, not be ignored (make's "-" prefix)
     assert not recipe[off].startswith("-")
     assert not recipe[gone].lstrip("@").startswith("-")

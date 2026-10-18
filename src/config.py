@@ -13,7 +13,8 @@ All keys optional; missing file means defaults:
   "dns_mode": "tunnel",                 // "tunnel" | "subscription": who routes xray's DNS
   "dns_autotest": false,                // run the DNS leak test in the background after a connect
   "panel_key_hints": true,              // the key line at the bottom of the bar panel
-  "locations_layout": "tree"            // "tree" | "tabs" | "sidebar": protocols in the app window
+  "locations_layout": "tree",           // "tree" | "tabs" | "sidebar": protocols in the app window
+  "ipv6_guard": true                    // IPv6 off while a VPN is up and before autostart at boot
 }
 """
 
@@ -48,6 +49,9 @@ class Config:
     dns_autotest: bool = False
     panel_key_hints: bool = True
     locations_layout: str = "tree"
+    # none of the providers tunnel IPv6: off while a VPN is up, and at boot
+    # before an autostarted WireGuard tunnel (omarchy-vpn-helper ipv6-boot)
+    ipv6_guard: bool = True
 
     def provider_visible(self, name: str) -> bool:
         return self.providers.get(name.lower(), True)
@@ -102,6 +106,8 @@ def load_config() -> Config:
         cfg.panel_key_hints = bool(raw["panel_key_hints"])
     if raw.get("locations_layout") in LOCATIONS_LAYOUTS:
         cfg.locations_layout = raw["locations_layout"]
+    if "ipv6_guard" in raw:
+        cfg.ipv6_guard = bool(raw["ipv6_guard"])
     return cfg
 
 
@@ -121,5 +127,6 @@ def save_config(cfg: Config) -> None:
         "dns_autotest": cfg.dns_autotest,
         "panel_key_hints": cfg.panel_key_hints,
         "locations_layout": cfg.locations_layout,
+        "ipv6_guard": cfg.ipv6_guard,
     }
     fsutil.write_json_atomic(CONFIG_PATH, raw, indent=2)

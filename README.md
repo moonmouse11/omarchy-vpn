@@ -51,7 +51,9 @@ connection's state, protection checks and tools on the right.
   (off / auto-with-Happ-only / auto-with-every-provider), see [Killswitch](#killswitch)
 - **IPv6 leak guard** — none of the providers tunnel IPv6, so a live IPv6 route
   (including IPv6 DNS) would otherwise bypass every tunnel entirely; disabled
-  system-wide for as long as any connection is active, restored once idle
+  system-wide for as long as any connection is active, restored once idle — also at boot,
+  before a WireGuard autostart tunnel comes up (a systemd drop-in). ⚙ Settings → "IPv6 guard"
+  turns it off if you'd rather keep IPv6
 - **DNS through the tunnel** — xray's resolver (Happ, VLESS, Shadowsocks) sends
   every lookup through the tunnel; only the server's own hostname resolves
   directly. `dns_mode: "subscription"` keeps a subscription's own DNS routing

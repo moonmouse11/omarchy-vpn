@@ -111,6 +111,9 @@ echo "==> Installing backend to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 rm -rf "$INSTALL_DIR/src"
 cp -r "$REPO_DIR/src" "$INSTALL_DIR/"
+# autostarted WireGuard tunnels come up before login: a drop-in turns IPv6 off
+# first (⚙ IPv6 guard) — profiles whose autostart predates this release too
+python3 "$INSTALL_DIR/src/vpn_manager.py" --ipv6-boot-sync || echo "    (re-run later: python3 $INSTALL_DIR/src/vpn_manager.py --ipv6-boot-sync)"
 
 # ── omarchy-shell bar widget ──────────────────────────────────────────────────
 

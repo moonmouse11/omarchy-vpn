@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- ⚙ Settings → "IPv6 guard" (on by default): IPv6 off while a VPN is up and at boot. Off, IPv6
+  stays on under the tunnel and the IPv6 badge says why.
+
+### Security
+
+- IPv6 no longer leaks at boot with WireGuard/AmneziaWG autostart: those tunnels come up before
+  login, and IPv6 used to go off only once the bar started. A systemd drop-in now turns it off
+  right before the tunnel. `make install` adds it to profiles whose autostart is already on.
+
 ### Security
 
 - The sudoers rule no longer gives passwordless root to anything running as the user. It used

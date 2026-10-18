@@ -16,6 +16,8 @@
 #   omarchy-vpn-helper endpoints KIND NAME        only the Endpoint / remote lines
 #   omarchy-vpn-helper audit                      profiles already on disk that
 #                                                 would run commands as root (make install)
+#   omarchy-vpn-helper ipv6-boot on|off           IPv6 off before an autostarted wg/awg
+#                                                 tunnel comes up at boot (⚙ IPv6 guard)
 #
 # Installed root-owned to /usr/local/bin by omarchy-vpn's install.sh.
 set -euo pipefail
@@ -24,13 +26,16 @@ set -euo pipefail
 # under sudo, which is how the plugin runs it — a caller must never point root
 # at files of its own. (sudo's env_reset strips them anyway; this is belt and braces.)
 if [[ -n ${SUDO_USER:-} ]]; then
-    unset WG_DIR AWG_DIR OVPN_DIR PID_DIR PROC_DIR DRY_RUN
+    unset WG_DIR AWG_DIR OVPN_DIR PID_DIR PROC_DIR SYSTEMD_DIR SYSTEMCTL DRY_RUN
 fi
 WG_DIR=${WG_DIR:-/etc/wireguard}
 AWG_DIR=${AWG_DIR:-/etc/amnezia/amneziawg}
 OVPN_DIR=${OVPN_DIR:-/etc/openvpn/client}
 PID_DIR=${PID_DIR:-/run/openvpn}
 PROC_DIR=${PROC_DIR:-/proc}
+SYSTEMD_DIR=${SYSTEMD_DIR:-/etc/systemd/system}
+SYSTEMCTL=${SYSTEMCTL:-systemctl}
+DROPIN=omarchy-vpn-ipv6.conf
 DNS_UPDOWN=/usr/local/bin/openvpn-dns-updown
 MAX_IMPORT=1048576  # 1 MiB — a config, not a disk filler
 
@@ -157,7 +162,7 @@ cmd_rm() {
     local conf
     wg_only "$1" rm
     conf=$(need_conf "$1" "$2")
-    run rm -f "$conf"
+    run rm -f "$conf" "$SYSTEMD_DIR/$1-quick@$2.service.d/$DROPIN"
 }
 
 cmd_autostart() {
@@ -197,6 +202,47 @@ cmd_audit() {
     done
 }
 
+# wg-quick@NAME starts at boot, before login — long before the bar's first
+# --status turns IPv6 off. A drop-in turns it off right before the tunnel comes
+# up, for every profile with autostart on (on), or for none (off: ⚙ IPv6 guard
+# off). Never turned back on by systemd: another tunnel may be up by then; the
+# plugin's disconnect does that. Drop-ins of deleted profiles go either way.
+cmd_ipv6_boot() {
+    [[ ${1:-} == on || ${1:-} == off ]] || die "ipv6-boot takes on | off"
+    local kind dir conf name unit dropin
+    for kind in wg awg; do
+        dir=$(dir_of "$kind")
+        for conf in "$dir"/*.conf; do
+            [[ -f $conf ]] || continue
+            name=$(basename "$conf" .conf)
+            [[ $name =~ ^[A-Za-z0-9_][A-Za-z0-9_.=+-]{0,63}$ ]] || continue
+            unit="$kind-quick@$name"
+            dropin="$SYSTEMD_DIR/$unit.service.d/$DROPIN"
+            if [[ $1 == on ]] && "$SYSTEMCTL" is-enabled --quiet "$unit" 2>/dev/null; then
+                mkdir -p "${dropin%/*}"
+                printf '%s\n' "# omarchy-vpn: IPv6 off before the tunnel (none of its providers tunnel IPv6)" \
+                    "[Service]" \
+                    "ExecStartPre=/usr/bin/sysctl -q -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1" \
+                    >"$dropin"
+            else
+                rm -f "$dropin"
+            fi
+        done
+    done
+    for dropin in "$SYSTEMD_DIR"/{wg,awg}-quick@*.service.d/"$DROPIN"; do
+        [[ -f $dropin ]] || continue
+        unit=${dropin#"$SYSTEMD_DIR"/}
+        unit=${unit%%.service.d/*}
+        kind=${unit%%-quick@*}
+        [[ -f $(dir_of "$kind")/${unit#*@}.conf ]] || rm -f "$dropin"
+    done
+    run "$SYSTEMCTL" daemon-reload
+}
+
+if [[ ${1:-} == ipv6-boot ]]; then
+    cmd_ipv6_boot "${2:-}"
+    exit 0
+fi
 if [[ ${1:-} == audit ]]; then
     cmd_audit
     exit 0

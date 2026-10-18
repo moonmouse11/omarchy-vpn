@@ -90,6 +90,13 @@ def test_locations_layout_cycles(state):
     assert state.draft.locations_layout == "tree"
 
 
+def test_ipv6_guard_row_toggles_the_draft(state):
+    _go(state, "✅ IPv6 guard")
+    state.activate()
+    assert state.draft.ipv6_guard is False
+    assert state.current.text.startswith("⬜ IPv6 guard")
+
+
 def test_lockdown_row_toggles_the_draft(state):
     _go(state, "✅ Lockdown")
     state.activate()
@@ -101,7 +108,7 @@ def test_move_skips_headers_and_stops_at_the_ends(state):
     state.move(-1)
     assert state.current.text.startswith("✅ DNS always")  # top: no wrap
     _go(state, "⬜ Run the DNS leak test")
-    state.move(5)  # killswitch mode, Lockdown, key hints, layout, then over "── Providers ──"
+    state.move(6)  # killswitch mode, IPv6 guard, Lockdown, key hints, layout, "── Providers ──"
     assert state.current.text == "✅ WireGuard"
     state.move(100)
     assert state.current.text == "🔑 IPQualityScore: no API key"  # bottom: no wrap

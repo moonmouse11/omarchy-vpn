@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Importing a WireGuard config with `PreUp`/`PostUp`/`PreDown`/`PostDown`, or an OpenVPN config
   that runs scripts or writes files (`up`, `route-up`, `plugin`, `log`, …), is refused — those
   run as root.
+- `make install` lists VPN configs already on disk that run commands as root when connected.
+- IPv6 stays off while switching servers — it came back on between the old tunnel going down and
+  the new one coming up — and goes off for tunnels the plugin didn't start (WireGuard autostart at
+  boot, the Happ app, NetworkManager).
+
+### Fixed
+
+- A tunnel of a provider hidden in ⚙ Settings no longer shows the bar as "not connected".
+
+### Removed
+
+- `socat` from the installed packages: nothing used it.
 
 ## [0.2.0] - 2026-10-18
 

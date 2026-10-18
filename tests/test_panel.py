@@ -163,7 +163,7 @@ def test_dns_verdict_is_per_server_and_expires(env, monkeypatch):
 
 
 def test_status_carries_the_panel(env, monkeypatch):
-    monkeypatch.setattr(vpn_manager, "active_connections", list)
+    monkeypatch.setattr(vpn_manager, "active_connections", lambda providers=None: [])
     monkeypatch.setattr(vpn_manager.config, "load_config", config.Config)
     assert vpn_manager.get_status()["panel"]["title"] == "Not protected"
 
@@ -252,7 +252,7 @@ def test_dns_autotest_runs_after_a_connect_only_when_enabled(monkeypatch, enable
 
 
 def _autotest_env(monkeypatch, active, result=None, error=None):
-    monkeypatch.setattr(vpn_manager, "active_connections", lambda: active)
+    monkeypatch.setattr(vpn_manager, "active_connections", lambda providers=None: active)
     monkeypatch.setattr(vpn_manager.time, "sleep", lambda s: None)
     monkeypatch.setattr(vpn_manager, "DNS_AUTOTEST_WAIT", 0)
     monkeypatch.setattr(vpn_manager.logutil, "log", lambda msg: None)
@@ -308,7 +308,7 @@ def test_status_rate_is_read_before_the_tick_saves_a_sample(env, monkeypatch):
     """get_status() samples the traffic counters for the next tick; a rate
     read after that compares against itself — the panel's speed was empty."""
     sampled = []
-    monkeypatch.setattr(vpn_manager, "active_connections", lambda: [DE_SERVER])
+    monkeypatch.setattr(vpn_manager, "active_connections", lambda providers=None: [DE_SERVER])
     monkeypatch.setattr(vpn_manager.config, "load_config", config.Config)
     monkeypatch.setattr(vpn_manager, "sample_iface_traffic", sampled.append)
     monkeypatch.setattr(vpn_manager, "request_ip_update", lambda name: None)

@@ -1198,7 +1198,7 @@ def test_failed_connect_without_lockdown_closes_the_hole_if_rules_stay(monkeypat
 
     wg = Broken("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
     monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [wg])
-    monkeypatch.setattr(vpn_manager, "_disconnect_all", lambda: ActionResult(True, ""))
+    monkeypatch.setattr(vpn_manager, "_disconnect_all", lambda **kw: ActionResult(True, ""))
     vpn_manager.guarded_connect(wg, wg.connections()[0])
     assert loads[-1] == []
 
@@ -1304,3 +1304,93 @@ def test_a_cancelled_check_tells_the_card_and_closes_the_bubble(monkeypatch):
     assert not vpn_manager.run_check("dns").success
     assert emitted == [{"error": vpn_manager.CANCELLED}]
     assert _FakeProgress.last.events[-1] == ("done", vpn_manager.CANCELLED)
+
+
+def test_a_server_switch_never_turns_ipv6_back_on(monkeypatch):
+    """Switching: the old tunnel goes down before the new one is up. IPv6 must
+    stay off in between — the connect's result decides, not the teardown."""
+
+    class Toggling(FakeProvider):
+        def connect(self, conn):
+            conn.active = True
+            return super().connect(conn)
+
+        def disconnect(self, conn):
+            conn.active = False
+            return super().disconnect(conn)
+
+    wg = Toggling("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
+    happ = Toggling("Happ", [VPNConnection(name="de", provider="Happ", active=True)])
+    patch_menu_env(monkeypatch, [wg, happ], picks=[])
+    calls = []
+    monkeypatch.setattr(
+        vpn_manager.ipv6guard, "disable", lambda: calls.append("disable") or ActionResult(True, "")
+    )
+    monkeypatch.setattr(
+        vpn_manager.ipv6guard, "enable", lambda: calls.append("enable") or ActionResult(True, "")
+    )
+    assert vpn_manager.guarded_connect(wg, wg.connections()[0]).success
+    assert happ.disconnected == ["de"]
+    assert calls == ["disable"]  # never "enable" between the two tunnels
+
+
+def test_a_failed_switch_restores_ipv6_when_nothing_is_up(monkeypatch):
+    class Failing(FakeProvider):
+        def connect(self, conn):
+            return ActionResult(False, "dead server")
+
+        def disconnect(self, conn):
+            conn.active = False
+            return super().disconnect(conn)
+
+    wg = Failing("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
+    happ = Failing("Happ", [VPNConnection(name="de", provider="Happ", active=True)])
+    patch_menu_env(monkeypatch, [wg, happ], picks=[])
+    calls = []
+    monkeypatch.setattr(
+        vpn_manager.ipv6guard, "disable", lambda: calls.append("disable") or ActionResult(True, "")
+    )
+    monkeypatch.setattr(
+        vpn_manager.ipv6guard, "enable", lambda: calls.append("enable") or ActionResult(True, "")
+    )
+    assert not vpn_manager.guarded_connect(wg, wg.connections()[0]).success
+    assert calls == ["enable"]  # once, after the connect failed — nothing is up
+
+
+def test_disconnect_all_turns_ipv6_back_on_once_nothing_is_up(monkeypatch):
+    """The switch path leaves IPv6 alone; "disconnect everything" must not."""
+
+    class Dropping(FakeProvider):
+        def disconnect(self, conn):
+            conn.active = False
+            return super().disconnect(conn)
+
+    happ = Dropping("Happ", [VPNConnection(name="de", provider="Happ", active=True)])
+    patch_menu_env(monkeypatch, [happ], picks=[])
+    monkeypatch.setattr(vpn_manager, "_release_killswitch_if_unlocked", lambda: False)
+    calls = []
+    monkeypatch.setattr(
+        vpn_manager.ipv6guard, "enable", lambda: calls.append("enable") or ActionResult(True, "")
+    )
+    assert vpn_manager.disconnect_all().success
+    assert calls == ["enable"]
+
+
+def test_a_failed_switch_teardown_still_syncs_ipv6(monkeypatch):
+    """The old tunnel's disconnect reported failure, yet nothing is up any
+    more: IPv6 must not stay off with no VPN at all."""
+    wg = FakeProvider("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
+    happ = FakeProvider("Happ", [VPNConnection(name="de", provider="Happ", active=True)])
+    patch_menu_env(monkeypatch, [wg, happ], picks=[])
+    calls = []
+    monkeypatch.setattr(
+        vpn_manager.ipv6guard, "enable", lambda: calls.append("enable") or ActionResult(True, "")
+    )
+
+    def gone_but_failed(**kw):
+        happ.connections()[0].active = False
+        return ActionResult(False, "Failed: Happ: de")
+
+    monkeypatch.setattr(vpn_manager, "_disconnect_all", gone_but_failed)
+    assert not vpn_manager.guarded_connect(wg, wg.connections()[0]).success
+    assert calls == ["enable"]

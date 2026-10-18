@@ -62,9 +62,12 @@ def visible_providers() -> list:
 
 
 def active_connections(providers=None) -> list[VPNConnection]:
+    """What is tunneled right now — every provider by default, hidden ones too:
+    ⚙ Settings hides a protocol from the server list, not a tunnel it has up
+    (the bar, the checks and the guards must all see the same thing)."""
     return [
         conn
-        for provider in (providers or visible_providers())
+        for provider in (providers or ALL_PROVIDERS)
         for conn in provider.connections()
         if conn.active
     ]
@@ -81,7 +84,10 @@ def get_status() -> dict:
     connection with per-interface traffic stats.
     """
     cfg = config.load_config()
-    active = active_connections()
+    # every provider, hidden ones too: ⚙ Settings hides a protocol from the
+    # server list, but a tunnel it has up (autostart, NM) is still a tunnel
+    active = active_connections(providers=list(ALL_PROVIDERS))
+    _enforce_ipv6_guard(active)
 
     if not active:
         return {
@@ -631,8 +637,9 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
             if not (c.provider == provider.name and c.name == connection.name)
         ]
         if others:
-            down = _disconnect_all()  # already under SWITCH_LOCK
+            down = _disconnect_all(for_switch=True)  # already under SWITCH_LOCK
             if not down.success:
+                _sync_ipv6_guard()  # the teardown may have dropped everything anyway
                 return down
         tuns_before = _tun_interfaces()
         result = provider.connect(connection)
@@ -743,6 +750,16 @@ def _sync_ipv6_guard() -> None:
         _apply_ipv6_guard(ipv6guard.enable())
 
 
+def _enforce_ipv6_guard(active: list[VPNConnection]) -> None:
+    """--status: a tunnel that came up without the plugin (WireGuard autostart
+    at boot, the Happ app, NM) gets IPv6 turned off too — the guard used to
+    run only inside the plugin's own connect/disconnect. Logged, not notified:
+    a failing sudo would otherwise raise a bubble every tick."""
+    if active and not ipv6guard.is_disabled():
+        guard = ipv6guard.disable()
+        logutil.log(f"ipv6 guard: a tunnel is up, IPv6 off: {guard.success} {guard.message}")
+
+
 def _apply_ipv6_guard(guard: ActionResult) -> None:
     if not guard.success:
         notify("IPv6 guard — warning", guard.message)
@@ -761,7 +778,10 @@ def disconnect_all() -> ActionResult:
         return _cancelled("disconnecting everything")
 
 
-def _disconnect_all() -> ActionResult:
+def _disconnect_all(for_switch: bool = False) -> ActionResult:
+    """for_switch: a connect is tearing the old tunnel down — leave IPv6 off;
+    the connect's own result decides (else IPv6 came back on between the old
+    tunnel going down and the new one coming up)."""
     stopped, failed = [], []
     # act on everything, even providers hidden from the menu
     for provider in ALL_PROVIDERS:
@@ -777,17 +797,12 @@ def _disconnect_all() -> ActionResult:
                 stopped.append(f"{provider.name}: {conn.name}")
             else:
                 failed.append(f"{provider.name}: {conn.name}")
-    _sync_ipv6_guard()
+    if not for_switch:
+        _sync_ipv6_guard()
     if failed:
         return ActionResult(False, "Failed: " + ", ".join(failed))
     message = ", ".join(stopped) if stopped else "nothing was active"
     return ActionResult(True, f"Disconnected: {message}")
-
-
-# ── Menu ──────────────────────────────────────────────────────────────────────
-# Two levels, omarchy-style:
-#   level 1 — provider choice (WireGuard / OpenVPN / Happ / ...) + global actions
-#   level 2 — connections of the chosen provider + its import/manage actions
 
 
 def _killswitch_all_targets(cached_only: bool = False) -> tuple[list[str], list[str]]:

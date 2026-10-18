@@ -411,3 +411,14 @@ def test_window_tools_follow_settings_and_the_kill_switch_support(env):
     assert "killswitch" in tools
     nm = VPNConnection(name="office", provider="NetworkManager", active=True)
     assert "killswitch" not in vpn_manager.panel_state([nm], cfg)["tools"]
+
+
+@pytest.mark.parametrize("guard", [True, False])
+def test_ipv6_badge_says_when_the_user_turned_the_guard_off(env, guard):
+    """IPv6 on under a tunnel is a leak either way ("bad"); with ⚙ IPv6 guard
+    off the hint says it is the user's own setting, not a failure."""
+    env["ipv6_off"] = False
+    panel = vpn_manager.panel_state([DE_SERVER], config.Config(ipv6_guard=guard))
+    badge = next(b for b in panel["badges"] if b["id"] == "ipv6")
+    assert (badge["label"], badge["state"]) == ("IPv6 leaks", "bad")
+    assert ("IPv6 guard is off in ⚙ Settings" in badge["hint"]) is not guard

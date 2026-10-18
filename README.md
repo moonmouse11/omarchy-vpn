@@ -53,7 +53,10 @@ connection's state, protection checks and tools on the right.
   (including IPv6 DNS) would otherwise bypass every tunnel entirely; disabled
   system-wide for as long as any connection is active, restored once idle — also at boot,
   before a WireGuard autostart tunnel comes up (a systemd drop-in). ⚙ Settings → "IPv6 guard"
-  turns it off if you'd rather keep IPv6
+  turns it off if you'd rather keep IPv6. The boot drop-in follows autostart set in the app (right
+  click → Toggle autostart); after a `systemctl enable wg-quick@…` of your own, run
+  `python3 ~/.local/share/omarchy-vpn/src/vpn_manager.py --ipv6-boot-sync`. OpenVPN autostart isn't
+  managed by the plugin and gets no drop-in
 - **DNS through the tunnel** — xray's resolver (Happ, VLESS, Shadowsocks) sends
   every lookup through the tunnel; only the server's own hostname resolves
   directly. `dns_mode: "subscription"` keeps a subscription's own DNS routing

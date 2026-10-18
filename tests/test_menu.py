@@ -1412,15 +1412,22 @@ def test_with_the_ipv6_guard_off_a_connect_leaves_ipv6_on(monkeypatch):
     assert calls == ["enable"]
 
 
-@pytest.mark.parametrize(("ok", "suffix"), [(True, ""), (False, " — IPv6 at boot: no sudo")])
-def test_an_autostart_change_resyncs_the_boot_drop_ins(monkeypatch, ok, suffix):
+@pytest.mark.parametrize(
+    ("ok", "guard", "state", "suffix"),
+    [
+        (True, True, "on", ""),
+        (True, False, "off", ""),  # ⚙ IPv6 guard off: no drop-ins at all
+        (False, True, "on", " — IPv6 at boot: no sudo"),
+    ],
+)
+def test_an_autostart_change_resyncs_the_boot_drop_ins(monkeypatch, ok, guard, state, suffix):
     class Profiles(FakeProvider):
         def toggle_autostart(self, conn):
             return ActionResult(True, "Autostart enabled: nl")
 
     wg = Profiles("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
     monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [wg])
-    monkeypatch.setattr(vpn_manager.config, "load_config", config.Config)
+    monkeypatch.setattr(vpn_manager.config, "load_config", lambda: config.Config(ipv6_guard=guard))
     calls = []
     monkeypatch.setattr(
         vpn_manager,
@@ -1428,6 +1435,6 @@ def test_an_autostart_change_resyncs_the_boot_drop_ins(monkeypatch, ok, suffix):
         lambda *a, **kw: calls.append(a) or ((0, "") if ok else (1, "no sudo")),
     )
     result = vpn_manager.run_profile_action("autostart", "WireGuard", "nl")
-    assert calls == [("ipv6-boot", "on")]
+    assert calls == [("ipv6-boot", state)]
     assert result.success
     assert result.message == "Autostart enabled: nl" + suffix

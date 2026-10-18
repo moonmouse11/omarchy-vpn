@@ -17,9 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - IPv6 no longer leaks at boot with WireGuard/AmneziaWG autostart: those tunnels come up before
   login, and IPv6 used to go off only once the bar started. A systemd drop-in now turns it off
   right before the tunnel. `make install` adds it to profiles whose autostart is already on.
-
-### Security
-
 - The sudoers rule no longer gives passwordless root to anything running as the user. It used
   to allow `wg-quick` with any arguments (a config's `PostUp` runs as root), `cp`/`cat` with
   wildcards that span `..` (any file, the private keys) and `kill` of any process. Now it allows

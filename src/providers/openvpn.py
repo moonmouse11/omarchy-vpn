@@ -1,17 +1,9 @@
-import subprocess
 from pathlib import Path
 
-from .base import ActionResult, VPNConnection, VPNProvider, read_config_text
+from .base import ActionResult, VPNConnection, VPNProvider, read_config_text, run_helper
 
 OVPN_DIR = Path("/etc/openvpn/client")
 PID_DIR = Path("/run/openvpn")
-DNS_UPDOWN = "/usr/local/bin/openvpn-dns-updown"
-
-
-def _run(cmd: list[str]) -> tuple[int, str]:
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    output = (result.stdout + result.stderr).strip()
-    return result.returncode, output
 
 
 def _pid_file(profile: str) -> Path:
@@ -89,49 +81,20 @@ class OpenVPNProvider(VPNProvider):
         return targets
 
     def connect(self, connection: VPNConnection) -> ActionResult:
-        _run(["sudo", "mkdir", "-p", str(PID_DIR)])
-        pid_file = _pid_file(connection.name)
-        config = connection.config_path or str(OVPN_DIR / f"{connection.name}.conf")
-        code, out = _run(
-            [
-                "sudo",
-                "openvpn",
-                "--config",
-                config,
-                "--daemon",
-                "--writepid",
-                str(pid_file),
-                "--script-security",
-                "2",
-                "--up",
-                f"{DNS_UPDOWN} up",
-                "--down",
-                f"{DNS_UPDOWN} down",
-                # a ping-restart reconnect keeps the resolved server IP: under
-                # the kill switch it couldn't resolve `remote` again (DNS only
-                # through the tunnel, which is the thing being restarted)
-                "--persist-remote-ip",
-            ]
-        )
+        # omarchy-vpn-helper runs openvpn with fixed flags: --daemon, the PID
+        # file, openvpn-dns-updown as --up/--down (--script-security 2), and
+        # --persist-remote-ip (a ping-restart can't resolve `remote` again
+        # under the kill switch)
+        code, out = run_helper("up", "ovpn", connection.name)
         if code != 0:
             return ActionResult(success=False, message=out)
         return ActionResult(success=True, message=f"Connected: {connection.name}")
 
     def disconnect(self, connection: VPNConnection) -> ActionResult:
-        pid_file = _pid_file(connection.name)
-        if not pid_file.exists():
-            return ActionResult(success=False, message=f"Not running: {connection.name}")
-
-        try:
-            pid = int(pid_file.read_text().strip())
-        except (ValueError, OSError) as e:
-            return ActionResult(success=False, message=f"Cannot read PID: {e}")
-
-        code, out = _run(["sudo", "kill", str(pid)])
-        _run(["sudo", "rm", "-f", str(pid_file)])
-
+        # the helper reads the PID file itself and kills only an openvpn
+        code, out = run_helper("down", "ovpn", connection.name)
         if code != 0:
-            return ActionResult(success=False, message=out)
+            return ActionResult(success=False, message=out.removeprefix("error: ").capitalize())
         return ActionResult(success=True, message=f"Disconnected: {connection.name}")
 
     def import_config(self, path: str) -> ActionResult:
@@ -141,16 +104,17 @@ class OpenVPNProvider(VPNProvider):
         if src.suffix not in (".conf", ".ovpn"):
             return ActionResult(success=False, message="File must have .conf or .ovpn extension")
 
-        dest = OVPN_DIR / src.name
-        if dest.exists():
-            return ActionResult(success=False, message=f"Config already exists: {dest.name}")
+        if any((OVPN_DIR / f"{src.stem}{ext}").exists() for ext in (".conf", ".ovpn")):
+            return ActionResult(success=False, message=f"Config already exists: {src.stem}")
+        try:
+            text = src.read_text(errors="replace")
+        except OSError as e:
+            return ActionResult(success=False, message=f"Cannot read {path}: {e}")
 
-        code, out = _run(["sudo", "cp", str(src), str(dest)])
+        # the helper writes it as <name>.conf, 0600, and refuses configs that
+        # run scripts or write files as root (up, route-up, plugin, log, …)
+        code, out = run_helper("import", "ovpn", src.stem, stdin=text)
         if code != 0:
-            return ActionResult(success=False, message=f"Failed to copy: {out}")
-
-        code, out = _run(["sudo", "chmod", "600", str(dest)])
-        if code != 0:
-            return ActionResult(success=False, message=f"Failed to set permissions: {out}")
+            return ActionResult(success=False, message=out.removeprefix("error: "))
 
         return ActionResult(success=True, message=f"Imported: {src.name}")

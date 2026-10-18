@@ -11,7 +11,7 @@ uninstall:
 	-omarchy-shell -q shell rescanPlugins
 	rm -rf ~/.local/share/omarchy-vpn
 	sed -i '/^-- >>> omarchy-vpn$$/,/^-- <<< omarchy-vpn$$/d' ~/.config/hypr/bindings.lua 2>/dev/null || true
-	sudo rm -f /usr/local/bin/happ-killswitch /usr/local/bin/openvpn-dns-updown
+	sudo rm -f /usr/local/bin/happ-killswitch /usr/local/bin/openvpn-dns-updown /usr/local/bin/omarchy-vpn-helper
 	rm -f ~/.config/happ-killswitch.conf
 	sudo rm -f /etc/sudoers.d/vpn-manager
 	@echo "Uninstalled."

@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-from .base import ActionResult, VPNConnection, VPNProvider, read_config_text
+from .base import ActionResult, VPNConnection, VPNProvider, read_config_text, run_helper
 
 WG_DIR = Path("/etc/wireguard")
 AMNEZIA_DIR = Path("/etc/amnezia/amneziawg")
@@ -112,7 +112,8 @@ class WireGuardProvider(VPNProvider):
 
     provider_name = "WireGuard"
     config_dir = WG_DIR
-    quick_bin = "wg-quick"  # sudoers grants this; AmneziaWG uses awg-quick
+    quick_bin = "wg-quick"  # AmneziaWG uses awg-quick
+    helper_kind = "wg"  # omarchy-vpn-helper's KIND
     systemd_prefix = "wg-quick"
     link_type = "wireguard"
     #: profiles living in another provider's config dir are not ours even
@@ -176,14 +177,14 @@ class WireGuardProvider(VPNProvider):
         return targets
 
     def connect(self, connection: VPNConnection) -> ActionResult:
-        code, out = _run(["sudo", self.quick_bin, "up", connection.name])
+        code, out = run_helper("up", self.helper_kind, connection.name)
         if code != 0:
             return ActionResult(success=False, message=out)
         return ActionResult(success=True, message=f"Connected: {connection.name}")
 
     def disconnect(self, connection: VPNConnection) -> ActionResult:
         iface = connection.interface or connection.name
-        code, out = _run(["sudo", self.quick_bin, "down", iface])
+        code, out = run_helper("down", self.helper_kind, iface)
         if code != 0:
             return ActionResult(success=False, message=out)
         return ActionResult(success=True, message=f"Disconnected: {iface}")
@@ -195,11 +196,11 @@ class WireGuardProvider(VPNProvider):
     def toggle_autostart(self, connection: VPNConnection) -> ActionResult:
         unit = f"{self.systemd_prefix}@{connection.name}"
         if self.autostart_enabled(connection.name):
-            code, out = _run(["sudo", "systemctl", "disable", unit])
+            code, out = run_helper("autostart", self.helper_kind, connection.name, "off")
             if code != 0:
                 return ActionResult(False, f"Failed to disable {unit}: {out}")
             return ActionResult(True, f"Autostart disabled: {connection.name}")
-        code, out = _run(["sudo", "systemctl", "enable", unit])
+        code, out = run_helper("autostart", self.helper_kind, connection.name, "on")
         if code != 0:
             return ActionResult(False, f"Failed to enable {unit}: {out}")
         return ActionResult(True, f"Autostart enabled: {connection.name}")
@@ -210,7 +211,7 @@ class WireGuardProvider(VPNProvider):
         path = Path(connection.config_path or self.config_dir / f"{connection.name}.conf")
         if not path.exists():
             return ActionResult(False, f"Config not found: {path}")
-        code, out = _run(["sudo", "rm", "-f", str(path)])
+        code, out = run_helper("rm", self.helper_kind, connection.name)
         if code != 0:
             return ActionResult(False, f"Failed to delete {path}: {out}")
         return ActionResult(True, f"Deleted: {path.name}")
@@ -226,18 +227,17 @@ class WireGuardProvider(VPNProvider):
         if dest.exists():
             return ActionResult(success=False, message=f"Config already exists: {dest.name}")
 
-        # Read before copying: the source is still a plain user-owned file
-        # here, the copy becomes root:0600 (see below) and unreadable to us
-        # without another sudo round-trip.
+        # Read here, as the user: the copy becomes root:0600 and unreadable to us.
         dns_warning = "" if _has_dns_directive(src) else _NO_DNS_WARNING
+        try:
+            text = src.read_text(errors="replace")
+        except OSError as e:
+            return ActionResult(success=False, message=f"Cannot read {path}: {e}")
 
-        code, out = _run(["sudo", "cp", str(src), str(dest)])
+        # the helper writes it 0600 and refuses PostUp/PreUp/… (root commands)
+        code, out = run_helper("import", self.helper_kind, src.stem, stdin=text)
         if code != 0:
-            return ActionResult(success=False, message=f"Failed to copy: {out}")
-
-        code, out = _run(["sudo", "chmod", "600", str(dest)])
-        if code != 0:
-            return ActionResult(success=False, message=f"Failed to set permissions: {out}")
+            return ActionResult(success=False, message=out.removeprefix("error: "))
 
         return ActionResult(success=True, message=f"Imported: {src.name}{dns_warning}")
 
@@ -253,6 +253,7 @@ class AmneziaWGProvider(WireGuardProvider):
     provider_name = "AmneziaWG"
     config_dir = AMNEZIA_DIR
     quick_bin = "awg-quick"
+    helper_kind = "awg"
     systemd_prefix = "awg-quick"
     link_type = "amneziawg"  # kernel module's rtnl_link_ops.kind (DKMS build name)
     other_config_dirs = (WG_DIR,)

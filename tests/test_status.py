@@ -1,6 +1,8 @@
+import pytest
+
 import config
 import vpn_manager
-from providers.base import VPNConnection
+from providers.base import ActionResult, VPNConnection
 
 
 class FakeProvider:
@@ -52,12 +54,37 @@ def test_multiple_active(monkeypatch):
     assert "Happ: de" in status["tooltip"]
 
 
-def test_hidden_provider_excluded(monkeypatch):
+def test_a_hidden_providers_tunnel_still_counts(monkeypatch):
+    """⚙ Settings hides a protocol from the server list — a tunnel it has up
+    (WireGuard autostart, NM) is still traffic in a tunnel, not "off"."""
     conn = VPNConnection(name="x", provider="Outline", active=True)
     cfg = config.Config(providers={"outline": False})
     patch_env(monkeypatch, [FakeProvider("Outline", [conn])], cfg=cfg)
     status = vpn_manager.get_status()
-    assert status["class"] == "vpn-disconnected"
+    assert "vpn-connected" in status["class"]
+
+
+@pytest.mark.parametrize(
+    ("up", "ipv6_off", "disabled"),
+    [(True, False, True), (True, True, False), (False, False, False)],
+)
+def test_status_turns_ipv6_off_under_a_tunnel_the_plugin_didnt_start(
+    monkeypatch, up, ipv6_off, disabled
+):
+    """WireGuard autostart at boot: no guarded_connect ran, so --status is
+    where IPv6 goes off — only when a tunnel is up and IPv6 is still on."""
+    conn = VPNConnection(name="nl", provider="WireGuard", active=up)
+    patch_env(monkeypatch, [FakeProvider("WireGuard", [conn])])
+    calls = []
+    monkeypatch.setattr(vpn_manager.ipv6guard, "is_disabled", lambda: ipv6_off)
+    monkeypatch.setattr(
+        vpn_manager.ipv6guard, "disable", lambda: calls.append("disable") or ActionResult(True, "")
+    )
+    monkeypatch.setattr(
+        vpn_manager.ipv6guard, "enable", lambda: pytest.fail("status never enables")
+    )
+    vpn_manager.get_status()
+    assert (calls == ["disable"]) is disabled
 
 
 def test_no_traffic_when_no_interface(monkeypatch):

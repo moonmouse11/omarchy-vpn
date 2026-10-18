@@ -57,9 +57,12 @@ def test_import_writes_the_config_0600_and_endpoints_never_show_keys(tree):
     assert out.splitlines() == ["[Interface]", "[Peer]", "Endpoint = 1.2.3.4:51820"]
 
 
-@pytest.mark.parametrize("hook", ["PostUp", "PreUp", "postdown", "  PreDown"])
+@pytest.mark.parametrize(
+    "hook",
+    ["PostUp = bash -c id", "PreUp = x", "postdown = x", "  PreDown = x", "PostUp = echo don't"],
+)
 def test_import_refuses_wireguard_hooks(tree, hook):
-    result = tree("import", "wg", "evil", stdin=f"[Interface]\n{hook} = bash -c id\n")
+    result = tree("import", "wg", "evil", stdin=f"[Interface]\n{hook}\n")
     assert result.returncode != 0
     assert "run as root" in result.stderr
     assert list(tree.dirs["wg"].iterdir()) == []  # not even the temp file
@@ -146,6 +149,20 @@ def test_openvpn_down_kills_only_the_profiles_openvpn(tree, comm, killed):
     result = tree("down", "ovpn", "nl")
     assert ("kill 42" in result.stdout) is killed
     assert (result.returncode == 0) is killed
+
+
+def test_audit_lists_configs_on_disk_that_run_root_commands(tree):
+    """make install warns about configs that predate the helper: imports
+    refuse hooks, but `up` runs whatever is already there."""
+    (tree.dirs["wg"] / "clean.conf").write_text(WG)
+    (tree.dirs["wg"] / "old.conf").write_text("[Interface]\nPostUp = iptables -A x\n")
+    (tree.dirs["ovpn"] / "corp.ovpn").write_text("client\nup /etc/openvpn/up.sh\n")
+    result = tree("audit")
+    assert result.returncode == 0
+    assert sorted(result.stdout.splitlines()) == [
+        f"{tree.dirs['ovpn']}/corp.ovpn: up /etc/openvpn/up.sh",
+        f"{tree.dirs['wg']}/old.conf: PostUp = iptables -A x",
+    ]
 
 
 def test_overrides_are_ignored_under_sudo(tree):

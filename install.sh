@@ -21,7 +21,7 @@ echo ""
 # ── Dependencies ──────────────────────────────────────────────────────────────
 
 echo "==> Installing dependencies..."
-sudo pacman -S --needed --noconfirm python wireguard-tools openvpn openresolv socat
+sudo pacman -S --needed --noconfirm python wireguard-tools openvpn openresolv
 
 # ── sudoers rule ──────────────────────────────────────────────────────────────
 
@@ -52,6 +52,15 @@ echo "$USER ALL=(root) NOPASSWD: /usr/local/bin/omarchy-vpn-helper, /usr/local/b
     | sudo tee "$SUDOERS_FILE" > /dev/null
 sudo chmod 440 "$SUDOERS_FILE"
 sudo visudo -cf "$SUDOERS_FILE" > /dev/null && echo "==> sudoers rule validated"
+
+# Imports refuse root hooks, but `up` still runs configs already on disk —
+# some may predate the helper (the old rule let any process `cp` one there).
+unsafe_configs=$(sudo /usr/local/bin/omarchy-vpn-helper audit)
+if [[ -n $unsafe_configs ]]; then
+    echo "==> WARNING: these VPN configs run commands as root when connected:"
+    echo "$unsafe_configs" | sed 's/^/      /'
+    echo "    Remove those lines unless you put them there yourself."
+fi
 
 # ── killswitch script (root-owned, driven via the NOPASSWD sudoers rule) ─────
 

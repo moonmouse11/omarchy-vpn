@@ -111,15 +111,24 @@ echo "==> Installing backend to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 rm -rf "$INSTALL_DIR/src"
 cp -r "$REPO_DIR/src" "$INSTALL_DIR/"
+# the widget compares it with its plugin dir's HEAD after `omarchy plugin update`
+git -C "$REPO_DIR" rev-parse HEAD > "$INSTALL_DIR/installed-commit" 2>/dev/null \
+    || rm -f "$INSTALL_DIR/installed-commit"
 # autostarted WireGuard tunnels come up before login: a drop-in turns IPv6 off
 # first (⚙ IPv6 guard) — profiles whose autostart predates this release too
 python3 "$INSTALL_DIR/src/vpn_manager.py" --ipv6-boot-sync || echo "    (re-run later: python3 $INSTALL_DIR/src/vpn_manager.py --ipv6-boot-sync)"
 
 # ── omarchy-shell bar widget ──────────────────────────────────────────────────
 
-echo "==> Installing bar widget to $PLUGIN_DIR..."
-mkdir -p "$PLUGIN_DIR"
-cp "$REPO_DIR/plugin/manifest.json" "$REPO_DIR"/plugin/*.qml "$PLUGIN_DIR/"
+# `omarchy plugin add` clones this repo into $PLUGIN_DIR and the panel's
+# Finish setup runs this script from there: nothing to copy then.
+if [[ "$REPO_DIR" -ef "$PLUGIN_DIR" ]]; then
+    echo "==> Bar widget: running from $PLUGIN_DIR (omarchy plugin add)"
+else
+    echo "==> Installing bar widget to $PLUGIN_DIR..."
+    mkdir -p "$PLUGIN_DIR"
+    cp "$REPO_DIR/manifest.json" "$REPO_DIR"/*.qml "$PLUGIN_DIR/"
+fi
 omarchy-shell -q shell rescanPlugins
 if ! omarchy plugin list | grep -qE "^$PLUGIN_ID[[:space:]]+enabled"; then
     omarchy plugin enable "$PLUGIN_ID" --before omarchy.network \

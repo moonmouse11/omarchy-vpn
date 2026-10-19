@@ -53,7 +53,7 @@ from providers.happ import run_keeper as run_happ_keeper
 from providers.keys import KeysProvider
 from providers.keys import run_keeper as run_keys_keeper
 
-PLUGIN_ID = "omarchy-vpn"  # omarchy-shell plugin id == its IPC target (plugin/manifest.json)
+PLUGIN_ID = "omarchy-vpn"  # omarchy-shell plugin id == its IPC target (manifest.json)
 
 
 def visible_providers() -> list:
@@ -179,7 +179,7 @@ def _dns_badge(conn: VPNConnection) -> dict:
 PROTECTION_CHECKS = ("exit", "dns", "ipv6")
 
 
-# The bar label's labelFormat placeholders (plugin/Widget.qml fills them).
+# The bar label's labelFormat placeholders (Widget.qml fills them).
 LABEL_FIELDS = (
     "label", "provider", "subscription", "server", "count", "state",
     "exit_ip", "exit_country", "exit_flag",

@@ -111,12 +111,30 @@ connection's state, protection checks and tools on the right.
 ## Install
 
 ```bash
+omarchy plugin add https://github.com/moonmouse11/omarchy-vpn --enable
+```
+
+`omarchy plugin add` only clones the repo — it never runs code or sudo. The widget then shows
+**Setup needed**: open its panel and press **Finish setup**. That opens a terminal running the
+plugin's `install.sh` (review it first: `~/.config/omarchy/plugins/omarchy-vpn/install.sh`),
+which asks for your sudo password once. Run it by hand instead if you prefer:
+
+```bash
+~/.config/omarchy/plugins/omarchy-vpn/install.sh
+```
+
+After `omarchy plugin update omarchy-vpn` the panel shows **Update setup** until `install.sh`
+has run again (the backend, the helper and the kill switch script are copies).
+
+Or from a checkout:
+
+```bash
 git clone https://github.com/moonmouse11/omarchy-vpn
 cd omarchy-vpn
 make install
 ```
 
-The installer:
+The installer (`install.sh`):
 1. Installs dependencies via `pacman`
 2. Writes a `sudoers` rule for three fixed entry points only (validated with `visudo -cf`):
    `omarchy-vpn-helper`, `happ-killswitch` and the IPv6 guard's `sysctl` calls
@@ -124,8 +142,8 @@ The installer:
    paths; refuses imports with WireGuard `PostUp`/`PreUp`/… or OpenVPN `up`/`plugin`/… lines —
    they would run as root) and `happ-killswitch`, root-owned, to `/usr/local/bin`
 4. Copies the backend to `~/.local/share/omarchy-vpn/src/`
-5. Installs the bar widget plugin to `~/.config/omarchy/plugins/omarchy-vpn/` and
-   enables it right before `omarchy.network` (move it with `omarchy bar move omarchy-vpn …`,
+5. Installs the bar widget plugin to `~/.config/omarchy/plugins/omarchy-vpn/` (already there
+   after `omarchy plugin add`) and enables it right before `omarchy.network` (move it with `omarchy bar move omarchy-vpn …`,
    remove it with `omarchy plugin disable omarchy-vpn`)
 6. Appends a `SUPER+Shift+V` binding to `~/.config/hypr/bindings.lua` (idempotent)
 7. Removes an old Omarchy 3 install (`~/.config/waybar/vpn-manager`) unless a running
@@ -278,7 +296,7 @@ The script is root-owned in `/usr/local/bin`: changes reach it only with `make i
 ## Architecture
 
 ```
-omarchy-shell widget (plugin/Widget.qml)
+omarchy-shell widget (Widget.qml)
   --(3 s)--> vpn_manager.py --status --> JSON (aggregated, cached exit IP)
   panel + window (AppWindow.qml) --> --servers / --connect / --tool KEY
   <-- omarchy-shell omarchy-vpn refresh (after every action)
@@ -307,6 +325,8 @@ tests/                pytest suite
 ```
 
 ## Development
+
+Pull requests go to `dev`, not `main` — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
@@ -385,10 +405,15 @@ sweep — a present `api_key` in config *is* "enabled", no separate flag needed.
 ## Uninstall
 
 ```bash
-make uninstall
+~/.config/omarchy/plugins/omarchy-vpn/uninstall.sh
+omarchy plugin remove omarchy-vpn
 ```
 
-Turns the kill switch off (with Lockdown its rules would otherwise block all traffic until a
+Run `uninstall.sh` **before** `omarchy plugin remove`: removing the plugin alone leaves the
+root helpers, the sudoers rule and possibly kill switch rules in place. From a checkout:
+`make uninstall`.
+
+`uninstall.sh` turns the kill switch off (with Lockdown its rules would otherwise block all traffic until a
 reboot), then removes the bar widget plugin, the backend, the SUPER+Shift+V binding block in
 `bindings.lua`, `/usr/local/bin/omarchy-vpn-helper`, `happ-killswitch`, `openvpn-dns-updown`
 and the sudoers rule.

@@ -97,6 +97,11 @@ connection's state, protection checks and tools on the right.
 - `iproute2` (`ip`, `ss`), `nftables` (killswitch), `sudo` (NOPASSWD rules from `install.sh`)
 - `libnotify` (`notify-send`; progress is updated in place with `-p`/`-r`, an
   older `notify-send` shows each step separately), `curl`, `procps-ng` (`pgrep`/`pkill`)
+- `systemd` (`systemctl`: WireGuard autostart and its IPv6 drop-in), `systemd-resolved`
+  (`resolvectl`: DNS pushed by an OpenVPN server), `git` (the setup check compares commits)
+
+`install.sh` installs `python wireguard-tools openvpn openresolv` with `pacman`; the rest ships
+with Omarchy.
 
 **Optional providers, detected at runtime:**
 
@@ -107,6 +112,33 @@ connection's state, protection checks and tools on the right.
 - `AmneziaWG` (`amneziawg-tools` + `amneziawg-dkms`, not installed by `make install` —
   dkms needs matching `linux-headers`) — obfuscated WireGuard via `awg-quick`,
   configs under `/etc/amnezia/amneziawg/`
+
+**What setup changes as root** (`install.sh`, undone by `uninstall.sh` unless noted):
+
+- `/usr/local/bin/omarchy-vpn-helper`, `happ-killswitch`, `openvpn-dns-updown` — root-owned
+  copies from `scripts/`
+- `/etc/sudoers.d/vpn-manager` — passwordless sudo for your user on exactly those entry points
+  plus `sysctl -w net.ipv6.conf.{all,default}.disable_ipv6={0,1}` (see
+  [Killswitch](#killswitch) and the IPv6 guard)
+- `/etc/wireguard`, `/etc/amnezia/amneziawg` made listable (`o+rx`, not readable configs),
+  `/etc/openvpn/client` created — kept on uninstall
+- `/etc/resolv.conf`: a symlink (systemd-resolved's stub) is replaced by a file managed by
+  `openresolv` — kept on uninstall
+- `/etc/systemd/system/{wg,awg}-quick@NAME.service.d/omarchy-vpn-ipv6.conf` for profiles with
+  autostart on (IPv6 guard) — removed with their profile or with the guard off
+- nftables table `inet happ-ks` while the kill switch is on
+
+As your user: `~/.local/share/omarchy-vpn` (the backend), a `-- >>> omarchy-vpn` block in
+`~/.config/hypr/bindings.lua`, `~/.config/vpn-manager` (settings, keys, favourites — kept on
+uninstall) and `~/.cache/vpn-manager`.
+
+**Network services** the plugin talks to (besides your VPN servers and subscriptions):
+`ipwho.is` (exit IP and its country, `ifconfig.me` as fallback), `ip-api.com` (ASN/hosting flags,
+free, no key),
+`bash.ws` (DNS leak test), `www.gstatic.com/generate_204` (ping through each server),
+`speed.cloudflare.com` / `proof.ovh.net` / `nbg1-speed.hetzner.com` (speed test, on demand).
+AbuseIPDB and IPQualityScore only with an API key you set. IP lookups send only the IP being
+looked up; while a VPN is up, they go through it.
 
 ## Install
 

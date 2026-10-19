@@ -46,6 +46,7 @@ from providers.base import (
     VPNConnection,
     iface_rate,
     iface_traffic,
+    run_helper,
     sample_iface_traffic,
 )
 from providers.happ import run_keeper as run_happ_keeper
@@ -87,7 +88,7 @@ def get_status() -> dict:
     # every provider, hidden ones too: ⚙ Settings hides a protocol from the
     # server list, but a tunnel it has up (autostart, NM) is still a tunnel
     active = active_connections(providers=list(ALL_PROVIDERS))
-    _enforce_ipv6_guard(active)
+    _enforce_ipv6_guard(active, cfg)
 
     if not active:
         return {
@@ -316,7 +317,13 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
         _dns_badge(first),
         _badge("ipv6", "IPv6 blocked", "ok", "IPv6 is off while the VPN is up")
         if ipv6_off
-        else _badge("ipv6", "IPv6 leaks", "bad", "IPv6 is on and bypasses the tunnel"),
+        else _badge(
+            "ipv6",
+            "IPv6 leaks",
+            "bad",
+            "IPv6 is on and bypasses the tunnel"
+            + ("" if cfg.ipv6_guard else " — IPv6 guard is off in ⚙ Settings"),
+        ),
     ]
     if not _killswitch_unsupported(active):
         badges.append(ks_badge)
@@ -661,7 +668,10 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
         # xray has created its TUN (and happd's process list may be the
         # cached pre-switch one) — a probe then sees nothing up and turned
         # IPv6 ON under a live tunnel. Success is proof enough.
-        _apply_ipv6_guard(ipv6guard.disable())
+        if cfg.ipv6_guard:
+            _apply_ipv6_guard(ipv6guard.disable())
+        else:
+            _sync_ipv6_guard()
     else:
         _sync_ipv6_guard()
     return result
@@ -744,20 +754,31 @@ def _sync_ipv6_guard() -> None:
     """IPv6 must be off while anything is tunneled (none of our providers
     route it, so it would otherwise leak straight past every tunnel) and
     back on once nothing is active."""
-    if active_connections(providers=list(ALL_PROVIDERS)):
+    guard = config.load_config().ipv6_guard  # ⚙ off: IPv6 stays (or comes back) on
+    if guard and active_connections(providers=list(ALL_PROVIDERS)):
         _apply_ipv6_guard(ipv6guard.disable())
     else:
         _apply_ipv6_guard(ipv6guard.enable())
 
 
-def _enforce_ipv6_guard(active: list[VPNConnection]) -> None:
+def _enforce_ipv6_guard(active: list[VPNConnection], cfg) -> None:
     """--status: a tunnel that came up without the plugin (WireGuard autostart
     at boot, the Happ app, NM) gets IPv6 turned off too — the guard used to
     run only inside the plugin's own connect/disconnect. Logged, not notified:
     a failing sudo would otherwise raise a bubble every tick."""
-    if active and not ipv6guard.is_disabled():
+    if active and cfg.ipv6_guard and not ipv6guard.is_disabled():
         guard = ipv6guard.disable()
         logutil.log(f"ipv6 guard: a tunnel is up, IPv6 off: {guard.success} {guard.message}")
+
+
+def sync_ipv6_boot() -> ActionResult:
+    """⚙ IPv6 guard at boot: a systemd drop-in turns IPv6 off before every
+    autostarted WireGuard/AmneziaWG tunnel (they come up before login, long
+    before the bar's first --status) — or no drop-ins with the guard off.
+    Runs on an autostart change, a Settings save and `make install`."""
+    state = "on" if config.load_config().ipv6_guard else "off"
+    code, out = run_helper("ipv6-boot", state)
+    return ActionResult(code == 0, "" if code == 0 else f"IPv6 at boot: {out}")
 
 
 def _apply_ipv6_guard(guard: ActionResult) -> None:
@@ -1358,7 +1379,12 @@ def run_profile_action(action: str, provider_name: str, name: str) -> ActionResu
     if conn is None:
         return ActionResult(False, f"{provider_name}: {name} not found")
     if action == "autostart":
-        return provider.toggle_autostart(conn)
+        result = provider.toggle_autostart(conn)
+        if result.success:
+            boot = sync_ipv6_boot()  # the new autostart gets (or loses) its drop-in
+            if not boot.success:
+                return ActionResult(True, f"{result.message} — {boot.message}")
+        return result
     return provider.delete_config(conn)
 
 
@@ -1667,7 +1693,11 @@ def settings_menu() -> ActionResult:
 def run_settings_window() -> None:
     """--settings, inside the terminal settings_menu() opened."""
     if settings_tui.main([p.name for p in ALL_PROVIDERS], _settings_tool_keys()):
-        notify("VPN", "Settings saved")
+        # the IPv6 guard applies now, not on the next connect: the running
+        # tunnel and the drop-ins for boot
+        _sync_ipv6_guard()
+        boot = sync_ipv6_boot()
+        notify("VPN", "Settings saved" + ("" if boot.success else f"\n{boot.message}"))
         refresh_bar()
 
 
@@ -2094,6 +2124,11 @@ def main():
         help="Run one tool (the app window's Tools buttons; killswitch toggles it)",
     )
     group.add_argument(
+        "--ipv6-boot-sync",
+        action="store_true",
+        help="Drop-ins turning IPv6 off before autostarted tunnels (make install)",
+    )
+    group.add_argument(
         "--favourite",
         nargs="+",
         metavar="PROVIDER NAME [SUBSCRIPTION_ID]",
@@ -2192,6 +2227,10 @@ def main():
         refresh_bar()
     elif args.tool:
         _report(run_tool(args.tool))
+    elif args.ipv6_boot_sync:
+        boot = sync_ipv6_boot()
+        print(boot.message or "IPv6 at boot: in sync")
+        sys.exit(0 if boot.success else 1)
     elif args.favourite is not None:
         if len(args.favourite) not in (2, 3):
             parser.error("--favourite takes PROVIDER NAME [SUBSCRIPTION_ID]")

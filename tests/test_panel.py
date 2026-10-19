@@ -389,7 +389,7 @@ def test_manifest_lists_exactly_the_label_fields():
     import re
     from pathlib import Path
 
-    manifest = json.loads((Path(__file__).parent.parent / "plugin/manifest.json").read_text())
+    manifest = json.loads((Path(__file__).parent.parent / "manifest.json").read_text())
     entry = next(e for e in manifest["barWidget"]["schema"] if e["key"] == "labelFormat")
     assert re.findall(r"\{([a-z0-9_]+)\}", entry["description"]) == list(vpn_manager.LABEL_FIELDS)
 

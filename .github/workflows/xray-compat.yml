@@ -7,9 +7,9 @@ name: xray compatibility
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "dev" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "dev" ]
   # Weekly early warning: the newest upstream release (pre-releases
   # included) usually reaches Happ weeks later.
   schedule:

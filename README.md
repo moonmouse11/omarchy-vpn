@@ -97,6 +97,11 @@ connection's state, protection checks and tools on the right.
 - `iproute2` (`ip`, `ss`), `nftables` (killswitch), `sudo` (NOPASSWD rules from `install.sh`)
 - `libnotify` (`notify-send`; progress is updated in place with `-p`/`-r`, an
   older `notify-send` shows each step separately), `curl`, `procps-ng` (`pgrep`/`pkill`)
+- `systemd` (`systemctl`: WireGuard autostart and its IPv6 drop-in), `systemd-resolved`
+  (`resolvectl`: DNS pushed by an OpenVPN server), `git` (the setup check compares commits)
+
+`install.sh` installs `python wireguard-tools openvpn openresolv` with `pacman`; the rest ships
+with Omarchy.
 
 **Optional providers, detected at runtime:**
 
@@ -108,7 +113,52 @@ connection's state, protection checks and tools on the right.
   dkms needs matching `linux-headers`) — obfuscated WireGuard via `awg-quick`,
   configs under `/etc/amnezia/amneziawg/`
 
+**What setup changes as root** (`install.sh`, undone by `uninstall.sh` unless noted):
+
+- `/usr/local/bin/omarchy-vpn-helper`, `happ-killswitch`, `openvpn-dns-updown` — root-owned
+  copies from `scripts/`
+- `/etc/sudoers.d/vpn-manager` — passwordless sudo for your user on exactly those entry points
+  plus `sysctl -w net.ipv6.conf.{all,default}.disable_ipv6={0,1}` (see
+  [Killswitch](#killswitch) and the IPv6 guard)
+- `/etc/wireguard`, `/etc/amnezia/amneziawg` made listable (`o+rx`, not readable configs),
+  `/etc/openvpn/client` created — kept on uninstall
+- `/etc/resolv.conf`: a symlink (systemd-resolved's stub) is replaced by a file managed by
+  `openresolv` — kept on uninstall
+- `/etc/systemd/system/{wg,awg}-quick@NAME.service.d/omarchy-vpn-ipv6.conf` for profiles with
+  autostart on (IPv6 guard) — removed with their profile or with the guard off
+- nftables table `inet happ-ks` while the kill switch is on
+
+As your user: `~/.local/share/omarchy-vpn` (the backend), a `-- >>> omarchy-vpn` block in
+`~/.config/hypr/bindings.lua`, `~/.config/vpn-manager` (settings, keys, favourites — kept on
+uninstall) and `~/.cache/vpn-manager`.
+
+**Network services** the plugin talks to (besides your VPN servers and subscriptions):
+`ipwho.is` (exit IP and its country, `ifconfig.me` as fallback), `ip-api.com` (ASN/hosting flags,
+free, no key),
+`bash.ws` (DNS leak test), `www.gstatic.com/generate_204` (ping through each server),
+`speed.cloudflare.com` / `proof.ovh.net` / `nbg1-speed.hetzner.com` (speed test, on demand).
+AbuseIPDB and IPQualityScore only with an API key you set. IP lookups send only the IP being
+looked up; while a VPN is up, they go through it.
+
 ## Install
+
+```bash
+omarchy plugin add https://github.com/moonmouse11/omarchy-vpn --enable
+```
+
+`omarchy plugin add` only clones the repo — it never runs code or sudo. The widget then shows
+**Setup needed**: open its panel and press **Finish setup**. That opens a terminal running the
+plugin's `install.sh` (review it first: `~/.config/omarchy/plugins/omarchy-vpn/install.sh`),
+which asks for your sudo password once. Run it by hand instead if you prefer:
+
+```bash
+~/.config/omarchy/plugins/omarchy-vpn/install.sh
+```
+
+After `omarchy plugin update omarchy-vpn` the panel shows **Update setup** until `install.sh`
+has run again (the backend, the helper and the kill switch script are copies).
+
+Or from a checkout:
 
 ```bash
 git clone https://github.com/moonmouse11/omarchy-vpn
@@ -116,7 +166,7 @@ cd omarchy-vpn
 make install
 ```
 
-The installer:
+The installer (`install.sh`):
 1. Installs dependencies via `pacman`
 2. Writes a `sudoers` rule for three fixed entry points only (validated with `visudo -cf`):
    `omarchy-vpn-helper`, `happ-killswitch` and the IPv6 guard's `sysctl` calls
@@ -124,8 +174,8 @@ The installer:
    paths; refuses imports with WireGuard `PostUp`/`PreUp`/… or OpenVPN `up`/`plugin`/… lines —
    they would run as root) and `happ-killswitch`, root-owned, to `/usr/local/bin`
 4. Copies the backend to `~/.local/share/omarchy-vpn/src/`
-5. Installs the bar widget plugin to `~/.config/omarchy/plugins/omarchy-vpn/` and
-   enables it right before `omarchy.network` (move it with `omarchy bar move omarchy-vpn …`,
+5. Installs the bar widget plugin to `~/.config/omarchy/plugins/omarchy-vpn/` (already there
+   after `omarchy plugin add`) and enables it right before `omarchy.network` (move it with `omarchy bar move omarchy-vpn …`,
    remove it with `omarchy plugin disable omarchy-vpn`)
 6. Appends a `SUPER+Shift+V` binding to `~/.config/hypr/bindings.lua` (idempotent)
 7. Removes an old Omarchy 3 install (`~/.config/waybar/vpn-manager`) unless a running
@@ -278,7 +328,7 @@ The script is root-owned in `/usr/local/bin`: changes reach it only with `make i
 ## Architecture
 
 ```
-omarchy-shell widget (plugin/Widget.qml)
+omarchy-shell widget (Widget.qml)
   --(3 s)--> vpn_manager.py --status --> JSON (aggregated, cached exit IP)
   panel + window (AppWindow.qml) --> --servers / --connect / --tool KEY
   <-- omarchy-shell omarchy-vpn refresh (after every action)
@@ -307,6 +357,8 @@ tests/                pytest suite
 ```
 
 ## Development
+
+Pull requests go to `dev`, not `main` — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
@@ -385,10 +437,15 @@ sweep — a present `api_key` in config *is* "enabled", no separate flag needed.
 ## Uninstall
 
 ```bash
-make uninstall
+~/.config/omarchy/plugins/omarchy-vpn/uninstall.sh
+omarchy plugin remove omarchy-vpn
 ```
 
-Turns the kill switch off (with Lockdown its rules would otherwise block all traffic until a
+Run `uninstall.sh` **before** `omarchy plugin remove`: removing the plugin alone leaves the
+root helpers, the sudoers rule and possibly kill switch rules in place. From a checkout:
+`make uninstall`.
+
+`uninstall.sh` turns the kill switch off (with Lockdown its rules would otherwise block all traffic until a
 reboot), then removes the bar widget plugin, the backend, the SUPER+Shift+V binding block in
 `bindings.lua`, `/usr/local/bin/omarchy-vpn-helper`, `happ-killswitch`, `openvpn-dns-updown`
 and the sudoers rule.

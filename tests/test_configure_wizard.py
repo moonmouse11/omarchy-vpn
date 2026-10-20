@@ -51,25 +51,15 @@ def test_terminal_prompter_text_strips_input(monkeypatch):
     assert installwizard.TerminalPrompter().text("Key?") == "secret-key"
 
 
-def test_terminal_prompter_confirm_returns_default_on_eof(monkeypatch):
-    """stdin closed mid-question: the default, not a failed install."""
-    monkeypatch.setattr(installwizard.sys, "stdin", Tty(True))
-
-    def raise_eof(prompt):
-        raise EOFError
-
-    monkeypatch.setattr("builtins.input", raise_eof)
-    assert installwizard.TerminalPrompter().confirm("Q?", default=True) is True
-    assert installwizard.TerminalPrompter().confirm("Q?", default=False) is False
-
-
-def test_ctrl_c_at_any_question_cancels_the_install(wizard, monkeypatch):
-    """Ctrl-C at a yes/no or API-key question cancels like Esc in gum:
-    nothing saved, exit 1 (install.sh stops before sudo)."""
+@pytest.mark.parametrize("exc", [KeyboardInterrupt, EOFError])
+def test_ctrl_c_at_any_question_cancels_the_install(wizard, monkeypatch, exc):
+    """Ctrl-C (or Ctrl-D) at a yes/no or API-key question cancels like Esc in
+    gum: nothing saved, exit 1 (install.sh stops before sudo). Without a tty
+    nothing is asked at all, so EOF here is always the user's."""
     monkeypatch.setattr(installwizard, "detect", detected())
 
     def interrupt(*args):
-        raise KeyboardInterrupt
+        raise exc
 
     monkeypatch.setattr(installwizard.sys, "stdin", Tty(True))
     monkeypatch.setattr(installwizard.shutil, "which", lambda b: None)  # yes/no fallback
@@ -79,23 +69,11 @@ def test_ctrl_c_at_any_question_cancels_the_install(wizard, monkeypatch):
 
     class KeyInterrupt(FakePrompter):
         def text(self, question):
-            raise KeyboardInterrupt
+            raise exc
 
     assert installwizard.run(KeyInterrupt(), wizard / "packages") == 1
     assert not config.CONFIG_PATH.exists()
     assert not (wizard / "packages").exists()
-
-
-def test_terminal_prompter_text_returns_empty_on_eof(monkeypatch):
-    """Same guard for getpass-based text(): a closed stdin yields ""
-    (keep existing / skip); Ctrl-C cancels (test_ctrl_c_at_any_question…)."""
-    monkeypatch.setattr(installwizard.sys, "stdin", Tty(True))
-
-    def raise_eof(prompt):
-        raise EOFError
-
-    monkeypatch.setattr(installwizard.getpass, "getpass", raise_eof)
-    assert installwizard.TerminalPrompter().text("Key?") == ""
 
 
 class Tty:
@@ -386,3 +364,12 @@ def test_found_summary_marks_hidden(wizard, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "WireGuard: 2 profiles (hidden)" in err
     assert "Happ: installed\n" in err
+
+
+def test_package_summary(wizard, monkeypatch, capsys):
+    monkeypatch.setattr(installwizard, "detect", detected())
+    monkeypatch.setattr(installwizard, "missing_packages", lambda names: ["openvpn"])
+    installwizard.run(FakePrompter(choices=[["OpenVPN"]]), wizard / "packages")
+    err = capsys.readouterr().err
+    assert "already installed: openresolv python" in err
+    assert "will install: openvpn" in err

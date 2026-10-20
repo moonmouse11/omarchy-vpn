@@ -59,7 +59,7 @@ def _run(cmd: list[str], ok_codes: tuple[int, ...] = (0,)) -> str:
 
 
 def _count(n: int, word: str) -> str:
-    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+    return f"{n} {word}{'' if n == 1 else 's'}"
 
 
 def _files(directory: Path, *patterns: str) -> int:
@@ -206,19 +206,14 @@ class TerminalPrompter(Prompter):
         if not sys.stdin.isatty():
             return default
         suffix = "[Y/n]" if default else "[y/N]"
-        try:
-            answer = input(f"{question} {suffix} ").strip().lower()
-        except EOFError:  # Ctrl-C propagates: run() cancels
-            return default
+        # Ctrl-C / Ctrl-D propagate: run() cancels (no tty never gets here)
+        answer = input(f"{question} {suffix} ").strip().lower()
         return default if not answer else answer in ("y", "yes")
 
     def text(self, question: str) -> str:
         if not sys.stdin.isatty():
             return ""
-        try:
-            return getpass.getpass(f"{question}: ").strip()
-        except EOFError:
-            return ""
+        return getpass.getpass(f"{question}: ").strip()
 
     def choose(
         self, question: str, options: list[str], selected: list[str], multi: bool = True
@@ -239,7 +234,7 @@ class TerminalPrompter(Prompter):
                 return proc.stdout.splitlines() if proc.returncode == 0 else None
             print(question)
             picked = [o for o in options if self.confirm(f"  {o}", o in selected)]
-        except KeyboardInterrupt:
+        except KeyboardInterrupt, EOFError:
             return None
         return picked if multi else picked[:1] or list(selected)
 
@@ -334,7 +329,7 @@ def run(prompter: Prompter, packages_file: Path | None) -> int:
                 "removes openresolv, links /etc/resolv.conf to its stub)",
                 False,
             )
-    except KeyboardInterrupt:  # Ctrl-C at any question = Esc in gum
+    except KeyboardInterrupt, EOFError:  # Ctrl-C/Ctrl-D at any question = Esc in gum
         return 1
     config.save_config(cfg)  # before any sudo: an aborted password prompt keeps the answers
 
@@ -345,7 +340,14 @@ def run(prompter: Prompter, packages_file: Path | None) -> int:
         print(f"    {line}", file=sys.stderr)
 
     if packages_file is not None:
-        missing = missing_packages(wanted_packages(cfg, det, switch_resolvconf=switch))
+        wanted = wanted_packages(cfg, det, switch_resolvconf=switch)
+        missing = missing_packages(wanted)
+        print(
+            f"    already installed: {' '.join(p for p in wanted if p not in missing) or '-'}",
+            f"    will install: {' '.join(missing) or '-'}",
+            sep="\n",
+            file=sys.stderr,
+        )
         if switch:
             missing.append(RESOLV_STUB_MARK)
         packages_file.write_text("".join(f"{name}\n" for name in missing))

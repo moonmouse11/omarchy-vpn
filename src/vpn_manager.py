@@ -27,7 +27,6 @@ import delayping
 import dnsleak
 import fsutil
 import happmeta
-import installwizard
 import ipinfo
 import ipv6guard
 import killswitch
@@ -2219,9 +2218,9 @@ def main():
         run_keys_keeper(*args.keys_keeper)
     elif args.settings:
         run_settings_window()
-    elif args.configure:
-        sys.exit(installwizard.run(installwizard.TerminalPrompter(), None))
-    elif args.install_wizard is not None:
+    elif args.configure or args.install_wizard is not None:
+        import installwizard  # noqa: PLC0415 — install-time only, not on the 3 s --status path
+
         sys.exit(installwizard.run(installwizard.TerminalPrompter(), args.install_wizard))
 
 

@@ -436,7 +436,8 @@ def test_system_resolvers_wrapped_resolvectl_line(monkeypatch, tmp_path):
         stdout = (
             "Global: 8.8.8.8#dns.google 2001:4860:4860::8888#dns.google\n"
             "        2001:4860:4860::8844#dns.google\n"
-            "Link 3 (wlp5s0):\n"
+            "Link 3 (wlp5s0): 192.168.1.1 fd00::1\n"
+            "                 fd00::53\n"
         )
 
     monkeypatch.setattr(killswitch.subprocess, "run", lambda cmd, **kw: Out())
@@ -444,6 +445,9 @@ def test_system_resolvers_wrapped_resolvectl_line(monkeypatch, tmp_path):
         "8.8.8.8",
         "2001:4860:4860::8888",
         "2001:4860:4860::8844",
+        "192.168.1.1",
+        "fd00::1",
+        "fd00::53",
     ]
 
 

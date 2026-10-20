@@ -8,7 +8,6 @@ Usage:
 import argparse
 import contextlib
 import fcntl
-import getpass
 import json
 import os
 import re
@@ -18,7 +17,6 @@ import signal
 import subprocess
 import sys
 import time
-from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import NamedTuple, NoReturn
 
@@ -30,7 +28,6 @@ import dnsleak
 import fsutil
 import happmeta
 import ipinfo
-import ipsources
 import ipv6guard
 import killswitch
 import logutil
@@ -1579,72 +1576,6 @@ def clear_caches_menu() -> ActionResult:
     return ActionResult(True, f"Cache cleared ({removed} files) — rebuilt automatically")
 
 
-class Prompter(ABC):
-    @abstractmethod
-    def confirm(self, question: str, default: bool) -> bool: ...
-
-    @abstractmethod
-    def text(self, question: str) -> str: ...
-
-
-class TerminalPrompter(Prompter):
-    def confirm(self, question: str, default: bool) -> bool:
-        suffix = "[Y/n]" if default else "[y/N]"
-        try:
-            answer = input(f"{question} {suffix} ").strip().lower()
-        except EOFError, KeyboardInterrupt:
-            return default
-        return default if not answer else answer in ("y", "yes")
-
-    def text(self, question: str) -> str:
-        try:
-            return getpass.getpass(f"{question}: ").strip()
-        except EOFError, KeyboardInterrupt:
-            return ""
-
-
-def run_configure_wizard(prompter: Prompter) -> bool:
-    """The question-by-question walk behind --configure (install.sh's last
-    step, in a terminal). The in-menu ⚙️ Settings is a list instead
-    (settings_tui.py). Never touches an existing config.json unless the
-    user opts in via the first confirm. Returns False when the user
-    declines reconfigure on an existing file; True after save."""
-    if config.CONFIG_PATH.exists():
-        if not prompter.confirm("Config already exists. Reconfigure?", False):
-            return False
-        cfg = config.load_config()
-    else:
-        cfg = config.Config()
-
-    for provider in ALL_PROVIDERS:
-        visible = prompter.confirm(f"Show {provider.name}?", cfg.provider_visible(provider.name))
-        cfg.providers[provider.name.lower()] = visible
-
-    for key, label, _fn in [*TOOLS, ("killswitch", "Killswitch", None)]:
-        visible = prompter.confirm(f"Show tool “{label}”?", cfg.tool_visible(key))
-        cfg.tools_visible[key] = visible
-
-    for source in ipsources.ALL_SOURCES:
-        if source.needs_api_key:
-            answer = prompter.text(f"{source.name} API key (Enter — keep current / skip)")
-            if answer:
-                cfg.ip_sources.setdefault(source.key, {})["api_key"] = answer
-        else:
-            enabled = prompter.confirm(f"Use {source.name}?", source.is_enabled())
-            cfg.ip_sources.setdefault(source.key, {})["enabled"] = enabled
-
-    # no: route xray's DNS the way the subscription says — some pin their
-    # resolvers "direct", which sends every lookup out the real connection
-    tunnel = prompter.confirm(
-        "Force all Happ DNS through the VPN tunnel (ignore subscription DNS routing)?",
-        cfg.dns_mode == "tunnel",
-    )
-    cfg.dns_mode = "tunnel" if tunnel else "subscription"
-
-    config.save_config(cfg)
-    return True
-
-
 # ── ⚙ Settings: a list in a small floating terminal (settings_tui.py) — omarchy.menu
 # can't change a row in place or keep the cursor where it was.
 
@@ -2204,7 +2135,13 @@ def main():
     group.add_argument(
         "--configure",
         action="store_true",
-        help="Interactive setup wizard: providers, tools, IP sources/keys",
+        help="Interactive setup wizard: protocols, features, IP sources/keys",
+    )
+    group.add_argument(
+        "--install-wizard",
+        metavar="FILE",
+        type=Path,
+        help="install.sh: the setup wizard, then the packages still missing into FILE",
     )
     args = parser.parse_args()
     if args.keys_keeper is not None and args.keys_keeper[0] not in ("ss", "vless"):
@@ -2281,8 +2218,10 @@ def main():
         run_keys_keeper(*args.keys_keeper)
     elif args.settings:
         run_settings_window()
-    elif args.configure:
-        run_configure_wizard(TerminalPrompter())
+    elif args.configure or args.install_wizard is not None:
+        import installwizard  # noqa: PLC0415 — install-time only, not on the 3 s --status path
+
+        sys.exit(installwizard.run(installwizard.TerminalPrompter(), args.install_wizard))
 
 
 if __name__ == "__main__":

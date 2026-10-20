@@ -1,15 +1,25 @@
+import subprocess
+
+import pytest
+
 import config
-import vpn_manager
+import installwizard
 from providers.base import ActionResult  # noqa: F401
 
 
-class FakePrompter(vpn_manager.Prompter):
+class FakePrompter(installwizard.Prompter):
     """Feeds canned answers in call order — confirms and texts are two
     separate queues since the wizard interleaves them by section."""
 
-    def __init__(self, confirms, texts=()):
+    def __init__(self, confirms=(), texts=(), choices=()):
         self._confirms = iter(confirms)
         self._texts = iter(texts)
+        self._choices = iter(choices)  # a list, or None = cancel; default: the preselection
+        self.questions = []
+
+    def choose(self, question, options, selected, multi=True):
+        self.questions.append(question)
+        return next(self._choices, list(selected))
 
     def confirm(self, question, default):
         return next(self._confirms, default)
@@ -19,123 +29,349 @@ class FakePrompter(vpn_manager.Prompter):
 
 
 def test_terminal_prompter_confirm_default_on_empty_answer(monkeypatch):
+    monkeypatch.setattr(installwizard.sys, "stdin", Tty(True))
     monkeypatch.setattr("builtins.input", lambda prompt: "")
-    assert vpn_manager.TerminalPrompter().confirm("Q?", default=True) is True
-    assert vpn_manager.TerminalPrompter().confirm("Q?", default=False) is False
+    assert installwizard.TerminalPrompter().confirm("Q?", default=True) is True
+    assert installwizard.TerminalPrompter().confirm("Q?", default=False) is False
 
 
 def test_terminal_prompter_confirm_explicit_answer(monkeypatch):
+    monkeypatch.setattr(installwizard.sys, "stdin", Tty(True))
     monkeypatch.setattr("builtins.input", lambda prompt: "y")
-    assert vpn_manager.TerminalPrompter().confirm("Q?", default=False) is True
+    assert installwizard.TerminalPrompter().confirm("Q?", default=False) is True
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
-    assert vpn_manager.TerminalPrompter().confirm("Q?", default=True) is False
+    assert installwizard.TerminalPrompter().confirm("Q?", default=True) is False
 
 
 def test_terminal_prompter_text_strips_input(monkeypatch):
+    monkeypatch.setattr(installwizard.sys, "stdin", Tty(True))
     # text() now goes through getpass.getpass (not input()) so a typed API
     # key doesn't echo to the terminal/scrollback.
-    monkeypatch.setattr(vpn_manager.getpass, "getpass", lambda prompt: "  secret-key  ")
-    assert vpn_manager.TerminalPrompter().text("Key?") == "secret-key"
+    monkeypatch.setattr(installwizard.getpass, "getpass", lambda prompt: "  secret-key  ")
+    assert installwizard.TerminalPrompter().text("Key?") == "secret-key"
 
 
-def test_terminal_prompter_confirm_returns_default_on_eof_and_interrupt(monkeypatch):
-    """A non-interactive --configure (e.g. under install.sh's set -e) must
-    not turn a successful install into a reported failure: EOFError and
-    KeyboardInterrupt on input() fall back to the question's default."""
+@pytest.mark.parametrize("exc", [KeyboardInterrupt, EOFError])
+def test_ctrl_c_at_any_question_cancels_the_install(wizard, monkeypatch, exc):
+    """Ctrl-C (or Ctrl-D) at a yes/no or API-key question cancels like Esc in
+    gum: nothing saved, exit 1 (install.sh stops before sudo). Without a tty
+    nothing is asked at all, so EOF here is always the user's."""
+    monkeypatch.setattr(installwizard, "detect", detected())
 
-    def raise_eof(prompt):
-        raise EOFError
+    def interrupt(*args):
+        raise exc
 
-    monkeypatch.setattr("builtins.input", raise_eof)
-    assert vpn_manager.TerminalPrompter().confirm("Q?", default=True) is True
-    assert vpn_manager.TerminalPrompter().confirm("Q?", default=False) is False
+    monkeypatch.setattr(installwizard.sys, "stdin", Tty(True))
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: None)  # yes/no fallback
+    monkeypatch.setattr("builtins.input", interrupt)
+    assert installwizard.run(installwizard.TerminalPrompter(), wizard / "packages") == 1
+    assert not config.CONFIG_PATH.exists()
 
-    def raise_interrupt(prompt):
-        raise KeyboardInterrupt
+    class KeyInterrupt(FakePrompter):
+        def text(self, question):
+            raise exc
 
-    monkeypatch.setattr("builtins.input", raise_interrupt)
-    assert vpn_manager.TerminalPrompter().confirm("Q?", default=True) is True
-    assert vpn_manager.TerminalPrompter().confirm("Q?", default=False) is False
-
-
-def test_terminal_prompter_text_returns_empty_on_eof_and_interrupt(monkeypatch):
-    """Same guard for getpass-based text(): an interrupted API-key prompt
-    yields "" (keep existing / skip), not an exception."""
-
-    def raise_eof(prompt):
-        raise EOFError
-
-    monkeypatch.setattr(vpn_manager.getpass, "getpass", raise_eof)
-    assert vpn_manager.TerminalPrompter().text("Key?") == ""
-
-    def raise_interrupt(prompt):
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(vpn_manager.getpass, "getpass", raise_interrupt)
-    assert vpn_manager.TerminalPrompter().text("Key?") == ""
+    assert installwizard.run(KeyInterrupt(), wizard / "packages") == 1
+    assert not config.CONFIG_PATH.exists()
+    assert not (wizard / "packages").exists()
 
 
-def test_run_configure_wizard_writes_config_from_scratch(tmp_path, monkeypatch):
+class Tty:
+    def __init__(self, tty):
+        self._tty = tty
+
+    def isatty(self):
+        return self._tty
+
+
+def test_choose_without_tty_returns_preselection(monkeypatch):
+    monkeypatch.setattr(installwizard.sys, "stdin", Tty(False))
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("prompted"))
+    got = installwizard.TerminalPrompter().choose("Protocols", ["A", "B"], ["B"])
+    assert got == ["B"]
+
+
+def test_choose_uses_gum(monkeypatch):
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append((cmd, kw))
+        return subprocess.CompletedProcess(cmd, 0, stdout="WireGuard\nHapp\n")
+
+    monkeypatch.setattr(installwizard.sys, "stdin", Tty(True))
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: "/usr/bin/gum")
+    monkeypatch.setattr(installwizard.subprocess, "run", run)
+    got = installwizard.TerminalPrompter().choose(
+        "Protocols", ["WireGuard", "Happ", "X"], ["Happ", "X"]
+    )
+    assert got == ["WireGuard", "Happ"]
+    ((cmd, kw),) = calls
+    assert cmd[:2] == ["gum", "choose"]
+    assert "--no-limit" in cmd
+    # gum 2.x toggles with x/Tab, not Space: the header says so
+    assert cmd[cmd.index("--header") + 1] == "Protocols  (x / Tab: toggle · Enter: done)"
+    assert "--selected=Happ,X" in cmd
+    assert cmd[cmd.index("--") + 1 :] == ["WireGuard", "Happ", "X"]
+    assert kw["stdout"] == subprocess.PIPE  # the UI itself stays on the terminal
+
+
+def test_choose_single_has_no_no_limit(monkeypatch):
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="Happ only\n")
+
+    monkeypatch.setattr(installwizard.sys, "stdin", Tty(True))
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: "/usr/bin/gum")
+    monkeypatch.setattr(installwizard.subprocess, "run", run)
+    prompter = installwizard.TerminalPrompter()
+    assert prompter.choose(
+        "KS", ["Every provider", "Happ only"], ["Every provider"], multi=False
+    ) == ["Happ only"]
+    assert "--no-limit" not in calls[0]
+
+
+def test_choose_gum_cancel_is_none(monkeypatch):
+    monkeypatch.setattr(installwizard.sys, "stdin", Tty(True))
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: "/usr/bin/gum")
+    monkeypatch.setattr(
+        installwizard.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 130, stdout=""),
+    )
+    assert installwizard.TerminalPrompter().choose("Q", ["A"], ["A"]) is None
+
+
+def test_choose_falls_back_to_confirms(monkeypatch):
+    answers = iter(["", "y", "n"])  # A: Enter keeps "selected", B: yes, C: no
+    monkeypatch.setattr(installwizard.sys, "stdin", Tty(True))
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: None)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    assert installwizard.TerminalPrompter().choose("Q", ["A", "B", "C"], ["A", "C"]) == ["A", "B"]
+
+
+def test_terminal_prompter_never_prompts_without_tty(monkeypatch):
+    monkeypatch.setattr(installwizard.sys, "stdin", Tty(False))
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("prompted"))
+    monkeypatch.setattr(installwizard.getpass, "getpass", lambda prompt: pytest.fail("prompted"))
+    prompter = installwizard.TerminalPrompter()
+    assert prompter.confirm("Q?", default=True) is True
+    assert prompter.text("Key?") == ""
+
+
+# ── the wizard ────────────────────────────────────────────────────────────────
+
+
+class Source:
+    def __init__(self, key, name, needs_api_key):
+        self.key, self.name, self.needs_api_key = key, name, needs_api_key
+
+
+@pytest.fixture
+def wizard(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
-    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [])  # keep the answer sequence short
-    monkeypatch.setattr(vpn_manager.ipsources, "ALL_SOURCES", [])
-
-    # No providers, no sources -> 6 TOOLS rows + killswitch
-    prompter = FakePrompter(confirms=[True] * 7)  # 6 TOOLS rows + killswitch
-    assert vpn_manager.run_configure_wizard(prompter) is True
-
-    loaded = config.load_config()
-    assert loaded.tools_visible["dns_leak_test"] is True
-    assert loaded.tools_visible["killswitch"] is True
-
-
-def test_run_configure_wizard_respects_existing_config_refusal(tmp_path, monkeypatch):
-    p = tmp_path / "config.json"
-    monkeypatch.setattr(config, "CONFIG_PATH", p)
-    original = config.Config(killswitch_mode="happ")
-    config.save_config(original)
-
-    prompter = FakePrompter(confirms=[False])  # "reconfigure?" -> no
-    assert vpn_manager.run_configure_wizard(prompter) is False
-
-    assert config.load_config().killswitch_mode == "happ"  # untouched
+    monkeypatch.setattr(
+        installwizard.ipsources,
+        "ALL_SOURCES",
+        [Source("ipwhois", "ipwho.is", False), Source("abuseipdb", "AbuseIPDB", True)],
+    )
+    monkeypatch.setattr(installwizard, "missing_packages", lambda names: [])
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: "/usr/bin/" + b)
+    monkeypatch.setattr(installwizard, "HAPP_DIR", tmp_path)
+    return tmp_path
 
 
-def test_run_configure_wizard_collects_api_keys(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
-    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [])
-
-    class FakeSource:
-        def __init__(self, key, name, needs_api_key):
-            self.key, self.name, self.needs_api_key = key, name, needs_api_key
-
-        def is_enabled(self):
-            return False
-
-    keyed = FakeSource("abuseipdb", "AbuseIPDB", True)
-    monkeypatch.setattr(vpn_manager.ipsources, "ALL_SOURCES", [keyed])
-
-    prompter = FakePrompter(confirms=[True] * 7, texts=["secret-key-123"])
-    assert vpn_manager.run_configure_wizard(prompter) is True
-
-    loaded = config.load_config()
-    assert loaded.ip_sources["abuseipdb"]["api_key"] == "secret-key-123"
+def detected(**notes):
+    return lambda: installwizard.Detection(notes=notes)
 
 
-def test_run_configure_wizard_asks_dns_mode_last(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
-    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [])
-    monkeypatch.setattr(vpn_manager.ipsources, "ALL_SOURCES", [])
-
-    # 6 TOOLS rows + killswitch, then "force DNS through the tunnel?" -> no
-    assert vpn_manager.run_configure_wizard(FakePrompter(confirms=[True] * 7 + [False]))
-    assert config.load_config().dns_mode == "subscription"
+def visible(cfg):
+    return [p for p in installwizard.PROTOCOLS if cfg.provider_visible(p)]
 
 
-def test_run_configure_wizard_dns_mode_defaults_to_tunnel(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
-    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [])
-    monkeypatch.setattr(vpn_manager.ipsources, "ALL_SOURCES", [])
+def test_fresh_install_preselects_detected(wizard, monkeypatch):
+    monkeypatch.setattr(installwizard, "detect", detected(WireGuard="2 profiles", Happ="installed"))
+    prompter = FakePrompter()
+    assert installwizard.run(prompter, None) == 0
+    assert visible(config.load_config()) == ["WireGuard", "Happ"]
+    assert prompter.questions[0] == "Protocols"
 
-    assert vpn_manager.run_configure_wizard(FakePrompter(confirms=[True] * 7))  # Enter -> default
-    assert config.load_config().dns_mode == "tunnel"
+
+def test_fresh_install_nothing_detected_shows_all(wizard, monkeypatch):
+    monkeypatch.setattr(installwizard, "detect", detected())
+    assert installwizard.run(FakePrompter(), None) == 0
+    assert visible(config.load_config()) == installwizard.PROTOCOLS
+
+
+def test_protocol_labels_carry_the_note(wizard, monkeypatch):
+    monkeypatch.setattr(installwizard, "detect", detected(WireGuard="2 profiles"))
+    seen = {}
+
+    class Spy(FakePrompter):
+        def choose(self, question, options, selected, multi=True):
+            seen.setdefault(question, (options, selected))
+            return list(selected)
+
+    installwizard.run(Spy(), None)
+    options, selected = seen["Protocols"]
+    assert "WireGuard  (2 profiles)" in options
+    assert selected == ["WireGuard  (2 profiles)"]
+
+
+def test_rerun_config_wins_over_detection(wizard, monkeypatch):
+    cfg = config.Config()
+    cfg.providers = {"wireguard": False}
+    config.save_config(cfg)
+    monkeypatch.setattr(installwizard, "detect", detected(WireGuard="2 profiles"))
+    assert installwizard.run(FakePrompter(), None) == 0
+    assert "WireGuard" not in visible(config.load_config())
+    assert "OpenVPN" in visible(config.load_config())
+
+
+def test_cancel_saves_nothing(wizard, monkeypatch):
+    monkeypatch.setattr(installwizard, "detect", detected())
+    packages = wizard / "packages"
+    packages.write_text("untouched")
+    assert installwizard.run(FakePrompter(choices=[None]), packages) == 1
+    assert not config.CONFIG_PATH.exists()
+    assert packages.read_text() == "untouched"
+
+
+def test_packages_file_lists_missing(wizard, monkeypatch):
+    monkeypatch.setattr(installwizard, "detect", detected())
+    asked = []
+
+    def missing(names):
+        asked.append(names)
+        return ["openvpn"]
+
+    monkeypatch.setattr(installwizard, "missing_packages", missing)
+    packages = wizard / "packages"
+    assert installwizard.run(FakePrompter(choices=[["OpenVPN"]]), packages) == 0
+    assert packages.read_text() == "openvpn\n"
+    assert asked == [["openresolv", "openvpn", "python"]]
+
+
+def test_features(wizard, monkeypatch):
+    monkeypatch.setattr(installwizard, "detect", detected())
+    prompter = FakePrompter(choices=[["Happ"], ["IPv6 guard", "DNS leak test after connect"]])
+    installwizard.run(prompter, None)
+    cfg = config.load_config()
+    assert cfg.killswitch_mode == "off"
+    assert cfg.ipv6_guard
+    assert cfg.dns_mode == "subscription"
+    assert cfg.dns_autotest
+    assert cfg.ip_sources["ipwhois"]["enabled"] is False
+    assert prompter.questions == ["Protocols", "Features"]  # no kill switch mode question
+
+
+def test_feature_preselection_from_config(wizard, monkeypatch):
+    config.save_config(config.Config(killswitch_mode="happ", ipv6_guard=False, dns_autotest=True))
+    monkeypatch.setattr(installwizard, "detect", detected())
+    seen = {}
+
+    class Spy(FakePrompter):
+        def choose(self, question, options, selected, multi=True):
+            seen[question] = selected
+            return list(selected)
+
+    installwizard.run(Spy(confirms=[True, False]), None)
+    assert seen["Features"] == [
+        "Kill switch",
+        "DNS through the tunnel",
+        "DNS leak test after connect",
+        "ipwho.is",
+    ]
+    assert seen["Kill switch"] == ["Happ only"]
+    assert config.load_config().killswitch_mode == "happ"
+
+
+def test_killswitch_mode_and_lockdown(wizard, monkeypatch):
+    monkeypatch.setattr(installwizard, "detect", detected())
+    prompter = FakePrompter(
+        confirms=[False],  # Lockdown
+        choices=[["Happ"], ["Kill switch"], ["Every provider"]],
+    )
+    installwizard.run(prompter, None)
+    cfg = config.load_config()
+    assert cfg.killswitch_mode == "all"
+    assert cfg.killswitch_lockdown is False
+
+
+def test_api_keys_asked_on_fresh_config_only(wizard, monkeypatch):
+    monkeypatch.setattr(installwizard, "detect", detected())
+    installwizard.run(FakePrompter(texts=["secret-key-123"]), None)
+    assert config.load_config().ip_sources["abuseipdb"]["api_key"] == "secret-key-123"
+    # a re-run asks first; Enter (no) keeps the key without asking for it
+    installwizard.run(FakePrompter(texts=["other"]), None)
+    assert config.load_config().ip_sources["abuseipdb"]["api_key"] == "secret-key-123"
+
+
+def test_tools_visible_untouched(wizard, monkeypatch):
+    cfg = config.Config()
+    cfg.tools_visible = {"speed_test": False}
+    config.save_config(cfg)
+    monkeypatch.setattr(installwizard, "detect", detected())
+    installwizard.run(FakePrompter(), None)
+    assert config.load_config().tools_visible == {"speed_test": False}
+
+
+def test_noninteractive_run_saves_preselection(wizard, monkeypatch):
+    monkeypatch.setattr(installwizard.sys, "stdin", Tty(False))
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("prompted"))
+    monkeypatch.setattr(installwizard, "detect", detected(Happ="installed"))
+    assert installwizard.run(installwizard.TerminalPrompter(), wizard / "packages") == 0
+    assert visible(config.load_config()) == ["Happ"]
+
+
+def test_resolved_switch_question(wizard, monkeypatch, capsys):
+    mismatch = installwizard.Detection(resolved_active=True, resolvconf_provider="openresolv")
+    monkeypatch.setattr(installwizard, "detect", lambda: mismatch)
+    monkeypatch.setattr(installwizard, "missing_packages", lambda names: names)
+    packages = wizard / "packages"
+
+    installwizard.run(FakePrompter(confirms=[True], choices=[["OpenVPN"]]), packages)
+    lines = packages.read_text().split()
+    assert "systemd-resolvconf" in lines
+    assert lines[-1] == installwizard.RESOLV_STUB_MARK
+    assert "isn't systemd-resolved's stub" not in capsys.readouterr().err
+
+    installwizard.run(FakePrompter(confirms=[False], choices=[["OpenVPN"]]), packages)
+    lines = packages.read_text().split()
+    assert "systemd-resolvconf" not in lines
+    assert installwizard.RESOLV_STUB_MARK not in lines
+    assert "isn't systemd-resolved's stub" in capsys.readouterr().err
+
+    class NoConfirm(FakePrompter):
+        def confirm(self, question, default):
+            assert "systemd-resolved" not in question
+            return default
+
+    installwizard.run(NoConfirm(choices=[["OpenVPN"]]), None)  # --configure never asks
+
+
+def test_switch_mark_even_when_systemd_resolvconf_is_installed(wizard, monkeypatch):
+    # a re-run after pacman -S failed past the openresolv removal must finish the job
+    det = installwizard.Detection(resolved_active=True, resolvconf_provider="systemd-resolvconf")
+    monkeypatch.setattr(installwizard, "detect", lambda: det)
+    packages = wizard / "packages"
+    installwizard.run(FakePrompter(confirms=[True], choices=[["WireGuard"]]), packages)
+    assert packages.read_text().split() == [installwizard.RESOLV_STUB_MARK]
+
+
+def test_found_summary_marks_hidden(wizard, monkeypatch, capsys):
+    monkeypatch.setattr(installwizard, "detect", detected(WireGuard="2 profiles", Happ="installed"))
+    installwizard.run(FakePrompter(choices=[["Happ"]]), None)
+    err = capsys.readouterr().err
+    assert "WireGuard: 2 profiles (hidden)" in err
+    assert "Happ: installed\n" in err
+
+
+def test_package_summary(wizard, monkeypatch, capsys):
+    monkeypatch.setattr(installwizard, "detect", detected())
+    monkeypatch.setattr(installwizard, "missing_packages", lambda names: ["openvpn"])
+    installwizard.run(FakePrompter(choices=[["OpenVPN"]]), wizard / "packages")
+    err = capsys.readouterr().err
+    assert "already installed: openresolv python" in err
+    assert "will install: openvpn" in err

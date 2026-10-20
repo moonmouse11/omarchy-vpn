@@ -18,10 +18,50 @@ fi
 echo "==> omarchy-vpn installer"
 echo ""
 
+# ── Questions (before any sudo) ───────────────────────────────────────────────
+# Detects what's installed, asks protocols/features (preselected), saves
+# config.json and writes the packages still missing to PKG_FILE.
+# -B: nothing may be written under the plugin dir (hot reload).
+
+PKG_FILE=$(mktemp)
+trap 'rm -f "$PKG_FILE"' EXIT
+python3 -B "$REPO_DIR/src/vpn_manager.py" --install-wizard "$PKG_FILE" || {
+    echo "==> Cancelled — nothing installed."
+    exit 1
+}
+mapfile -t MISSING < "$PKG_FILE"
+# the wizard's last line after a yes to "Switch DNS to systemd-resolved?"
+SWITCH_RESOLVCONF=""
+if [[ ${#MISSING[@]} -gt 0 && ${MISSING[-1]} == ":resolv-stub" ]]; then
+    SWITCH_RESOLVCONF=1
+    MISSING=("${MISSING[@]:0:${#MISSING[@]}-1}")
+fi
+
 # ── Dependencies ──────────────────────────────────────────────────────────────
 
-echo "==> Installing dependencies..."
-sudo pacman -S --needed --noconfirm python wireguard-tools openvpn openresolv
+echo ""
+echo "==> Root steps: packages, helpers, sudoers rule"
+sudo -v
+
+# openresolv (left by an older install.sh) conflicts with systemd-resolvconf, and
+# --noconfirm answers "no" to removing a conflicting package. Not one transaction:
+# if pacman -S fails after this, a re-run asks again and finishes the switch.
+if [[ -n $SWITCH_RESOLVCONF ]] && pacman -Q openresolv 2>/dev/null | grep -q "^openresolv "; then
+    echo "==> Replacing openresolv with systemd-resolvconf..."
+    sudo pacman -R --noconfirm openresolv
+fi
+
+if (( ${#MISSING[@]} )); then
+    echo "==> Installing: ${MISSING[*]}"
+    sudo pacman -S --needed --noconfirm "${MISSING[@]}"
+else
+    echo "==> All packages already installed"
+fi
+
+if [[ -n $SWITCH_RESOLVCONF ]]; then
+    echo "==> /etc/resolv.conf -> systemd-resolved's stub"
+    sudo ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+fi
 
 # ── sudoers rule ──────────────────────────────────────────────────────────────
 
@@ -97,14 +137,6 @@ echo "==> Creating /etc/openvpn/client directory..."
 sudo mkdir -p /etc/openvpn/client
 sudo chmod 755 /etc/openvpn/client
 
-# ── Fix resolvconf ────────────────────────────────────────────────────────────
-
-if [[ -L /etc/resolv.conf ]]; then
-    echo "==> Fixing /etc/resolv.conf for openresolv..."
-    sudo rm /etc/resolv.conf
-    sudo resolvconf -u
-fi
-
 # ── Backend ───────────────────────────────────────────────────────────────────
 
 echo "==> Installing backend to $INSTALL_DIR..."
@@ -178,10 +210,5 @@ echo ""
 echo "==> Done!"
 echo "    - bar widget:  omarchy plugin enable/disable $PLUGIN_ID, move with omarchy bar move"
 echo "    - keybinding:  SUPER+Shift+V opens the VPN menu"
+echo "    - settings:    the window's Settings button, or re-run this installer"
 echo ""
-
-# ── Interactive configuration ─────────────────────────────────────────────────
-
-echo ""
-echo "==> Configuration wizard"
-python3 "$INSTALL_DIR/src/vpn_manager.py" --configure

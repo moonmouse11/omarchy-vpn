@@ -222,9 +222,15 @@ class TerminalPrompter(Prompter):
             return list(selected)
         try:
             if shutil.which("gum"):
-                cmd = ["gum", "choose", "--header", question]
-                if multi:
-                    cmd.append("--no-limit")
+                cmd = ["gum", "choose"]
+                if multi:  # gum 2.x toggles with x/Tab/Ctrl+Space, not Space
+                    cmd += [
+                        "--header",
+                        f"{question}  (x / Tab: toggle · Enter: done)",
+                        "--no-limit",
+                    ]
+                else:
+                    cmd += ["--header", question]
                 if selected:  # options carry no "," (gum's --selected separator)
                     cmd.append("--selected=" + ",".join(selected))
                 # only stdout is captured: gum draws on the terminal through stderr

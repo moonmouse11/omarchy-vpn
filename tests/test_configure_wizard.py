@@ -108,6 +108,8 @@ def test_choose_uses_gum(monkeypatch):
     ((cmd, kw),) = calls
     assert cmd[:2] == ["gum", "choose"]
     assert "--no-limit" in cmd
+    # gum 2.x toggles with x/Tab, not Space: the header says so
+    assert cmd[cmd.index("--header") + 1] == "Protocols  (x / Tab: toggle · Enter: done)"
     assert "--selected=Happ,X" in cmd
     assert cmd[cmd.index("--") + 1 :] == ["WireGuard", "Happ", "X"]
     assert kw["stdout"] == subprocess.PIPE  # the UI itself stays on the terminal

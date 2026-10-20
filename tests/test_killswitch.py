@@ -425,6 +425,28 @@ def test_system_resolvers_behind_the_systemd_stub(monkeypatch, tmp_path):
     assert ran == [["resolvectl", "dns"]]
 
 
+def test_system_resolvers_wrapped_resolvectl_line(monkeypatch, tmp_path):
+    """resolvectl wraps a long server list onto unlabelled lines: partitioning
+    those at the first ":" cut "2001:" off an IPv6 address (seen live)."""
+    conf = tmp_path / "resolv.conf"
+    conf.write_text("nameserver 127.0.0.53\n")
+    monkeypatch.setattr(killswitch, "RESOLV_CONF", conf)
+
+    class Out:
+        stdout = (
+            "Global: 8.8.8.8#dns.google 2001:4860:4860::8888#dns.google\n"
+            "        2001:4860:4860::8844#dns.google\n"
+            "Link 3 (wlp5s0):\n"
+        )
+
+    monkeypatch.setattr(killswitch.subprocess, "run", lambda cmd, **kw: Out())
+    assert killswitch.system_resolvers() == [
+        "8.8.8.8",
+        "2001:4860:4860::8888",
+        "2001:4860:4860::8844",
+    ]
+
+
 def _forward_chain(rules: str) -> list[str]:
     body = rules.split("chain forward {", 1)[1].split("}\n", 1)[0]
     return [line.strip() for line in body.splitlines() if line.strip()]

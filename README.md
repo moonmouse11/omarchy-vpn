@@ -82,9 +82,9 @@ connection's state, protection checks and tools on the right.
   API key is configured), managed from the same `~/.config/vpn-manager/config.json`
 - **Settings** — the window's Settings button opens a small floating terminal with
   every option and its current value: ↑/↓ to move, Space to change it in place,
-  `s` to save, `q` to quit (`vpn_manager.py --settings` runs it in any terminal). The terminal wizard
-  (`--configure`) asks the same questions one by one and runs as the last step
-  of `make install`
+  `s` to save, `q` to quit (`vpn_manager.py --settings` runs it in any terminal). The installer's
+  questions (`--configure` asks them again in any terminal) pick protocols and features in
+  two lists
 
 ## Requirements
 
@@ -93,15 +93,18 @@ connection's state, protection checks and tools on the right.
 - [Omarchy](https://omarchy.org/) 4 — `omarchy-shell` (bar widget plugin) and
   `omarchy-file-select` (the import file chooser)
 - `python` (stdlib only, no pip packages)
-- `wireguard-tools` (`wg-quick`), `openvpn`, `openresolv`
+- `wireguard-tools` (`wg-quick`), `openvpn`, a `resolvconf` (`systemd-resolvconf`, or
+  `openresolv` without systemd-resolved) — only for the protocols you pick
 - `iproute2` (`ip`, `ss`), `nftables` (killswitch), `sudo` (NOPASSWD rules from `install.sh`)
 - `libnotify` (`notify-send`; progress is updated in place with `-p`/`-r`, an
   older `notify-send` shows each step separately), `curl`, `procps-ng` (`pgrep`/`pkill`)
 - `systemd` (`systemctl`: WireGuard autostart and its IPv6 drop-in), `systemd-resolved`
   (`resolvectl`: DNS pushed by an OpenVPN server), `git` (the setup check compares commits)
 
-`install.sh` installs `python wireguard-tools openvpn openresolv` with `pacman`; the rest ships
-with Omarchy.
+`install.sh` installs with `pacman` only what the protocols and features you pick need and
+isn't installed yet (`wireguard-tools`, `openvpn`, a `resolvconf`, `nftables` for the kill switch);
+the rest ships with Omarchy. Happ (AUR: `happ-desktop-bin`) and AmneziaWG (`amneziawg-tools`,
+`amneziawg-dkms`) you install yourself — the installer says so when you pick them.
 
 **Optional providers, detected at runtime:**
 
@@ -122,8 +125,9 @@ with Omarchy.
   [Killswitch](#killswitch) and the IPv6 guard)
 - `/etc/wireguard`, `/etc/amnezia/amneziawg` made listable (`o+rx`, not readable configs),
   `/etc/openvpn/client` created — kept on uninstall
-- `/etc/resolv.conf`: a symlink (systemd-resolved's stub) is replaced by a file managed by
-  `openresolv` — kept on uninstall
+- `/etc/resolv.conf` is left alone — except when an older install replaced it with an
+  `openresolv` file and you answer yes to switching back: then `openresolv` is removed,
+  `systemd-resolvconf` installed and the file linked to systemd-resolved's stub again
 - `/etc/systemd/system/{wg,awg}-quick@NAME.service.d/omarchy-vpn-ipv6.conf` for profiles with
   autostart on (IPv6 guard) — removed with their profile or with the guard off
 - nftables table `inet happ-ks` while the kill switch is on
@@ -167,24 +171,26 @@ make install
 ```
 
 The installer (`install.sh`):
-1. Installs dependencies via `pacman`
-2. Writes a `sudoers` rule for three fixed entry points only (validated with `visudo -cf`):
+1. Asks what to set up, before any password: finds what's already there (WireGuard/OpenVPN
+   profiles, Happ subscriptions, keys, NetworkManager VPNs), then two lists — protocols and
+   features (kill switch, IPv6 guard, DNS through the tunnel, DNS leak test after connect,
+   IP sources) — preselected from what it found, or from your settings on a re-run (Enter keeps
+   them); API keys on a first install. Esc cancels before anything changes. Without a terminal
+   it keeps the preselection. Asked again with
+   `python3 ~/.local/share/omarchy-vpn/src/vpn_manager.py --configure` or the window's Settings
+2. Asks for the password once and installs the missing packages only (`pacman`)
+3. Writes a `sudoers` rule for three fixed entry points only (validated with `visudo -cf`):
    `omarchy-vpn-helper`, `happ-killswitch` and the IPv6 guard's `sysctl` calls
-3. Installs `omarchy-vpn-helper` (WireGuard/AmneziaWG/OpenVPN: profile names only, never
+4. Installs `omarchy-vpn-helper` (WireGuard/AmneziaWG/OpenVPN: profile names only, never
    paths; refuses imports with WireGuard `PostUp`/`PreUp`/… or OpenVPN `up`/`plugin`/… lines —
    they would run as root) and `happ-killswitch`, root-owned, to `/usr/local/bin`
-4. Copies the backend to `~/.local/share/omarchy-vpn/src/`
-5. Installs the bar widget plugin to `~/.config/omarchy/plugins/omarchy-vpn/` (already there
+5. Copies the backend to `~/.local/share/omarchy-vpn/src/`
+6. Installs the bar widget plugin to `~/.config/omarchy/plugins/omarchy-vpn/` (already there
    after `omarchy plugin add`) and enables it right before `omarchy.network` (move it with `omarchy bar move omarchy-vpn …`,
    remove it with `omarchy plugin disable omarchy-vpn`)
-6. Appends a `SUPER+Shift+V` binding to `~/.config/hypr/bindings.lua` (idempotent)
-7. Removes an old Omarchy 3 install (`~/.config/waybar/vpn-manager`) unless a running
+7. Appends a `SUPER+Shift+V` binding to `~/.config/hypr/bindings.lua` (idempotent)
+8. Removes an old Omarchy 3 install (`~/.config/waybar/vpn-manager`) unless a running
    connection still uses it
-8. Runs the interactive configuration wizard (`--configure`) — pick which providers,
-   tools and IP sources to show, and optionally set IP-source API keys; safe to
-   Ctrl-C or skip (e.g. non-interactive installs), re-run any time with:
-   `python3 ~/.local/share/omarchy-vpn/src/vpn_manager.py --configure`, or via the
-   window's Settings button
 
 The shell and Hyprland pick everything up live — no restart needed.
 
@@ -336,7 +342,8 @@ Happ connect --> --happ-keeper (long-lived happd session owning xray)
               --> happd (root daemon) --> xray (TUN)
 
 src/
-  vpn_manager.py      entry point: status, server list, connect, tools, configure wizard
+  vpn_manager.py      entry point: status, server list, connect, tools
+  installwizard.py    installer questions: detect, protocols/features, missing packages
   settings_tui.py     ⚙ Settings list (curses, in a floating terminal)
   config.py           user config load/save (providers, tools_visible, ip_sources, dns_mode, …)
   notifyutil.py       notify-send wrapper: text sanitising, in-place progress

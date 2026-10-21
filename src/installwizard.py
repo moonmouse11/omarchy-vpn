@@ -1,7 +1,7 @@
 """install.sh's questions: detect what's on the machine (no root, no network),
 ask protocols/features with that preselected, list the packages still missing.
 
-`vpn_manager.py --install-wizard FILE` runs it before install.sh's first sudo
+`vpn_manager.py --install-wizard 3>FILE` runs it before install.sh's first sudo
 (as `python3 -B`: nothing may be written under the plugin dir, see CLAUDE.md);
 `--configure` asks the same questions without the package list.
 """
@@ -40,6 +40,9 @@ RESOLVED_STUB = Path("/run/systemd/resolve/stub-resolv.conf")
 # last line of the packages file after a yes to the switch: install.sh removes
 # openresolv and links resolv.conf to the stub (never a package name)
 RESOLV_STUB_MARK = ":resolv-stub"
+# --install-wizard's package list: install.sh opens fd 3 on its mktemp file —
+# never a path from argv (written while install.sh is about to run sudo)
+WIZARD_OUT = Path("/dev/fd/3")
 
 
 @dataclass

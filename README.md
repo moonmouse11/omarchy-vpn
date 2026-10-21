@@ -238,28 +238,12 @@ sudo.
 
 A provider that still refuses (device limit reached, unsupported client) shows
 up in the window's server list as `<provider> · ⚠ <its message>`. Free a device slot in
-the provider's bot. Only if the panel checks more than these headers, capture
-Happ's full request once from your own machine with a short-lived local CA and
-HTTPS server (nothing leaves the machine; needs sudo):
+the provider's bot. A panel that wants other headers too: put them in
+`~/.config/happ-capture/headers.json` as one JSON object —
+`{"User-Agent": "…", "X-Hwid": "…", …}` — and `chmod 600` it (they identify your
+device to the provider); it replaces the default headers.
 
-1. Take the subscription host from its URL in Happ (`https://<host>/...`) and
-   run `bash scripts/sub-intercept-ca.sh <host>`. It creates the CA (valid
-   30 days) and a server certificate (7 days) in `/tmp/happ-intercept` and
-   prints the next steps with your host filled in:
-   - trust the CA,
-   - point `<host>` at `127.0.0.1` in `/etc/hosts`,
-   - run `sudo python3 scripts/sub-intercept-serve.py <host>`,
-   - press **update subscription** in Happ.
-2. The request lands in `/tmp/happ-intercept/request.txt`. Put its headers
-   (all but `Host`, `Content-Length`, `Connection`) into
-   `~/.config/happ-capture/headers.json` as one JSON object —
-   `{"User-Agent": "…", "X-Hwid": "…", …}` — and `chmod 600` it: they
-   identify your device to the provider.
-3. **Clean up** as the script's last step says: remove the `/etc/hosts` line,
-   untrust the CA and delete `/tmp/happ-intercept`. A CA left trusted lets
-   anyone holding its key impersonate `<host>` to you.
-
-After that the full server list, generated configs, ping and headless connect
+The full server list, generated configs, ping and headless connect then
 work out of the box; subscriptions refresh in the background (hourly, or
 the window's Refresh subscriptions) and new servers from the provider appear
 automatically.
@@ -359,7 +343,7 @@ src/
   logutil.py          file logging
   providers/          VPN backend registry + implementations (VPNProvider ABC)
   ipsources/          IP-intelligence source registry + implementations (IPInfoSource ABC)
-scripts/              happ-killswitch, openvpn-dns-updown; Happ header capture (sub-intercept-*), happd protocol capture
+scripts/              happ-killswitch, openvpn-dns-updown
 tests/                pytest suite
 ```
 
@@ -368,10 +352,11 @@ tests/                pytest suite
 Pull requests go to `dev`, not `main` — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest          # test suite
-ruff check src tests      # lint
-ruff format src tests     # format
+sudo pacman -S uv         # dev tools are locked in uv.lock
+uv sync --locked          # .venv with exactly those versions
+uv run pytest             # test suite
+make lint                 # ruff check, ruff format --check, mypy
+uv run ruff format src tests
 ```
 
 The test suite mocks every `subprocess`/socket call it's aware of (`happd`,

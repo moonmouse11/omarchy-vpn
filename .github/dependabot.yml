@@ -9,9 +9,9 @@ updates:
       interval: monthly
     open-pull-requests-limit: 5
 
-  # Dev tooling (pytest/ruff/pytest-cov) — the plugin itself has no
-  # runtime dependencies (stdlib only).
-  - package-ecosystem: pip
+  # Dev tooling (pytest/ruff/mypy, locked in uv.lock) — the plugin itself
+  # has no runtime dependencies (stdlib only).
+  - package-ecosystem: uv
     directory: /
     schedule:
       interval: monthly

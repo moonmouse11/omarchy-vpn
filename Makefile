@@ -10,12 +10,12 @@ uninstall:
 test-docker-build:
 	docker build -t omarchy-vpn-test -f Dockerfile.test .
 
-# Same checks as CI, on the host venv (fast; no live-system isolation —
-# for that use test-docker)
+# Same checks as CI, with uv.lock's tool versions (fast; no live-system
+# isolation — for that use test-docker)
 lint:
-	ruff check src tests
-	ruff format --check src tests
-	mypy src
+	uv run --locked ruff check src tests
+	uv run --locked ruff format --check src tests
+	uv run --locked mypy src
 
 test-docker:
 	docker run --rm --network none -v "$$PWD":/repo:ro -w /repo omarchy-vpn-test

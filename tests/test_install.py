@@ -1,6 +1,14 @@
+import subprocess
 from pathlib import Path
 
+import pytest
+
 import installwizard
+
+# captured at import, before conftest's autouse fixtures fake subprocess.run
+# and set subprocess.Popen to None (see test_lazyimports.py)
+_REAL_RUN = subprocess.run
+_REAL_POPEN = subprocess.Popen
 
 INSTALL = Path(__file__).resolve().parent.parent / "install.sh"
 
@@ -74,3 +82,75 @@ def test_one_password_prompt_up_front():
 
 def test_no_trailing_configure():
     assert not any("--configure" in c for c in lines())
+
+
+def test_wizard_output_goes_to_fd_3_not_a_path_in_argv():
+    # no file path on the command line (Sonar S8707): the list comes back on fd 3
+    line = lines()[index("--install-wizard")]
+    assert "OMARCHY_VPN_WIZARD_FD=3 python3" in line
+    assert '--install-wizard 3>"$PKG_FILE"' in line
+
+
+def test_install_wizard_flag_takes_no_path(monkeypatch):
+    import vpn_manager
+
+    seen = []
+    monkeypatch.setattr("sys.argv", ["vpn_manager.py", "--install-wizard"])
+    monkeypatch.setenv("OMARCHY_VPN_WIZARD_FD", "3")
+    monkeypatch.setattr(vpn_manager.os, "fstat", lambda fd: None)
+    monkeypatch.setattr(
+        "installwizard.run", lambda prompter, out: seen.append(out) or 0, raising=True
+    )
+    with pytest.raises(SystemExit):
+        vpn_manager.main()
+    assert seen == [installwizard.WIZARD_OUT]
+
+
+def test_install_wizard_without_fd_3_refuses_before_any_question(monkeypatch):
+    import vpn_manager
+
+    asked = []
+    monkeypatch.setattr("sys.argv", ["vpn_manager.py", "--install-wizard"])
+    monkeypatch.setattr("installwizard.run", lambda *a: asked.append(a) or 0)
+    monkeypatch.setenv("OMARCHY_VPN_WIZARD_FD", "3")
+    monkeypatch.setattr(vpn_manager.os, "fstat", _closed)
+    with pytest.raises(SystemExit) as e:
+        vpn_manager.main()
+    assert "3>" in str(e.value.code)  # how to run it, not a traceback
+    assert asked == []  # nothing asked, config.json untouched
+
+
+def test_install_wizard_ignores_an_fd_3_install_sh_did_not_open(monkeypatch):
+    # a shell's own fd 3 would be truncated by WIZARD_OUT.write_text
+    import vpn_manager
+
+    asked = []
+    monkeypatch.setattr("sys.argv", ["vpn_manager.py", "--install-wizard"])
+    monkeypatch.setattr("installwizard.run", lambda *a: asked.append(a) or 0)
+    monkeypatch.delenv("OMARCHY_VPN_WIZARD_FD", raising=False)
+    monkeypatch.setattr(vpn_manager.os, "fstat", lambda fd: None)  # fd 3 open
+    with pytest.raises(SystemExit) as e:
+        vpn_manager.main()
+    assert "install.sh" in str(e.value.code)
+    assert asked == []
+
+
+def _closed(fd):
+    raise OSError(9, "Bad file descriptor")
+
+
+def test_fd_3_reaches_what_install_sh_reads(monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+    # the real plumbing: bash's 3>file, a write to WIZARD_OUT, then mapfile
+    src = Path(__file__).resolve().parent.parent / "src"
+    write = (
+        f"import sys; sys.path.insert(0, {str(src)!r}); import installwizard; "
+        "installwizard.WIZARD_OUT.write_text('openvpn\\n:resolv-stub\\n')"
+    )
+    script = (
+        'f=$(mktemp); python3 -c "$1" 3>"$f"; mapfile -t M < "$f"; rm "$f"; printf "%s|" "${M[@]}"'
+    )
+    out = _REAL_RUN(
+        ["bash", "-c", script, "_", write], capture_output=True, text=True, check=True
+    ).stdout
+    assert out == "openvpn|:resolv-stub|"

@@ -20,13 +20,14 @@ echo ""
 
 # ── Questions (before any sudo) ───────────────────────────────────────────────
 # Detects what's installed, asks protocols/features (preselected), saves
-# config.json and writes the packages still missing to PKG_FILE.
+# config.json and writes the packages still missing to fd 3 (PKG_FILE; the
+# env marker tells it fd 3 is ours).
 # -B: nothing may be written under the plugin dir (hot reload).
 
 PKG_FILE=$(mktemp)
 trap 'rm -f "$PKG_FILE"' EXIT
-python3 -B "$REPO_DIR/src/vpn_manager.py" --install-wizard "$PKG_FILE" || {
-    echo "==> Cancelled — nothing installed."
+OMARCHY_VPN_WIZARD_FD=3 python3 -B "$REPO_DIR/src/vpn_manager.py" --install-wizard 3>"$PKG_FILE" || {
+    echo "==> Cancelled — nothing changed."
     exit 1
 }
 mapfile -t MISSING < "$PKG_FILE"

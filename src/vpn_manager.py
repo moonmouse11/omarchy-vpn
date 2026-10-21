@@ -2139,9 +2139,8 @@ def main():
     )
     group.add_argument(
         "--install-wizard",
-        metavar="FILE",
-        type=Path,
-        help="install.sh: the setup wizard, then the packages still missing into FILE",
+        action="store_true",
+        help="install.sh: the setup wizard, then the packages still missing on fd 3",
     )
     args = parser.parse_args()
     if args.keys_keeper is not None and args.keys_keeper[0] not in ("ss", "vless"):
@@ -2218,10 +2217,21 @@ def main():
         run_keys_keeper(*args.keys_keeper)
     elif args.settings:
         run_settings_window()
-    elif args.configure or args.install_wizard is not None:
+    elif args.configure or args.install_wizard:
         import installwizard  # noqa: PLC0415 — install-time only, not on the 3 s --status path
 
-        sys.exit(installwizard.run(installwizard.TerminalPrompter(), args.install_wizard))
+        out = None
+        if args.install_wizard:
+            # only install.sh's fd 3: write_text would truncate any other file behind it
+            try:
+                if os.environ.get("OMARCHY_VPN_WIZARD_FD") != "3":
+                    raise OSError
+                os.fstat(3)
+            except OSError:
+                # before any question: config.json stays untouched
+                sys.exit("--install-wizard writes to fd 3: run install.sh (3>FILE)")
+            out = installwizard.WIZARD_OUT
+        sys.exit(installwizard.run(installwizard.TerminalPrompter(), out))
 
 
 if __name__ == "__main__":

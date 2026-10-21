@@ -1,7 +1,7 @@
 """install.sh's questions: detect what's on the machine (no root, no network),
 ask protocols/features with that preselected, list the packages still missing.
 
-`vpn_manager.py --install-wizard FILE` runs it before install.sh's first sudo
+`vpn_manager.py --install-wizard 3>FILE` runs it before install.sh's first sudo
 (as `python3 -B`: nothing may be written under the plugin dir, see CLAUDE.md);
 `--configure` asks the same questions without the package list.
 """
@@ -32,7 +32,7 @@ RESOLVCONF_USERS = ("WireGuard", "AmneziaWG", "OpenVPN")
 XRAY_USERS = ("Happ", "VLESS", "Shadowsocks")  # keys run on Happ's xray
 
 AWG_DIR = AMNEZIA_DIR
-HAPP_DIR = Path("/opt/happ")
+HAPPD = Path("/opt/happ/bin/happd")  # what the plugin talks to, not just the app
 SUB_CACHE_DIR = happmeta.SUB_CACHE_DIR
 KEYS_FILE = STORE
 RESOLV_CONF = Path("/etc/resolv.conf")
@@ -40,6 +40,9 @@ RESOLVED_STUB = Path("/run/systemd/resolve/stub-resolv.conf")
 # last line of the packages file after a yes to the switch: install.sh removes
 # openresolv and links resolv.conf to the stub (never a package name)
 RESOLV_STUB_MARK = ":resolv-stub"
+# --install-wizard's package list: install.sh opens fd 3 on its mktemp file —
+# never a path from argv (written while install.sh is about to run sudo)
+WIZARD_OUT = Path("/dev/fd/3")
 
 
 @dataclass
@@ -85,7 +88,7 @@ def _openvpn() -> str:
 
 
 def _happ() -> str:
-    if not HAPP_DIR.is_dir():
+    if not HAPPD.is_file():
         return ""
     n = _files(SUB_CACHE_DIR, "subscription-*.json")
     return _count(n, "subscription") if n else "installed"
@@ -174,7 +177,7 @@ def hints(cfg: Config, det: Detection, switched: bool = False) -> list[str]:
             "AmneziaWG: install it yourself — "
             "sudo pacman -S amneziawg-tools amneziawg-dkms linux-headers"
         )
-    if any(cfg.provider_visible(p) for p in XRAY_USERS) and not HAPP_DIR.is_dir():
+    if any(cfg.provider_visible(p) for p in XRAY_USERS) and not HAPPD.is_file():
         lines.append(
             "Happ isn't installed (AUR: happ-desktop-bin) — Happ and VLESS/Shadowsocks keys need it"
         )

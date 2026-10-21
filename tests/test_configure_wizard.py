@@ -4,7 +4,6 @@ import pytest
 
 import config
 import installwizard
-from providers.base import ActionResult  # noqa: F401
 
 
 class FakePrompter(installwizard.Prompter):
@@ -178,7 +177,8 @@ def wizard(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(installwizard, "missing_packages", lambda names: [])
     monkeypatch.setattr(installwizard.shutil, "which", lambda b: "/usr/bin/" + b)
-    monkeypatch.setattr(installwizard, "HAPP_DIR", tmp_path)
+    (tmp_path / "happd").write_text("")
+    monkeypatch.setattr(installwizard, "HAPPD", tmp_path / "happd")
     return tmp_path
 
 

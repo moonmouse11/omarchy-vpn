@@ -32,7 +32,7 @@ RESOLVCONF_USERS = ("WireGuard", "AmneziaWG", "OpenVPN")
 XRAY_USERS = ("Happ", "VLESS", "Shadowsocks")  # keys run on Happ's xray
 
 AWG_DIR = AMNEZIA_DIR
-HAPP_DIR = Path("/opt/happ")
+HAPPD = Path("/opt/happ/bin/happd")  # what the plugin talks to, not just the app
 SUB_CACHE_DIR = happmeta.SUB_CACHE_DIR
 KEYS_FILE = STORE
 RESOLV_CONF = Path("/etc/resolv.conf")
@@ -88,7 +88,7 @@ def _openvpn() -> str:
 
 
 def _happ() -> str:
-    if not HAPP_DIR.is_dir():
+    if not HAPPD.is_file():
         return ""
     n = _files(SUB_CACHE_DIR, "subscription-*.json")
     return _count(n, "subscription") if n else "installed"
@@ -177,7 +177,7 @@ def hints(cfg: Config, det: Detection, switched: bool = False) -> list[str]:
             "AmneziaWG: install it yourself — "
             "sudo pacman -S amneziawg-tools amneziawg-dkms linux-headers"
         )
-    if any(cfg.provider_visible(p) for p in XRAY_USERS) and not HAPP_DIR.is_dir():
+    if any(cfg.provider_visible(p) for p in XRAY_USERS) and not HAPPD.is_file():
         lines.append(
             "Happ isn't installed (AUR: happ-desktop-bin) — Happ and VLESS/Shadowsocks keys need it"
         )

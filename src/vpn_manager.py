@@ -1782,7 +1782,7 @@ def _server_group(
     }
 
 
-HAPP_NO_HEADERS_TITLE = "⚠ No servers: provider may need captured Happ headers (README)"
+HAPP_NO_HEADERS_TITLE = "⚠ No servers: the provider sent none (README: Happ setup)"
 
 
 def server_list() -> dict:

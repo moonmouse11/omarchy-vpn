@@ -683,7 +683,7 @@ class HappProvider(VPNProvider):
         cmd = [sys.executable, str(manager), "--happ-keeper", server_name]
         if provider_id:
             cmd.append(provider_id)
-        subprocess.Popen(
+        keeper = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -691,14 +691,16 @@ class HappProvider(VPNProvider):
         )
         deadline = time.time() + 25  # happd can be slow to ack
         try:
-            return self._await_keeper(deadline)
+            return self._await_keeper(deadline, keeper.pid)
         finally:
             _invalidate_procs_cache()
 
-    def _await_keeper(self, deadline: float) -> ActionResult:
+    def _await_keeper(self, deadline: float, pid: int) -> ActionResult:
         while time.time() < deadline:
             state = _read_keeper_state()
-            if state:
+            # only our keeper's verdict: the keeper a switch replaced can write
+            # its "exited" into the just-unlinked file before ours claims it
+            if state and state.get("pid") == pid:
                 if state.get("status") == "connected":
                     return ActionResult(True, f"Connected: {state.get('server', 'Happ')}")
                 if state.get("status") == "error":

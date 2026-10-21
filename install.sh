@@ -18,10 +18,51 @@ fi
 echo "==> omarchy-vpn installer"
 echo ""
 
+# ── Questions (before any sudo) ───────────────────────────────────────────────
+# Detects what's installed, asks protocols/features (preselected), saves
+# config.json and writes the packages still missing to fd 3 (PKG_FILE; the
+# env marker tells it fd 3 is ours).
+# -B: nothing may be written under the plugin dir (hot reload).
+
+PKG_FILE=$(mktemp)
+trap 'rm -f "$PKG_FILE"' EXIT
+OMARCHY_VPN_WIZARD_FD=3 python3 -B "$REPO_DIR/src/vpn_manager.py" --install-wizard 3>"$PKG_FILE" || {
+    echo "==> Cancelled — nothing changed."
+    exit 1
+}
+mapfile -t MISSING < "$PKG_FILE"
+# the wizard's last line after a yes to "Switch DNS to systemd-resolved?"
+SWITCH_RESOLVCONF=""
+if [[ ${#MISSING[@]} -gt 0 && ${MISSING[-1]} == ":resolv-stub" ]]; then
+    SWITCH_RESOLVCONF=1
+    MISSING=("${MISSING[@]:0:${#MISSING[@]}-1}")
+fi
+
 # ── Dependencies ──────────────────────────────────────────────────────────────
 
-echo "==> Installing dependencies..."
-sudo pacman -S --needed --noconfirm python wireguard-tools openvpn openresolv
+echo ""
+echo "==> Root steps: packages, helpers, sudoers rule"
+sudo -v
+
+# openresolv (left by an older install.sh) conflicts with systemd-resolvconf, and
+# --noconfirm answers "no" to removing a conflicting package. Not one transaction:
+# if pacman -S fails after this, a re-run asks again and finishes the switch.
+if [[ -n $SWITCH_RESOLVCONF ]] && pacman -Q openresolv 2>/dev/null | grep -q "^openresolv "; then
+    echo "==> Replacing openresolv with systemd-resolvconf..."
+    sudo pacman -R --noconfirm openresolv
+fi
+
+if (( ${#MISSING[@]} )); then
+    echo "==> Installing: ${MISSING[*]}"
+    sudo pacman -S --needed --noconfirm "${MISSING[@]}"
+else
+    echo "==> All packages already installed"
+fi
+
+if [[ -n $SWITCH_RESOLVCONF ]]; then
+    echo "==> /etc/resolv.conf -> systemd-resolved's stub"
+    sudo ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+fi
 
 # ── sudoers rule ──────────────────────────────────────────────────────────────
 
@@ -97,28 +138,32 @@ echo "==> Creating /etc/openvpn/client directory..."
 sudo mkdir -p /etc/openvpn/client
 sudo chmod 755 /etc/openvpn/client
 
-# ── Fix resolvconf ────────────────────────────────────────────────────────────
-
-if [[ -L /etc/resolv.conf ]]; then
-    echo "==> Fixing /etc/resolv.conf for openresolv..."
-    sudo rm /etc/resolv.conf
-    sudo resolvconf -u
-fi
-
 # ── Backend ───────────────────────────────────────────────────────────────────
 
 echo "==> Installing backend to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 rm -rf "$INSTALL_DIR/src"
 cp -r "$REPO_DIR/src" "$INSTALL_DIR/"
+# the widget compares it with its plugin dir's HEAD after `omarchy plugin update`
+git -C "$REPO_DIR" rev-parse HEAD > "$INSTALL_DIR/installed-commit" 2>/dev/null \
+    || rm -f "$INSTALL_DIR/installed-commit"
+# autostarted WireGuard tunnels come up before login: a drop-in turns IPv6 off
+# first (⚙ IPv6 guard) — profiles whose autostart predates this release too
+python3 "$INSTALL_DIR/src/vpn_manager.py" --ipv6-boot-sync || echo "    (re-run later: python3 $INSTALL_DIR/src/vpn_manager.py --ipv6-boot-sync)"
 
 # ── omarchy-shell bar widget ──────────────────────────────────────────────────
 
-echo "==> Installing bar widget to $PLUGIN_DIR..."
-mkdir -p "$PLUGIN_DIR"
-cp "$REPO_DIR/plugin/manifest.json" "$REPO_DIR"/plugin/*.qml "$PLUGIN_DIR/"
+# `omarchy plugin add` clones this repo into $PLUGIN_DIR and the panel's
+# Finish setup runs this script from there: nothing to copy then.
+if [[ "$REPO_DIR" -ef "$PLUGIN_DIR" ]]; then
+    echo "==> Bar widget: running from $PLUGIN_DIR (omarchy plugin add)"
+else
+    echo "==> Installing bar widget to $PLUGIN_DIR..."
+    mkdir -p "$PLUGIN_DIR"
+    cp "$REPO_DIR/manifest.json" "$REPO_DIR"/*.qml "$PLUGIN_DIR/"
+fi
 omarchy-shell -q shell rescanPlugins
-if ! omarchy plugin list | grep -qE "^$PLUGIN_ID[[:space:]]+enabled"; then
+if ! omarchy plugin list | grep -qE "^${PLUGIN_ID}[[:space:]]+enabled"; then
     omarchy plugin enable "$PLUGIN_ID" --before omarchy.network \
         || omarchy plugin enable "$PLUGIN_ID" --section right \
         || echo "    could not enable it — run: omarchy plugin enable $PLUGIN_ID"
@@ -166,10 +211,5 @@ echo ""
 echo "==> Done!"
 echo "    - bar widget:  omarchy plugin enable/disable $PLUGIN_ID, move with omarchy bar move"
 echo "    - keybinding:  SUPER+Shift+V opens the VPN menu"
+echo "    - settings:    the window's Settings button, or re-run this installer"
 echo ""
-
-# ── Interactive configuration ─────────────────────────────────────────────────
-
-echo ""
-echo "==> Configuration wizard"
-python3 "$INSTALL_DIR/src/vpn_manager.py" --configure

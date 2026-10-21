@@ -17,7 +17,7 @@ _REAL_POPEN = subprocess.Popen
 @pytest.fixture
 def tree(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
-    dirs = {name: tmp_path / name for name in ("wg", "awg", "ovpn", "run", "proc")}
+    dirs = {name: tmp_path / name for name in ("wg", "awg", "ovpn", "run", "proc", "systemd")}
     for d in dirs.values():
         d.mkdir()
     env = {
@@ -27,6 +27,7 @@ def tree(tmp_path, monkeypatch):
         "OVPN_DIR": str(dirs["ovpn"]),
         "PID_DIR": str(dirs["run"]),
         "PROC_DIR": str(dirs["proc"]),
+        "SYSTEMD_DIR": str(dirs["systemd"]),
         "DRY_RUN": "1",
     }
 
@@ -124,7 +125,7 @@ def test_up_down_autostart_rm_run_fixed_commands(tree):
     assert tree("down", "awg", "home").stdout == "awg-quick down home\n"
     assert tree("autostart", "wg", "home", "on").stdout == "systemctl enable wg-quick@home\n"
     assert tree("autostart", "wg", "home", "off").stdout == "systemctl disable wg-quick@home\n"
-    assert tree("rm", "wg", "home").stdout == f"rm -f {tree.dirs['wg']}/home.conf\n"
+    assert tree("rm", "wg", "home").stdout.startswith(f"rm -f {tree.dirs['wg']}/home.conf ")
     assert "wg / awg" in tree("rm", "ovpn", "home").stderr
     assert "no wg profile" in tree("up", "wg", "nope").stderr
 
@@ -163,6 +164,55 @@ def test_audit_lists_configs_on_disk_that_run_root_commands(tree):
         f"{tree.dirs['ovpn']}/corp.ovpn: up /etc/openvpn/up.sh",
         f"{tree.dirs['wg']}/old.conf: PostUp = iptables -A x",
     ]
+
+
+def _enabled_units(tree, tmp_path, *units):
+    """A fake systemctl: `is-enabled` is true only for these units."""
+    fake = tmp_path / "systemctl"
+    fake.write_text(
+        '#!/bin/sh\n[ "$1" = is-enabled ] || { echo "systemctl $*"; exit 0; }\n'
+        f'case "$3" in {"|".join(units) or "none"}) exit 0 ;; esac\nexit 1\n'
+    )
+    fake.chmod(0o755)
+    return {"SYSTEMCTL": str(fake)}
+
+
+def test_ipv6_boot_drops_in_for_autostarted_profiles_only(tree, tmp_path):
+    """Autostarted tunnels come up before login: IPv6 goes off right before
+    them (a drop-in), not on the bar's first --status."""
+    for name in ("home", "work"):
+        tree("import", "wg", name, stdin=WG)
+    env = _enabled_units(tree, tmp_path, "wg-quick@home")
+    result = tree("ipv6-boot", "on", extra_env=env)
+    assert result.returncode == 0
+    assert "daemon-reload" in result.stdout
+    systemd = tree.dirs["systemd"]
+    dropin = systemd / "wg-quick@home.service.d" / "omarchy-vpn-ipv6.conf"
+    assert (
+        "ExecStartPre=/usr/bin/sysctl -q -w net.ipv6.conf.all.disable_ipv6=1" in dropin.read_text()
+    )
+    assert not (systemd / "wg-quick@work.service.d").exists()  # no autostart, no drop-in
+
+
+def test_ipv6_boot_off_and_deleted_profiles_lose_their_drop_ins(tree, tmp_path):
+    tree("import", "wg", "home", stdin=WG)
+    tree("import", "wg", "gone", stdin=WG)
+    env = _enabled_units(tree, tmp_path, "wg-quick@home", "wg-quick@gone")
+    tree("ipv6-boot", "on", extra_env=env)
+    (tree.dirs["wg"] / "gone.conf").unlink()  # deleted outside the helper
+    tree("ipv6-boot", "on", extra_env=env)
+    systemd = tree.dirs["systemd"]
+    assert not (systemd / "wg-quick@gone.service.d" / "omarchy-vpn-ipv6.conf").exists()
+    assert (systemd / "wg-quick@home.service.d" / "omarchy-vpn-ipv6.conf").exists()
+    tree("ipv6-boot", "off", extra_env=env)  # ⚙ IPv6 guard off
+    assert not (systemd / "wg-quick@home.service.d" / "omarchy-vpn-ipv6.conf").exists()
+    assert "on | off" in tree("ipv6-boot", "maybe").stderr
+
+
+def test_rm_also_removes_the_profiles_drop_in(tree):
+    tree("import", "wg", "home", stdin=WG)
+    dropin = tree.dirs["systemd"] / "wg-quick@home.service.d" / "omarchy-vpn-ipv6.conf"
+    assert str(dropin) in tree("rm", "wg", "home").stdout
 
 
 def test_overrides_are_ignored_under_sudo(tree):

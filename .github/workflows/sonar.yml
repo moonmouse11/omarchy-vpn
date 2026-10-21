@@ -1,10 +1,13 @@
 name: SonarQube
 
 on:
+  # Not dev: SonarQube Cloud's free plan analyses only the main branch and
+  # pull requests ("Organization is not allowed to access data from non main
+  # branches" failed every push to dev). PRs into dev are analysed.
   push:
     branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "dev" ]
 
 permissions:
   contents: read
@@ -27,15 +30,18 @@ jobs:
         # Full history enables blame information and new-code detection.
         fetch-depth: 0
 
-    - name: Setup Python
-      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+    - name: Setup uv + Python
+      uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       with:
+        version: "0.12.23"
         python-version: "3.14"
-        cache: pip
-        cache-dependency-path: pyproject.toml
+        activate-environment: true
+        enable-cache: true
+        cache-dependency-glob: uv.lock
 
     - name: Install dependencies
-      run: pip install -e ".[dev]"
+      # exact versions and hashes from uv.lock; wheels only, nothing is built
+      run: uv sync --locked --no-build
 
     - name: Run tests with coverage
       # coverage.py writes <source>.../src</source> plus filenames relative

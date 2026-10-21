@@ -28,6 +28,11 @@ Panel {
 
   readonly property string backend: String(setting("backend",
     Quickshell.env("HOME") + "/.local/share/omarchy-vpn/src/vpn_manager.py"))
+  // `omarchy plugin add` only clones: install.sh (sudo) still has to run, and
+  // again after `omarchy plugin update` — "missing" / "outdated" / "" (set up)
+  property string setupState: ""
+  readonly property string pluginDir: decodeURIComponent(
+    String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, ""))
   readonly property bool showLabel: setting("showLabel", true) !== false
   // Like the clock's `format`: a template in this widget's shell.json entry,
   // placeholders = vpn_manager.LABEL_FIELDS (filled by --status as
@@ -451,6 +456,13 @@ Panel {
     Quickshell.execDetached(["python3", root.backend, flag])
   }
 
+  // sudo asks in the terminal; install.sh restarts the shell when it's done
+  function runSetup() {
+    close()
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation",
+      Util.shellQuote(root.pluginDir + "/install.sh")])
+  }
+
   function openWindow() {
     close()
     refresh()
@@ -599,8 +611,10 @@ Panel {
     if (!data || typeof data !== "object") {
       connected = false
       label = ""
-      tooltip = "VPN: backend not responding\n" + root.backend
-      panelData = { title: "Backend not responding", meta: root.backend, badges: [] }
+      var missing = root.setupState === "missing"
+      tooltip = missing ? "VPN: setup needed" : "VPN: backend not responding\n" + root.backend
+      panelData = { title: missing ? "Setup needed" : "Backend not responding",
+                    meta: missing ? "" : root.backend, badges: [] }
       return
     }
     var klass = data["class"]
@@ -614,7 +628,10 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
+  Component.onCompleted: setupCheck.running = true
+
   onOpenedChanged: if (opened) {
+    if (!setupCheck.running) setupCheck.running = true
     refresh()
     loadServers()
     serverCursor = -1
@@ -674,6 +691,21 @@ Panel {
     function open(): void { root.open() }
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }
+  }
+
+  // outdated only for a git checkout (omarchy plugin add); make install copies
+  Process {
+    id: setupCheck
+    command: ["bash", "-c",
+      "[ -f \"$1\" ] || { echo missing; exit; }\n"
+      + "head=$(git -C \"$2\" rev-parse HEAD 2>/dev/null) || exit 0\n"
+      + "[ \"$head\" = \"$(cat \"$3\" 2>/dev/null)\" ] || echo outdated",
+      "setup-check", root.backend, root.pluginDir,
+      Quickshell.env("HOME") + "/.local/share/omarchy-vpn/installed-commit"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.setupState = String(text || "").trim()
+    }
   }
 
   Process {
@@ -799,6 +831,33 @@ Panel {
         id: column
         width: panelFlick.width
         spacing: Style.space(12)
+
+        Column {
+          width: parent.width
+          spacing: Style.space(8)
+          visible: root.setupState !== ""
+
+          Text {
+            width: parent.width
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            text: root.setupState === "missing"
+              ? "The VPN backend isn't installed yet. Setup installs it with a small root helper and a sudoers rule for it (your password is asked once in a terminal)."
+              : "The plugin was updated: run setup again to update the installed backend and helpers."
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          Button {
+            text: root.setupState === "missing" ? "Finish setup" : "Update setup"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            bordered: true
+            onClicked: root.runSetup()
+          }
+        }
 
         ConnectionSummary {
           width: parent.width

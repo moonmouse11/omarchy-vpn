@@ -65,16 +65,22 @@ def test_a_hidden_providers_tunnel_still_counts(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("up", "ipv6_off", "disabled"),
-    [(True, False, True), (True, True, False), (False, False, False)],
+    ("up", "ipv6_off", "guard", "disabled"),
+    [
+        (True, False, True, True),
+        (True, True, True, False),
+        (False, False, True, False),
+        (True, False, False, False),  # ⚙ IPv6 guard off: the user's call
+    ],
 )
 def test_status_turns_ipv6_off_under_a_tunnel_the_plugin_didnt_start(
-    monkeypatch, up, ipv6_off, disabled
+    monkeypatch, up, ipv6_off, guard, disabled
 ):
     """WireGuard autostart at boot: no guarded_connect ran, so --status is
-    where IPv6 goes off — only when a tunnel is up and IPv6 is still on."""
+    where IPv6 goes off — only when a tunnel is up, IPv6 is still on and the
+    guard is on."""
     conn = VPNConnection(name="nl", provider="WireGuard", active=up)
-    patch_env(monkeypatch, [FakeProvider("WireGuard", [conn])])
+    patch_env(monkeypatch, [FakeProvider("WireGuard", [conn])], cfg=config.Config(ipv6_guard=guard))
     calls = []
     monkeypatch.setattr(vpn_manager.ipv6guard, "is_disabled", lambda: ipv6_off)
     monkeypatch.setattr(

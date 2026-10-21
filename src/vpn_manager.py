@@ -8,7 +8,6 @@ Usage:
 import argparse
 import contextlib
 import fcntl
-import getpass
 import json
 import os
 import re
@@ -18,7 +17,6 @@ import signal
 import subprocess
 import sys
 import time
-from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import NamedTuple, NoReturn
 
@@ -30,7 +28,6 @@ import dnsleak
 import fsutil
 import happmeta
 import ipinfo
-import ipsources
 import ipv6guard
 import killswitch
 import logutil
@@ -46,13 +43,14 @@ from providers.base import (
     VPNConnection,
     iface_rate,
     iface_traffic,
+    run_helper,
     sample_iface_traffic,
 )
 from providers.happ import run_keeper as run_happ_keeper
 from providers.keys import KeysProvider
 from providers.keys import run_keeper as run_keys_keeper
 
-PLUGIN_ID = "omarchy-vpn"  # omarchy-shell plugin id == its IPC target (plugin/manifest.json)
+PLUGIN_ID = "omarchy-vpn"  # omarchy-shell plugin id == its IPC target (manifest.json)
 
 
 def visible_providers() -> list:
@@ -87,7 +85,7 @@ def get_status() -> dict:
     # every provider, hidden ones too: ⚙ Settings hides a protocol from the
     # server list, but a tunnel it has up (autostart, NM) is still a tunnel
     active = active_connections(providers=list(ALL_PROVIDERS))
-    _enforce_ipv6_guard(active)
+    _enforce_ipv6_guard(active, cfg)
 
     if not active:
         return {
@@ -178,7 +176,7 @@ def _dns_badge(conn: VPNConnection) -> dict:
 PROTECTION_CHECKS = ("exit", "dns", "ipv6")
 
 
-# The bar label's labelFormat placeholders (plugin/Widget.qml fills them).
+# The bar label's labelFormat placeholders (Widget.qml fills them).
 LABEL_FIELDS = (
     "label", "provider", "subscription", "server", "count", "state",
     "exit_ip", "exit_country", "exit_flag",
@@ -316,7 +314,13 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
         _dns_badge(first),
         _badge("ipv6", "IPv6 blocked", "ok", "IPv6 is off while the VPN is up")
         if ipv6_off
-        else _badge("ipv6", "IPv6 leaks", "bad", "IPv6 is on and bypasses the tunnel"),
+        else _badge(
+            "ipv6",
+            "IPv6 leaks",
+            "bad",
+            "IPv6 is on and bypasses the tunnel"
+            + ("" if cfg.ipv6_guard else " — IPv6 guard is off in ⚙ Settings"),
+        ),
     ]
     if not _killswitch_unsupported(active):
         badges.append(ks_badge)
@@ -661,7 +665,10 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
         # xray has created its TUN (and happd's process list may be the
         # cached pre-switch one) — a probe then sees nothing up and turned
         # IPv6 ON under a live tunnel. Success is proof enough.
-        _apply_ipv6_guard(ipv6guard.disable())
+        if cfg.ipv6_guard:
+            _apply_ipv6_guard(ipv6guard.disable())
+        else:
+            _sync_ipv6_guard()
     else:
         _sync_ipv6_guard()
     return result
@@ -744,20 +751,31 @@ def _sync_ipv6_guard() -> None:
     """IPv6 must be off while anything is tunneled (none of our providers
     route it, so it would otherwise leak straight past every tunnel) and
     back on once nothing is active."""
-    if active_connections(providers=list(ALL_PROVIDERS)):
+    guard = config.load_config().ipv6_guard  # ⚙ off: IPv6 stays (or comes back) on
+    if guard and active_connections(providers=list(ALL_PROVIDERS)):
         _apply_ipv6_guard(ipv6guard.disable())
     else:
         _apply_ipv6_guard(ipv6guard.enable())
 
 
-def _enforce_ipv6_guard(active: list[VPNConnection]) -> None:
+def _enforce_ipv6_guard(active: list[VPNConnection], cfg) -> None:
     """--status: a tunnel that came up without the plugin (WireGuard autostart
     at boot, the Happ app, NM) gets IPv6 turned off too — the guard used to
     run only inside the plugin's own connect/disconnect. Logged, not notified:
     a failing sudo would otherwise raise a bubble every tick."""
-    if active and not ipv6guard.is_disabled():
+    if active and cfg.ipv6_guard and not ipv6guard.is_disabled():
         guard = ipv6guard.disable()
         logutil.log(f"ipv6 guard: a tunnel is up, IPv6 off: {guard.success} {guard.message}")
+
+
+def sync_ipv6_boot() -> ActionResult:
+    """⚙ IPv6 guard at boot: a systemd drop-in turns IPv6 off before every
+    autostarted WireGuard/AmneziaWG tunnel (they come up before login, long
+    before the bar's first --status) — or no drop-ins with the guard off.
+    Runs on an autostart change, a Settings save and `make install`."""
+    state = "on" if config.load_config().ipv6_guard else "off"
+    code, out = run_helper("ipv6-boot", state)
+    return ActionResult(code == 0, "" if code == 0 else f"IPv6 at boot: {out}")
 
 
 def _apply_ipv6_guard(guard: ActionResult) -> None:
@@ -1358,7 +1376,12 @@ def run_profile_action(action: str, provider_name: str, name: str) -> ActionResu
     if conn is None:
         return ActionResult(False, f"{provider_name}: {name} not found")
     if action == "autostart":
-        return provider.toggle_autostart(conn)
+        result = provider.toggle_autostart(conn)
+        if result.success:
+            boot = sync_ipv6_boot()  # the new autostart gets (or loses) its drop-in
+            if not boot.success:
+                return ActionResult(True, f"{result.message} — {boot.message}")
+        return result
     return provider.delete_config(conn)
 
 
@@ -1553,72 +1576,6 @@ def clear_caches_menu() -> ActionResult:
     return ActionResult(True, f"Cache cleared ({removed} files) — rebuilt automatically")
 
 
-class Prompter(ABC):
-    @abstractmethod
-    def confirm(self, question: str, default: bool) -> bool: ...
-
-    @abstractmethod
-    def text(self, question: str) -> str: ...
-
-
-class TerminalPrompter(Prompter):
-    def confirm(self, question: str, default: bool) -> bool:
-        suffix = "[Y/n]" if default else "[y/N]"
-        try:
-            answer = input(f"{question} {suffix} ").strip().lower()
-        except EOFError, KeyboardInterrupt:
-            return default
-        return default if not answer else answer in ("y", "yes")
-
-    def text(self, question: str) -> str:
-        try:
-            return getpass.getpass(f"{question}: ").strip()
-        except EOFError, KeyboardInterrupt:
-            return ""
-
-
-def run_configure_wizard(prompter: Prompter) -> bool:
-    """The question-by-question walk behind --configure (install.sh's last
-    step, in a terminal). The in-menu ⚙️ Settings is a list instead
-    (settings_tui.py). Never touches an existing config.json unless the
-    user opts in via the first confirm. Returns False when the user
-    declines reconfigure on an existing file; True after save."""
-    if config.CONFIG_PATH.exists():
-        if not prompter.confirm("Config already exists. Reconfigure?", False):
-            return False
-        cfg = config.load_config()
-    else:
-        cfg = config.Config()
-
-    for provider in ALL_PROVIDERS:
-        visible = prompter.confirm(f"Show {provider.name}?", cfg.provider_visible(provider.name))
-        cfg.providers[provider.name.lower()] = visible
-
-    for key, label, _fn in [*TOOLS, ("killswitch", "Killswitch", None)]:
-        visible = prompter.confirm(f"Show tool “{label}”?", cfg.tool_visible(key))
-        cfg.tools_visible[key] = visible
-
-    for source in ipsources.ALL_SOURCES:
-        if source.needs_api_key:
-            answer = prompter.text(f"{source.name} API key (Enter — keep current / skip)")
-            if answer:
-                cfg.ip_sources.setdefault(source.key, {})["api_key"] = answer
-        else:
-            enabled = prompter.confirm(f"Use {source.name}?", source.is_enabled())
-            cfg.ip_sources.setdefault(source.key, {})["enabled"] = enabled
-
-    # no: route xray's DNS the way the subscription says — some pin their
-    # resolvers "direct", which sends every lookup out the real connection
-    tunnel = prompter.confirm(
-        "Force all Happ DNS through the VPN tunnel (ignore subscription DNS routing)?",
-        cfg.dns_mode == "tunnel",
-    )
-    cfg.dns_mode = "tunnel" if tunnel else "subscription"
-
-    config.save_config(cfg)
-    return True
-
-
 # ── ⚙ Settings: a list in a small floating terminal (settings_tui.py) — omarchy.menu
 # can't change a row in place or keep the cursor where it was.
 
@@ -1667,7 +1624,11 @@ def settings_menu() -> ActionResult:
 def run_settings_window() -> None:
     """--settings, inside the terminal settings_menu() opened."""
     if settings_tui.main([p.name for p in ALL_PROVIDERS], _settings_tool_keys()):
-        notify("VPN", "Settings saved")
+        # the IPv6 guard applies now, not on the next connect: the running
+        # tunnel and the drop-ins for boot
+        _sync_ipv6_guard()
+        boot = sync_ipv6_boot()
+        notify("VPN", "Settings saved" + ("" if boot.success else f"\n{boot.message}"))
         refresh_bar()
 
 
@@ -1821,7 +1782,7 @@ def _server_group(
     }
 
 
-HAPP_NO_HEADERS_TITLE = "⚠ No servers: provider may need captured Happ headers (README)"
+HAPP_NO_HEADERS_TITLE = "⚠ No servers: the provider sent none (README: Happ setup)"
 
 
 def server_list() -> dict:
@@ -2094,6 +2055,11 @@ def main():
         help="Run one tool (the app window's Tools buttons; killswitch toggles it)",
     )
     group.add_argument(
+        "--ipv6-boot-sync",
+        action="store_true",
+        help="Drop-ins turning IPv6 off before autostarted tunnels (make install)",
+    )
+    group.add_argument(
         "--favourite",
         nargs="+",
         metavar="PROVIDER NAME [SUBSCRIPTION_ID]",
@@ -2169,7 +2135,12 @@ def main():
     group.add_argument(
         "--configure",
         action="store_true",
-        help="Interactive setup wizard: providers, tools, IP sources/keys",
+        help="Interactive setup wizard: protocols, features, IP sources/keys",
+    )
+    group.add_argument(
+        "--install-wizard",
+        action="store_true",
+        help="install.sh: the setup wizard, then the packages still missing on fd 3",
     )
     args = parser.parse_args()
     if args.keys_keeper is not None and args.keys_keeper[0] not in ("ss", "vless"):
@@ -2192,6 +2163,10 @@ def main():
         refresh_bar()
     elif args.tool:
         _report(run_tool(args.tool))
+    elif args.ipv6_boot_sync:
+        boot = sync_ipv6_boot()
+        print(boot.message or "IPv6 at boot: in sync")
+        sys.exit(0 if boot.success else 1)
     elif args.favourite is not None:
         if len(args.favourite) not in (2, 3):
             parser.error("--favourite takes PROVIDER NAME [SUBSCRIPTION_ID]")
@@ -2242,8 +2217,21 @@ def main():
         run_keys_keeper(*args.keys_keeper)
     elif args.settings:
         run_settings_window()
-    elif args.configure:
-        run_configure_wizard(TerminalPrompter())
+    elif args.configure or args.install_wizard:
+        import installwizard  # noqa: PLC0415 — install-time only, not on the 3 s --status path
+
+        out = None
+        if args.install_wizard:
+            # only install.sh's fd 3: write_text would truncate any other file behind it
+            try:
+                if os.environ.get("OMARCHY_VPN_WIZARD_FD") != "3":
+                    raise OSError
+                os.fstat(3)
+            except OSError:
+                # before any question: config.json stays untouched
+                sys.exit("--install-wizard writes to fd 3: run install.sh (3>FILE)")
+            out = installwizard.WIZARD_OUT
+        sys.exit(installwizard.run(installwizard.TerminalPrompter(), out))
 
 
 if __name__ == "__main__":

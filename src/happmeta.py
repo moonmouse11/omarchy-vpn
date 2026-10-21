@@ -3,7 +3,7 @@
 The full server list comes from the provider's subscription endpoint, fetched
 directly with Happ's User-Agent and HWID (panels answer plain curl with a stub;
 device-limited ones want the HWID too) — or with the app's full request headers
-when captured via scripts/sub-intercept-*. Subscription configs are merged into
+when set in ~/.config/happ-capture/headers.json. Subscription configs are merged into
 runnable xray configs the same way the GUI does it (local inbounds + dns-in +
 dns-out + local routing rules), so any server can be connected headless.
 
@@ -258,7 +258,7 @@ def captured_providers() -> dict[str, str]:
 
 
 def _captured_headers() -> dict[str, str] | None:
-    """Captured Happ request headers (see scripts/sub-intercept-*)."""
+    """Request headers the user put in HEADERS_FILE (README: Happ setup)."""
     try:
         data = json.loads(HEADERS_FILE.read_text())
     except OSError, json.JSONDecodeError:

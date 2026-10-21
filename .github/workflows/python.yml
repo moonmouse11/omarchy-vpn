@@ -43,5 +43,12 @@ jobs:
     - name: Type check (mypy)
       run: mypy src
 
+    - name: Shell scripts (shellcheck)
+      # preinstalled on the runner; the root helper and kill switch are bash
+      run: >
+        shellcheck --severity=warning install.sh uninstall.sh
+        scripts/happ-killswitch scripts/omarchy-vpn-helper scripts/openvpn-dns-updown
+        scripts/happd-sniff-ctl.sh scripts/sub-intercept-ca.sh
+
     - name: Run test suite
       run: pytest

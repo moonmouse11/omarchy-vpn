@@ -162,7 +162,7 @@ else
     cp "$REPO_DIR/manifest.json" "$REPO_DIR"/*.qml "$PLUGIN_DIR/"
 fi
 omarchy-shell -q shell rescanPlugins
-if ! omarchy plugin list | grep -qE "^$PLUGIN_ID[[:space:]]+enabled"; then
+if ! omarchy plugin list | grep -qE "^${PLUGIN_ID}[[:space:]]+enabled"; then
     omarchy plugin enable "$PLUGIN_ID" --before omarchy.network \
         || omarchy plugin enable "$PLUGIN_ID" --section right \
         || echo "    could not enable it — run: omarchy plugin enable $PLUGIN_ID"

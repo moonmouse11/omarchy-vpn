@@ -2222,7 +2222,10 @@ def main():
 
         out = None
         if args.install_wizard:
+            # only install.sh's fd 3: write_text would truncate any other file behind it
             try:
+                if os.environ.get("OMARCHY_VPN_WIZARD_FD") != "3":
+                    raise OSError
                 os.fstat(3)
             except OSError:
                 # before any question: config.json stays untouched

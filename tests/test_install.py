@@ -87,6 +87,7 @@ def test_no_trailing_configure():
 def test_wizard_output_goes_to_fd_3_not_a_path_in_argv():
     # no file path on the command line (Sonar S8707): the list comes back on fd 3
     line = lines()[index("--install-wizard")]
+    assert "OMARCHY_VPN_WIZARD_FD=3 python3" in line
     assert '--install-wizard 3>"$PKG_FILE"' in line
 
 
@@ -95,6 +96,8 @@ def test_install_wizard_flag_takes_no_path(monkeypatch):
 
     seen = []
     monkeypatch.setattr("sys.argv", ["vpn_manager.py", "--install-wizard"])
+    monkeypatch.setenv("OMARCHY_VPN_WIZARD_FD", "3")
+    monkeypatch.setattr(vpn_manager.os, "fstat", lambda fd: None)
     monkeypatch.setattr(
         "installwizard.run", lambda prompter, out: seen.append(out) or 0, raising=True
     )
@@ -109,11 +112,27 @@ def test_install_wizard_without_fd_3_refuses_before_any_question(monkeypatch):
     asked = []
     monkeypatch.setattr("sys.argv", ["vpn_manager.py", "--install-wizard"])
     monkeypatch.setattr("installwizard.run", lambda *a: asked.append(a) or 0)
+    monkeypatch.setenv("OMARCHY_VPN_WIZARD_FD", "3")
     monkeypatch.setattr(vpn_manager.os, "fstat", _closed)
     with pytest.raises(SystemExit) as e:
         vpn_manager.main()
     assert "3>" in str(e.value.code)  # how to run it, not a traceback
     assert asked == []  # nothing asked, config.json untouched
+
+
+def test_install_wizard_ignores_an_fd_3_install_sh_did_not_open(monkeypatch):
+    # a shell's own fd 3 would be truncated by WIZARD_OUT.write_text
+    import vpn_manager
+
+    asked = []
+    monkeypatch.setattr("sys.argv", ["vpn_manager.py", "--install-wizard"])
+    monkeypatch.setattr("installwizard.run", lambda *a: asked.append(a) or 0)
+    monkeypatch.delenv("OMARCHY_VPN_WIZARD_FD", raising=False)
+    monkeypatch.setattr(vpn_manager.os, "fstat", lambda fd: None)  # fd 3 open
+    with pytest.raises(SystemExit) as e:
+        vpn_manager.main()
+    assert "install.sh" in str(e.value.code)
+    assert asked == []
 
 
 def _closed(fd):

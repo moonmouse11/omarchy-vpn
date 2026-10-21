@@ -1,8 +1,11 @@
 name: SonarQube
 
 on:
+  # Not dev: SonarQube Cloud's free plan analyses only the main branch and
+  # pull requests ("Organization is not allowed to access data from non main
+  # branches" failed every push to dev). PRs into dev are analysed.
   push:
-    branches: [ "main", "dev" ]
+    branches: [ "main" ]
   pull_request:
     branches: [ "main", "dev" ]
 

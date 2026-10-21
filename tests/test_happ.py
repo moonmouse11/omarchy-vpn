@@ -489,13 +489,40 @@ def test_connect_passes_provider_to_resolve_and_keeper(tmp_path, monkeypatch):
     assert keeper_calls == [("S", "2")]
 
 
+class Keeper:
+    pid = 4242
+
+
+def test_headless_connect_ignores_a_superseded_keepers_exit(tmp_path, monkeypatch):
+    """A switch unlinks KEEPER_STATE and spawns a keeper; the keeper it
+    replaced can write its "exited" into the empty file before the new one
+    claims it (two connects within a second, 2026-10-20) — not our keeper's
+    verdict, so no "keeper exited before connecting" bubble."""
+    state = tmp_path / "keeper.json"
+    monkeypatch.setattr(happ, "KEEPER_STATE", state)
+
+    def spawn(cmd, **kw):
+        state.write_text(json.dumps({"status": "exited", "pid": 999}))
+        return Keeper()
+
+    def sleep(s):
+        state.write_text(json.dumps({"status": "connected", "server": "S", "pid": 4242}))
+
+    monkeypatch.setattr(happ.subprocess, "Popen", spawn)
+    monkeypatch.setattr(happ.time, "sleep", sleep)
+    assert happ.HappProvider()._headless_connect("S").success
+
+
 def test_headless_connect_passes_provider_on_command_line(tmp_path, monkeypatch):
     monkeypatch.setattr(happ, "KEEPER_STATE", tmp_path / "keeper.json")
     spawned = []
 
     def fake_popen(cmd, **kw):
         spawned.append(cmd)
-        (tmp_path / "keeper.json").write_text(json.dumps({"status": "connected", "server": "S"}))
+        (tmp_path / "keeper.json").write_text(
+            json.dumps({"status": "connected", "server": "S", "pid": 4242})
+        )
+        return Keeper()
 
     monkeypatch.setattr(happ.subprocess, "Popen", fake_popen)
     assert happ.HappProvider()._headless_connect("S", "2").success
@@ -761,7 +788,8 @@ def test_headless_connect_drops_the_process_list_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(happ, "KEEPER_STATE", state)
 
     def spawn(cmd, **kw):
-        state.write_text(json.dumps({"status": "connected", "server": "S"}))
+        state.write_text(json.dumps({"status": "connected", "server": "S", "pid": 4242}))
+        return Keeper()
 
     monkeypatch.setattr(happ.subprocess, "Popen", spawn)
     assert happ.HappProvider()._headless_connect("S").success

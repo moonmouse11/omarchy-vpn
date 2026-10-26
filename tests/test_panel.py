@@ -422,3 +422,25 @@ def test_ipv6_badge_says_when_the_user_turned_the_guard_off(env, guard):
     badge = next(b for b in panel["badges"] if b["id"] == "ipv6")
     assert (badge["label"], badge["state"]) == ("IPv6 leaks", "bad")
     assert ("IPv6 guard is off in ⚙ Settings" in badge["hint"]) is not guard
+
+
+_REAL_APP_CONNECTED = vpn_manager.happ_provider.app_connected
+
+
+@pytest.mark.parametrize(
+    "procs, keeper_alive, gui, expected",
+    [
+        (["xray-core"], False, True, True),  # the app's tunnel
+        (["xray-core"], True, True, False),  # our keeper's, the app merely open
+        (["xray-core"], False, False, False),  # app closed: a leftover we may replace
+        ([], False, True, False),  # app open, nothing up
+    ],
+)
+def test_app_connected_needs_its_tunnel_no_keeper_of_ours_and_the_app(
+    monkeypatch, procs, keeper_alive, gui, expected
+):
+    happ = vpn_manager.happ_provider
+    monkeypatch.setattr(happ, "_happ_processes", lambda fresh=False: procs)
+    monkeypatch.setattr(happ, "app_owns_connection", lambda: not keeper_alive)
+    monkeypatch.setattr(happ, "_gui_running", lambda: gui)
+    assert _REAL_APP_CONNECTED() is expected

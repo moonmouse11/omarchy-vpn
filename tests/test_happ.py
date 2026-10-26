@@ -634,6 +634,31 @@ def test_keeper_does_not_notify_on_user_disconnect(tmp_path, monkeypatch):
     assert notes == []
 
 
+def test_connect_and_keeper_never_fetch_subscriptions(tmp_path, monkeypatch):
+    # a click used to fetch every stale subscription first (15 s x 2 each, in
+    # a row): connects hung past the keeper timeout and clicks piled up
+    # (2026-10-24). The list the click came from is cache-only too.
+    import happmeta
+    from providers.base import ActionResult, VPNConnection
+
+    fetch = []
+    prov = happ.HappProvider()
+    monkeypatch.setattr(prov, "_stop_running", lambda: None)
+    monkeypatch.setattr(prov, "_headless_connect", lambda *a, **kw: ActionResult(True, "ok"))
+    sock = FakeSock(_frame({"request-id": "wm-12345", "status": "started"}))
+    _run_keeper_env(tmp_path, monkeypatch, sock, None)
+    monkeypatch.setattr(
+        happmeta,
+        "resolve_config",
+        lambda name, allow_fetch=True, **kw: fetch.append(allow_fetch) or {"remarks": name},
+    )
+
+    prov.connect(VPNConnection(name="S", provider="Happ", active=False, subscription_id="2"))
+    happ.run_keeper("S", "2")
+
+    assert fetch == [False, False]
+
+
 @pytest.mark.parametrize("mode, tunnel", [("tunnel", True), ("subscription", False)])
 def test_run_keeper_builds_config_with_the_configured_dns_mode(tmp_path, monkeypatch, mode, tunnel):
     import config

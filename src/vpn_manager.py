@@ -376,6 +376,7 @@ def request_ip_update(connection_name: str):
 SWITCH_LOCK = Path.home() / ".cache/vpn-manager/switch.lock"
 PREEMPT_GRACE = 2.0  # s for a superseded switch to stop on SIGTERM before SIGKILL
 PREEMPT_WAIT = 3.0  # s more for the lock after SIGKILL
+HANDOVER_WAIT = PREEMPT_GRACE + PREEMPT_WAIT  # s for a lock no switch of ours names
 PROC = Path("/proc")
 # background checks of the connection being left: their answers would
 # describe the old server (or time out on a dead one) — killed on a switch.
@@ -494,11 +495,22 @@ def switch_lock(action: str):
     SWITCH_LOCK.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(SWITCH_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        if not _try_flock(fd):
+        seen, deadline = None, 0.0
+        while not _try_flock(fd):
             pid, holder = _lock_holder(fd)
-            if not _preempt(fd, pid):
+            if _preempt(fd, pid):
+                logutil.log(f"switch superseded: {holder} -> {action}")
+                break
+            if pid == os.getpid():
+                raise SwitchBusy(holder)  # a nested switch_lock: waiting would wait on itself
+            # mid-handover: another click killed the holder the file still names
+            # and hasn't written its own pid yet, or won the lock off the holder
+            # we were stopping — wait for it, then supersede it
+            if pid != seen:
+                seen, deadline = pid, time.monotonic() + HANDOVER_WAIT
+            elif time.monotonic() >= deadline:
                 raise SwitchBusy(holder)
-            logutil.log(f"switch superseded: {holder} -> {action}")
+            time.sleep(0.1)
         os.ftruncate(fd, 0)
         os.lseek(fd, 0, os.SEEK_SET)
         os.write(fd, f"{os.getpid()}\n{action}".encode())
@@ -532,6 +544,9 @@ def _cancelled(action: str) -> ActionResult:
 def guarded_connect(provider, connection: VPNConnection) -> ActionResult:
     """_guarded_connect() under SWITCH_LOCK — the entry point for every connect."""
     action = f"connecting to {provider.name}: {connection.name}"
+    # before the lock: a refused click must not supersede a switch or abort the app tunnel's checks
+    if happ_provider.app_connected():  # the user's rule: the plugin or the app, never a fight
+        return ActionResult(False, HAPP_APP_CONNECTED)
     try:
         with switch_lock(action):
             return _guarded_connect(provider, connection)
@@ -667,6 +682,7 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
     return result
 
 
+HAPP_APP_CONNECTED = "The Happ app holds the connection — disconnect it in the Happ app first"
 SYS_NET = Path("/sys/class/net")
 OPENVPN_TUN_WAIT = 20.0  # s the connect-time DNS hole stays open for OpenVPN
 

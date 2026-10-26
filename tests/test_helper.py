@@ -170,6 +170,13 @@ def test_wireguard_names_fit_an_interface_name(tree, kind):
     assert tree("import", "ovpn", "a" * 16, stdin="client\nremote h 1194\n").returncode == 0
 
 
+def test_a_long_named_profile_from_before_the_cap_can_still_be_deleted(tree):
+    """rm never runs wg-quick: the path is built by the helper."""
+    old = tree.dirs["wg"] / f"{'a' * 16}.conf"
+    old.write_text(WG)
+    assert tree("rm", "wg", "a" * 16).stdout.startswith(f"rm -f {old} ")
+
+
 def test_unknown_kind_and_verb_are_refused(tree):
     assert "unknown kind" in tree("up", "zz", "home").stderr
     tree("import", "wg", "home", stdin=WG)

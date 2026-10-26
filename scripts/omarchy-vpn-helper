@@ -321,7 +321,8 @@ verb=$1 kind=$2 name=$3
 dir_of "$kind" >/dev/null
 check_name "$name"
 # a longer name isn't an interface name: wg-quick reads it as a path from root's cwd
-[[ $kind == ovpn || ${#name} -le 15 ]] \
+# (rm never runs it, so profiles imported before the cap can still be deleted)
+[[ $kind == ovpn || $verb == rm || ${#name} -le 15 ]] \
     || die "invalid profile name: ${name@Q} (WireGuard names are at most 15 characters)"
 case $verb in
     up)        cmd_up "$kind" "$name" ;;

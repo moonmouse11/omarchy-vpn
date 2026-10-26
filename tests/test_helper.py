@@ -160,6 +160,16 @@ def test_names_are_never_paths_or_options(tree, name):
     assert "invalid profile name" in result.stderr
 
 
+@pytest.mark.parametrize("kind", ["wg", "awg"])
+def test_wireguard_names_fit_an_interface_name(tree, kind):
+    """wg-quick reads a name over 15 chars as a path from root's cwd."""
+    result = tree("up", kind, "a" * 16)
+    assert result.returncode != 0
+    assert "at most 15 characters" in result.stderr
+    assert tree("import", kind, "a" * 15, stdin=WG).returncode == 0
+    assert tree("import", "ovpn", "a" * 16, stdin="client\nremote h 1194\n").returncode == 0
+
+
 def test_unknown_kind_and_verb_are_refused(tree):
     assert "unknown kind" in tree("up", "zz", "home").stderr
     tree("import", "wg", "home", stdin=WG)

@@ -1183,14 +1183,14 @@ def test_happ_hwid_is_the_machine_id(tmp_path, monkeypatch):
     """Happ's X-HWID is QSysInfo::machineUniqueId() — the raw machine id
     (checked against the HWID Happ's GUI shows) — so we stay the same device."""
     machine_id = tmp_path / "machine-id"
-    machine_id.write_text("bf6fa2d1e07f4fbe8889c3e6b6e4f5ba\n")
+    machine_id.write_text("0123456789abcdef0123456789abcdef\n")
     monkeypatch.setattr(happmeta, "MACHINE_ID_FILES", (tmp_path / "missing", machine_id))
     monkeypatch.setattr(happmeta, "happ_version", lambda: "4.5.2")
     happmeta.happ_hwid.cache_clear()
     try:
         assert happmeta.default_headers() == {
             "User-Agent": "Happ/4.5.2",
-            "X-HWID": "bf6fa2d1e07f4fbe8889c3e6b6e4f5ba",
+            "X-HWID": "0123456789abcdef0123456789abcdef",
         }
         monkeypatch.setattr(happmeta, "MACHINE_ID_FILES", (tmp_path / "missing",))
         happmeta.happ_hwid.cache_clear()

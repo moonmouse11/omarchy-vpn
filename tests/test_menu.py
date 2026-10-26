@@ -717,7 +717,7 @@ def test_ip_info_menu_builds_rows(monkeypatch):
     monkeypatch.setattr(vpn_manager, "notify", lambda *a, **k: None)
     monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
     findings = [
-        IPFinding(source="ipwho.is", ip="1.2.3.4", country_name="Germany", org="jogcorp"),
+        IPFinding(source="ipwho.is", ip="1.2.3.4", country_name="Germany", org="examplehost"),
         IPFinding(
             source="ip-api.com",
             ip="1.2.3.4",
@@ -744,7 +744,7 @@ def test_ip_info_menu_builds_rows(monkeypatch):
     assert result.success
     rows = seen[0]
     assert rows[0] == "IP: 1.2.3.4"
-    assert "ipwho.is: Germany · jogcorp" in rows
+    assert "ipwho.is: Germany · examplehost" in rows
     assert "ip-api.com: France · SMARTNET Germany GmbH" in rows
     assert "🏢 Datacenter/Hosting: Yes" in rows
     assert "🕵️ Proxy/VPN detected: No" in rows

@@ -7,7 +7,7 @@ PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 
 # Kill switch first: Lockdown's nft rules outlive the plugin, so they go (checked gone)
 # before anything is removed — a failure there leaves the install intact.
-[ ! -x /usr/local/bin/happ-killswitch ] || sudo /usr/local/bin/happ-killswitch off
+[[ ! -x /usr/local/bin/happ-killswitch ]] || sudo /usr/local/bin/happ-killswitch off
 if sudo nft list table inet happ-ks >/dev/null 2>&1; then
     echo "kill switch rules still active — nothing removed" >&2
     exit 1

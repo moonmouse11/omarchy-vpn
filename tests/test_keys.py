@@ -28,7 +28,7 @@ def test_parse_sip002_with_name():
 
 
 def test_parse_legacy_cipher_rejected():
-    """Legacy ciphers (aes-256-cfb, still handed out by OutlineKeys) were
+    """Legacy ciphers (aes-256-cfb, still handed out by key shops) were
     removed from xray 26 — the import must say so instead of failing at
     connect time."""
     import pytest
@@ -42,10 +42,10 @@ def test_parse_legacy_cipher_rejected():
 
 def test_parse_vless_minimal():
     """The user's real key shape: no query params at all (tcp, no tls).
-    The key-shop " / OutlineKeys.com" suffix is stripped from the name."""
+    The key-shop " / keyshop.example" suffix is stripped from the name."""
     parsed = keys.parse_vless_key(
         "vless://3874802c-d7fb-43e3-aeed-d4413fe444b2@203.0.113.20:2222"
-        "#Germany%20%2341294%20%2F%20OutlineKeys.com"
+        "#Germany%20%2341294%20%2F%20keyshop.example"
     )
     assert parsed["kind"] == "vless"
     assert parsed["id"] == "3874802c-d7fb-43e3-aeed-d4413fe444b2"

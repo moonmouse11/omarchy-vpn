@@ -740,12 +740,12 @@ def test_connections_never_borrow_the_guis_last_server_for_a_tunnel_we_dont_own(
 ):
     """Right after a disconnect the (3 s-cached) process list still showed
     xray-core while our keeper state was already gone: the tunnel was named
-    after Happ.conf's lastServerName (the GUI's last pick, Unlock's
+    after Happ.conf's lastServerName (the GUI's last pick, Provider A's
     "Германия+"), so Waybar showed it connected and the menu's "↻" row
     reconnected *that* server. Only a running GUI may name a tunnel."""
     servers = [
-        {"name": "🇩🇪 Германия+", "provider_id": "u", "provider_name": "Unlock", "config": {}},
-        {"name": "🇵🇱 Польша 1", "provider_id": "a", "provider_name": "ARTΞMIDA", "config": {}},
+        {"name": "🇩🇪 Германия+", "provider_id": "u", "provider_name": "Provider A", "config": {}},
+        {"name": "🇵🇱 Польша 1", "provider_id": "a", "provider_name": "Provider B", "config": {}},
     ]
     _patch_env(monkeypatch, tmp_path, servers, [], ["xray-core"], "🇩🇪 Германия+", None, gui=False)
     conns = happ.HappProvider().connections()

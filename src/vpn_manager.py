@@ -326,7 +326,7 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
                 "Started in the Happ app, not by this plugin — use one or the other",
             )
         )
-    # the pill names the provider: "Happ · ARTEMIDA: 🇩🇪 X" / "WireGuard: nl" -> the rest
+    # the pill names the provider: "Happ · Provider B: 🇩🇪 X" / "WireGuard: nl" -> the rest
     meta = first.label.removeprefix(f"{first.provider} · ").removeprefix(f"{first.provider}: ")
     cache = ipinfo.read_cache()
     exit_ip = ""

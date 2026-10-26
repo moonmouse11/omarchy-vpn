@@ -552,7 +552,7 @@ def test_app_dns_tunnels_and_only_server_bootstrap_goes_direct(xray):
 
 
 def _with_dns_direct_rule(resolver: str) -> dict:
-    """ARTΞMIDA's shape: the subscription pins its own resolver direct."""
+    """Provider B's shape: the subscription pins its own resolver direct."""
     server = copy.deepcopy(_VLESS_REALITY_XHTTP)
     server["dns"] = {"servers": [resolver]}
     server["routing"]["rules"].insert(
@@ -562,7 +562,7 @@ def _with_dns_direct_rule(resolver: str) -> dict:
 
 
 def test_tunnel_dns_mode_beats_a_subscription_rule_pinning_dns_direct(xray):
-    """Germany 1 (ARTΞMIDA) still leaked after #13: its DNS_DIRECT rule sent
+    """Germany 1 (Provider B) still leaked after #13: its DNS_DIRECT rule sent
     1.1.1.1 lookups out the real NIC. dns_mode "tunnel" must override it."""
     resolver = "8.8.8.8"
     log = _routing_log(

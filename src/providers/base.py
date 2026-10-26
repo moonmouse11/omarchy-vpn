@@ -69,7 +69,7 @@ class VPNConnection:
 
     @property
     def label(self) -> str:
-        """'Happ · Wirecat: 🇩🇪 Germany', or 'WireGuard: nl' without a subscription."""
+        """'Happ · Provider C: 🇩🇪 Germany', or 'WireGuard: nl' without a subscription."""
         if self.subscription_name:
             return f"{self.provider} · {self.subscription_name}: {self.name}"
         return f"{self.provider}: {self.name}"

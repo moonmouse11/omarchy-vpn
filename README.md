@@ -1,148 +1,31 @@
 # omarchy-vpn
 
-> **Status:** built for **Omarchy 4** (omarchy-shell bar widget, panel and window). The
-> Omarchy 3 (Waybar + Walker) version lives in its own repository —
-> [waybar-vpn-manager](https://github.com/moonmouse11/waybar-vpn-manager)
-> (archived at v0.3.0).
+A VPN manager for the [Omarchy](https://omarchy.org/) 4 shell: a bar widget, a panel and an app
+window for **WireGuard, AmneziaWG, OpenVPN, VLESS and Shadowsocks keys, Happ subscriptions** and
+any VPN managed by **NetworkManager**.
 
-A VPN manager plugin for the [Omarchy](https://omarchy.org/) shell with support for
-**WireGuard, AmneziaWG, OpenVPN, Shadowsocks (ss://), VLESS (vless://), Happ** and any VPN managed by **NetworkManager**.
-Built for Arch Linux with Hyprland / [Omarchy](https://omarchy.org/).
-
-A bar widget with a panel (left click) and an app window — **SUPER+Shift+V**, a right click on
-the widget, or `m` in the panel: every connection with search and ping on the left, the
-connection's state, protection checks and tools on the right.
+> Omarchy 3 (Waybar + Walker) is served by
+> [waybar-vpn-manager](https://github.com/moonmouse11/waybar-vpn-manager) (archived at v0.3.0).
 
 ## Features
 
-- **Bar widget + panel** — an omarchy-shell plugin (`omarchy-vpn`): lock icon + active
-  connection, dimmed when nothing is up; updates the moment a connect/disconnect
-  finishes. A left click opens a panel: Protected / At risk / Not protected, the
-  connection, exit IP and speed, a switch to disconnect, and protection badges —
-  exit country vs the server's flag, DNS (last leak test for this server; click to
-  run one), IPv6, kill switch (✓ confirmed, ? unchecked, ⚠ problem). Below them, every
-  server: Happ grouped per subscription (`✓ reachable/total · median ping`), WireGuard,
-  AmneziaWG, OpenVPN and keys; the group holding the active server is open, each open group
-  starts with "⚡ Auto — best ping". Click (or Enter) connects, on the active one disconnects;
-  `/` filters by name, protocol or the flag's country code (`pl` finds "Польша"). **Ping**
-  next to SERVERS measures every server's delay like the Happ app (a request through each
-  server, via xray under happd — works under the kill switch too; the bar shows `ping 23/150`
-  meanwhile); ⟳ on a group pings that subscription/provider, a click on a server's ping (or
-  `p` on the selected row) pings just that one — those queue up and show "…" until done. Pings are measured only then; a `~` ping is over a day old, `—` means a
-  WireGuard/OpenVPN server couldn't be pinged under the kill switch. The lock and
-  "Protected" show only once exit, DNS and IPv6 have all passed — until then
-  "Unverified". ⚙ Settings → "Run the DNS leak test after every connect" (off by
-  default) runs that test silently in the background and only notifies on a leak
-- **App window** — Locations (all connections, filter, ping) next to Connection (state,
-  exit IP, protection badges) and Tools; same keys as the panel. Protocols (Happ, WireGuard,
-  AmneziaWG, VLESS, Shadowsocks, OpenVPN, NetworkManager — empty ones too) show as a tree
-  (default; the bar panel always uses it), tabs or a sidebar: ⚙ Settings → "Protocols in the
-  VPN window"; `[`/`]` switch tabs. **+ Import** (or `i`) on a protocol imports a config —
-  a path or the desktop file chooser — or a pasted VLESS/SS key; a right click on a
-  WireGuard/AmneziaWG/NetworkManager server (or `a` / `x`) toggles its autostart or deletes it.
-  **Quick connect**: star a server (☆ on the row, or `s`) and it gets a chip above the list, next to
-  the last three servers you connected; the power switch reconnects the last one.
-- **Happ headless** — full server list straight from the provider subscriptions,
-  configs generated like the GUI does; connect/switch any server **without opening
-  the Happ GUI** (it keeps working in parallel, state is shared via happd)
-- **Ping + info in labels** — delay measured on demand (the panel's Ping button),
-  non-standard protocols shown next to server names
-- **Killswitch** — nftables rules: no tunnel → no internet at all; three modes
-  (off / auto-with-Happ-only / auto-with-every-provider), see [Killswitch](#killswitch)
-- **IPv6 leak guard** — none of the providers tunnel IPv6, so a live IPv6 route
-  (including IPv6 DNS) would otherwise bypass every tunnel entirely; disabled
-  system-wide for as long as any connection is active, restored once idle — also at boot,
-  before a WireGuard autostart tunnel comes up (a systemd drop-in). ⚙ Settings → "IPv6 guard"
-  turns it off if you'd rather keep IPv6. The boot drop-in follows autostart set in the app (right
-  click → Toggle autostart); after a `systemctl enable wg-quick@…` of your own, run
-  `python3 ~/.local/share/omarchy-vpn/src/vpn_manager.py --ipv6-boot-sync`. OpenVPN autostart isn't
-  managed by the plugin and gets no drop-in
-- **DNS through the tunnel** — xray's resolver (Happ, VLESS, Shadowsocks) sends
-  every lookup through the tunnel; only the server's own hostname resolves
-  directly. `dns_mode: "subscription"` keeps a subscription's own DNS routing
-  instead (some route their resolvers `direct`)
-- **Errors as notifications** — a config the installed xray rejects (e.g. after
-  a Happ update), a tunnel that died for good, or a failed tool shows a critical
-  notification with the reason instead of failing silently
-- **User config** — hide providers, auto-killswitch mode, exit-IP refresh interval
-  (`~/.config/vpn-manager/config.json`)
-- **NetworkManager provider** — shows/controls any VPN connection NM manages
-  (openvpn, wireguard, vpnc, ikev2, openconnect, …)
-- **Tools** — DNS Leak Test, IP Info, Speed Test, Refresh All, Clear Caches,
-  Settings and Killswitch, one button each in the app window. The long
-  ones (DNS Leak Test, IP Info, Speed Test) report progress in one notification
-  updated step by step
-- **DNS Leak Test** — bash.ws's protocol plus checks of its own: resolvers
-  tagged by ASN / country, the exit country compared with the server's flag
-  (cross-checked with a second geo database), the IPv6 state
-- **Speed Test** — preset services (Cloudflare, OVH, Hetzner), remembered custom
-  URLs or all of them in a row; throughput in Mbit/s, with or without a VPN
-- **Pluggable IP sources** — multi-source exit-IP/reputation lookups (free
-  sources on by default; keyed sources like AbuseIPDB/IPQualityScore once an
-  API key is configured), managed from the same `~/.config/vpn-manager/config.json`
-- **Settings** — the window's Settings button opens a small floating terminal with
-  every option and its current value: ↑/↓ to move, Space to change it in place,
-  `s` to save, `q` to quit (`vpn_manager.py --settings` runs it in any terminal). The installer's
-  questions (`--configure` asks them again in any terminal) pick protocols and features in
-  two lists
-
-## Requirements
-
-**Core (status, WireGuard/OpenVPN):**
-
-- [Omarchy](https://omarchy.org/) 4 — `omarchy-shell` (bar widget plugin) and
-  `omarchy-file-select` (the import file chooser)
-- `python` (stdlib only, no pip packages)
-- `wireguard-tools` (`wg-quick`), `openvpn`, a `resolvconf` (`systemd-resolvconf`, or
-  `openresolv` without systemd-resolved) — only for the protocols you pick
-- `iproute2` (`ip`, `ss`), `nftables` (killswitch), `sudo` (NOPASSWD rules from `install.sh`)
-- `libnotify` (`notify-send`; progress is updated in place with `-p`/`-r`, an
-  older `notify-send` shows each step separately), `curl`, `procps-ng` (`pgrep`/`pkill`)
-- `systemd` (`systemctl`: WireGuard autostart and its IPv6 drop-in), `systemd-resolved`
-  (`resolvectl`: DNS pushed by an OpenVPN server), `git` (the setup check compares commits)
-
-`install.sh` installs with `pacman` only what the protocols and features you pick need and
-isn't installed yet (`wireguard-tools`, `openvpn`, a `resolvconf`, `nftables` for the kill switch);
-the rest ships with Omarchy. Happ (AUR: `happ-desktop-bin`) and AmneziaWG (`amneziawg-tools`,
-`amneziawg-dkms`) you install yourself — the installer says so when you pick them.
-
-**Optional providers, detected at runtime:**
-
-- `Happ` (`/opt/happ`, `happd`) — Happ subscriptions **and** the shared xray-core
-  (`/opt/happ/bin/core/xray`) that headless-runs imported `ss://`/`vless://` keys
-- `networkmanager` (`nmcli`) — OpenConnect/IKEv2/L2TP/… via NM plugins
-- Keys providers (`Shadowsocks`, `VLESS`) need the Happ installation for the xray binary
-- `AmneziaWG` (`amneziawg-tools` + `amneziawg-dkms`, not installed by `make install` —
-  dkms needs matching `linux-headers`) — obfuscated WireGuard via `awg-quick`,
-  configs under `/etc/amnezia/amneziawg/`
-
-**What setup changes as root** (`install.sh`, undone by `uninstall.sh` unless noted):
-
-- `/usr/local/bin/omarchy-vpn-helper`, `happ-killswitch`, `openvpn-dns-updown` — root-owned
-  copies from `scripts/`
-- `/etc/sudoers.d/vpn-manager` — passwordless sudo for your user on exactly those entry points
-  plus `sysctl -w net.ipv6.conf.{all,default}.disable_ipv6={0,1}` (see
-  [Killswitch](#killswitch) and the IPv6 guard)
-- `/etc/wireguard`, `/etc/amnezia/amneziawg` made listable (`o+rx`, not readable configs),
-  `/etc/openvpn/client` created — kept on uninstall
-- `/etc/resolv.conf` is left alone — except when an older install replaced it with an
-  `openresolv` file and you answer yes to switching back: then `openresolv` is removed,
-  `systemd-resolvconf` installed and the file linked to systemd-resolved's stub again
-- `/etc/systemd/system/{wg,awg}-quick@NAME.service.d/omarchy-vpn-ipv6.conf` for profiles with
-  autostart on (IPv6 guard) — removed with their profile or with the guard off
-- nftables table `inet happ-ks` while the kill switch is on
-
-As your user: `~/.local/share/omarchy-vpn` (the backend), a `-- >>> omarchy-vpn` block in
-`~/.config/hypr/bindings.lua`, `~/.config/vpn-manager` (settings, keys, favourites — kept on
-uninstall) and `~/.cache/vpn-manager`.
-
-**Network services** the plugin talks to (besides your VPN servers and subscriptions):
-`ipwho.is` (exit IP and its country, `ifconfig.me` as fallback), `ip-api.com` (ASN/hosting flags,
-free, no key),
-`bash.ws` (DNS leak test), `www.gstatic.com/generate_204` (ping through each server),
-`speed.cloudflare.com` / `proof.ovh.net` / `nbg1-speed.hetzner.com` (speed test, on demand).
-AbuseIPDB and IPQualityScore only with an API key you set. IP lookups send only the IP being
-looked up; while a VPN is up, they go through it.
+- **Bar widget** — a lock icon with the active connection; a left click opens the panel, a right
+  click (or **SUPER+Shift+V**) the app window.
+- **Every server in one list** — Happ grouped by subscription, WireGuard, AmneziaWG, OpenVPN,
+  imported keys and NetworkManager VPNs. Filter with `/` (by name, protocol or country code),
+  connect with a click or Enter, star favourites for quick connect.
+- **Happ without the Happ window** — servers come straight from your subscriptions and connect
+  in the background; the Happ app keeps working alongside.
+- **Protection checks** — the panel says *Protected* only once the exit country, DNS and IPv6
+  all check out; otherwise *Unverified* or *At risk*, with the reason.
+- **Kill switch** — no tunnel, no internet (see [Kill switch](#kill-switch)).
+- **IPv6 leak guard** — IPv6 is off while a VPN is up (none of these tunnels carry it), also at
+  boot for WireGuard autostart.
+- **DNS through the tunnel** for Happ and keys.
+- **Tools** — DNS leak test, IP info, speed test, ping through each server, refresh
+  subscriptions, clear caches.
+- **Import and manage profiles** — a config file or a pasted `vless://` / `ss://` key; toggle
+  autostart or delete WireGuard/AmneziaWG/NetworkManager profiles.
 
 ## Install
 
@@ -150,281 +33,98 @@ looked up; while a VPN is up, they go through it.
 omarchy plugin add https://github.com/moonmouse11/omarchy-vpn --enable
 ```
 
-`omarchy plugin add` only clones the repo — it never runs code or sudo. The widget then shows
-**Setup needed**: open its panel and press **Finish setup**. That opens a terminal running the
-plugin's `install.sh` (review it first: `~/.config/omarchy/plugins/omarchy-vpn/install.sh`),
-which asks for your sudo password once. Run it by hand instead if you prefer:
+`omarchy plugin add` only downloads the plugin. The widget then shows **Setup needed**: open its
+panel and press **Finish setup**. A terminal opens, asks which protocols and features you want,
+then your sudo password once, and installs what's missing. You can review the script first:
+`~/.config/omarchy/plugins/omarchy-vpn/install.sh` (or run it yourself).
 
-```bash
-~/.config/omarchy/plugins/omarchy-vpn/install.sh
-```
+After `omarchy plugin update omarchy-vpn` the panel shows **Update setup** — press it once more.
 
-After `omarchy plugin update omarchy-vpn` the panel shows **Update setup** until `install.sh`
-has run again (the backend, the helper and the kill switch script are copies).
+From a checkout instead: `git clone https://github.com/moonmouse11/omarchy-vpn && cd omarchy-vpn && make install`.
 
-Or from a checkout:
+**You install yourself, if you want them:** Happ (AUR: `happ-desktop-bin` — also needed for
+VLESS/Shadowsocks keys) and AmneziaWG (`amneziawg-tools`, `amneziawg-dkms`). The installer
+reminds you when you pick them.
 
-```bash
-git clone https://github.com/moonmouse11/omarchy-vpn
-cd omarchy-vpn
-make install
-```
+### What setup changes
 
-The installer (`install.sh`):
-1. Asks what to set up, before any password: finds what's already there (WireGuard/OpenVPN
-   profiles, Happ subscriptions, keys, NetworkManager VPNs), then two lists — protocols and
-   features (kill switch, IPv6 guard, DNS through the tunnel, DNS leak test after connect,
-   IP sources) — preselected from what it found, or from your settings on a re-run (Enter keeps
-   them); API keys on a first install. Esc cancels before anything changes. Without a terminal
-   it keeps the preselection. Asked again with
-   `python3 ~/.local/share/omarchy-vpn/src/vpn_manager.py --configure` or the window's Settings
-2. Asks for the password once and installs the missing packages only (`pacman`)
-3. Writes a `sudoers` rule for three fixed entry points only (validated with `visudo -cf`):
-   `omarchy-vpn-helper`, `happ-killswitch` and the IPv6 guard's `sysctl` calls
-4. Installs `omarchy-vpn-helper` (WireGuard/AmneziaWG/OpenVPN: profile names only, never
-   paths; refuses imports with WireGuard `PostUp`/`PreUp`/… or OpenVPN `up`/`plugin`/… lines —
-   they would run as root) and `happ-killswitch`, root-owned, to `/usr/local/bin`
-5. Copies the backend to `~/.local/share/omarchy-vpn/src/`
-6. Installs the bar widget plugin to `~/.config/omarchy/plugins/omarchy-vpn/` (already there
-   after `omarchy plugin add`) and enables it right before `omarchy.network` (move it with `omarchy bar move omarchy-vpn …`,
-   remove it with `omarchy plugin disable omarchy-vpn`)
-7. Appends a `SUPER+Shift+V` binding to `~/.config/hypr/bindings.lua` (idempotent)
-8. Removes an old Omarchy 3 install (`~/.config/waybar/vpn-manager`) unless a running
-   connection still uses it
-
-The shell and Hyprland pick everything up live — no restart needed.
-
-Widget settings (`bar.layout.right[]` entry in `~/.config/omarchy/shell.json`, or
-`omarchy bar set omarchy-vpn <key> <value>`): `interval` (seconds, default 3),
-`showLabel` (`false` = icon only), `labelFormat` (below). Clicks: left = panel, right = window,
-middle = refresh. Panel keys: `j`/`k` move, `Enter` connect/disconnect, `h`/`l` collapse/expand a
-group, `/` filter (`Esc` leaves it), `t` toggle, `m` window, `d` DNS leak test, `f` cycle label
-presets, `r` refresh, `Esc` close.
-
-#### Bar label template
-
-`labelFormat` works like the clock's `format`: a template with placeholders, default
-`{label}`. Set it with `omarchy bar set omarchy-vpn labelFormat '{server} · {ping}'`, or press `f`
-in the panel to cycle the presets — the choice is saved to `shell.json`.
-
-| Placeholder | Example |
-|---|---|
-| `{label}` | `Happ · Unlock VPN: 🇩🇪 Germany` |
-| `{provider}` · `{subscription}` · `{server}` | `Happ` · `Unlock VPN` · `🇩🇪 Germany` |
-| `{count}` | `1` — active connections |
-| `{state}` | `Protected` / `Unverified` / `At risk` |
-| `{exit_ip}` · `{exit_country}` · `{exit_flag}` | `31.77.129.6` · `DE` · `🇩🇪` |
-| `{rate}` · `{down}` · `{up}` | `↓ 260 B/s ↑ 321 B/s` · `260 B/s` · `321 B/s` |
-| `{total}` · `{total_down}` · `{total_up}` | session traffic of the tunnel interface |
-| `{ping}` | `312 ms` — delay through the server (Happ/keys; TCP RTT for WireGuard/OpenVPN), from the last Ping |
-| `{protocol}` | `vless/grpc/reality` (Happ), else the provider |
-| `{interface}` | `happ-xray` |
-| `{sub_traffic}` · `{sub_expire}` | `0 GB / 75 GB` · `20.10.2026` — the subscription panel's |
-| `{dns}` · `{ipv6}` · `{killswitch}` | the panel badges: `DNS private`, `IPv6 blocked`, `Kill switch on` |
-| `{activity}` | `ping 23/150` while a Ping runs — added after the label automatically unless the template places it |
-
-A placeholder with no value right now (no ping yet, no subscription for WireGuard) disappears
-with its separator: `{subscription}: {server}` → `nl`, `{server} ({ping})` → `🇩🇪 Germany`. When
-nothing is left, the label falls back to `{label}`. An unknown placeholder stays as typed.
-
-### Happ setup (only if no servers show up)
-
-Happ subscriptions are fetched directly the way Happ itself asks for them:
-`User-Agent: Happ/<installed version>` and `X-HWID` — Happ's device id, which
-is this machine's `/etc/machine-id`. Panels answer a plain `curl` with a stub,
-and device-limited ones want the HWID; sending Happ's own makes the plugin the
-same device as the app, so it never takes another slot. Nothing to set up, no
-sudo.
-
-A provider that still refuses (device limit reached, unsupported client) shows
-up in the window's server list as `<provider> · ⚠ <its message>`. Free a device slot in
-the provider's bot. A panel that wants other headers too: put them in
-`~/.config/happ-capture/headers.json` as one JSON object —
-`{"User-Agent": "…", "X-Hwid": "…", …}` — and `chmod 600` it (they identify your
-device to the provider); it replaces the default headers.
-
-The full server list, generated configs, ping and headless connect then
-work out of the box; subscriptions refresh in the background (hourly, or
-the window's Refresh subscriptions) and new servers from the provider appear
-automatically.
+- Installs only the packages your picks need (`wireguard-tools`, `openvpn`, a `resolvconf`).
+- Adds three root-owned helpers to `/usr/local/bin` (`omarchy-vpn-helper`, `happ-killswitch`,
+  `openvpn-dns-updown`) and a sudoers rule (`/etc/sudoers.d/vpn-manager`) that lets your user run
+  exactly those, plus the IPv6 guard's `sysctl` calls, without a password. The helper refuses
+  VPN configs that would run commands as root.
+- Copies the app to `~/.local/share/omarchy-vpn` and adds the SUPER+Shift+V binding to
+  `~/.config/hypr/bindings.lua`.
+- `/etc/resolv.conf` is left alone, unless you agree to switch it back to systemd-resolved
+  when the installer asks.
 
 ## Usage
 
-- **SUPER+Shift+V** or a right click on the bar widget → app window
-- Left click on the bar widget → panel (state, exit IP, protection badges)
-- Status tooltip: traffic, exit IP + country
-- Logs: `~/.local/state/vpn-manager/vpn-manager.log`
-- Caches: `~/.cache/vpn-manager/` (exit IP, pings, subscriptions)
-- After a Happ update breaks headless connect, the critical notification carries
-  xray's own error; the log has the full output
+| Where | How |
+|---|---|
+| Panel | left click on the widget |
+| App window | SUPER+Shift+V, a right click on the widget, or `m` in the panel |
+| Connect / disconnect | click a server, or move with `j`/`k` and press Enter |
+| Filter | `/` (Esc leaves it) |
+| Ping | the Ping button, ⟳ on a group, a click on a server's ping, or `p` |
+| Favourite | ☆ on a row, or `s` |
+| Import a profile | **+ Import** on a protocol in the window, or `i` |
+| Autostart / delete | right click on a server in the window, or `a` / `x` |
+| DNS leak test | the DNS badge (when it isn't green), or `d` |
 
-### User config (`~/.config/vpn-manager/config.json`)
+### Settings
 
-```jsonc
-{
-  "providers": {"openvpn": false},      // hide providers from menu/status
-  "killswitch_mode": "happ",            // "off" | "happ" | "all" — auto-manage killswitch
-  "killswitch_lockdown": true,          // keep blocking while no VPN is up
-  "exit_ip": {"enabled": true, "max_age_seconds": 600},
-  "dns_mode": "tunnel",                 // "tunnel" | "subscription" — who routes xray's DNS
-  "speed_test_urls": ["http://10.0.0.5/100MB.bin"],  // extra Speed Test targets
-  "ip_sources": {                       // IP Info source configuration
-    "abuseipdb": {"api_key": "..."},    // keyed sources: enabled by setting api_key
-    "ipwhois": {"enabled": true}        // free sources: enabled by default, opt-out here
-  },
-  "tools_visible": {"dns_leak_test": true, "killswitch": true}  // hide the window's Tools buttons
-}
-```
+The window's **Settings** button opens every option in a small terminal: Space changes one,
+`s` saves, `q` quits. Re-running the installer asks the setup questions again.
 
-Use the window's Settings button (or the terminal wizard, `--configure`) instead of
-hand-editing `ip_sources`/`tools_visible`/`dns_mode` if you'd rather be walked through it.
+The bar label can be changed with `omarchy bar set omarchy-vpn labelFormat '{server} · {ping}'`
+(or `f` in the panel cycles presets). Useful placeholders: `{label}`, `{server}`, `{provider}`,
+`{ping}`, `{exit_country}`, `{exit_flag}`, `{rate}`, `{state}`.
+`omarchy bar set omarchy-vpn showLabel false` shows the icon only.
 
-`dns_mode: "tunnel"` (the default) costs a subscription's split DNS: `.ru` names
-that it would resolve via Yandex DNS resolve through the tunnel too — the
-traffic itself still splits. Pick `"subscription"` if that matters more than
-DNS privacy.
+## Kill switch
 
-## Killswitch
+When on, nothing leaves the computer except through the VPN — local network devices stay
+reachable. Pick a mode in Settings:
 
-`happ-killswitch on` blocks all outbound traffic (IPv4 and IPv6) except the tunnel
-interface(s), xray's own marked connections, local networks and the VPN server IPs
-(whitelist refreshed on connect via `happ-killswitch detect` plus any resolved endpoint
-IPs). DNS leaves only through the tunnel or to the LAN: while a connect resolves its
-server's hostname, port 53 is opened to the system's resolvers only, and closed again
-once the connect is done. The one standing exception is happd's own cgroup (happd and the
-xray it runs): it may reach the system resolvers on port 53, because xray resolves a
-hostname server that way — without it such servers can't connect under the kill switch.
-A rule change replaces the whole table in one `nft -f`
-transaction, so a server switch never leaves a moment without rules.
+- **off** — only the window's Kill switch button turns it on;
+- **happ** — on automatically while Happ is connected;
+- **all** — on automatically for every connection.
 
-**Lockdown** (⚙ Settings, `killswitch_lockdown`, on by default): with no VPN up the
-kill switch keeps blocking until you turn it off. With Lockdown off the rules exist only
-while a VPN is connected. Local networks stay reachable either way.
-
-Three modes (`killswitch_mode` in config, or the window's Kill switch button):
-
-- **off** — managed manually (the window's Kill switch button), no auto behaviour
-- **happ** — auto-enabled alongside Happ only; suspended while any other
-  provider is connected, re-arms on the next Happ connect
-- **all** — auto-enabled for every connect; WireGuard/AmneziaWG/OpenVPN/
-  VLESS/Shadowsocks endpoints are resolved from their configs and
-  whitelisted too (NetworkManager isn't parsed yet — suspended for it, and the
-  kill switch isn't shown while a NetworkManager connection is up)
-
-Rollback: `happ-killswitch off` (rules don't survive reboot anyway).
-`happ-killswitch rules [args]` prints the ruleset `on` would load, without applying it.
-The script is root-owned in `/usr/local/bin`: changes reach it only with `make install`.
-
-## Architecture
-
-```
-omarchy-shell widget (Widget.qml)
-  --(3 s)--> vpn_manager.py --status --> JSON (aggregated, cached exit IP)
-  panel + window (AppWindow.qml) --> --servers / --connect / --tool KEY
-  <-- omarchy-shell omarchy-vpn refresh (after every action)
-Happ connect --> --happ-keeper (long-lived happd session owning xray)
-              --> happd (root daemon) --> xray (TUN)
-
-src/
-  vpn_manager.py      entry point: status, server list, connect, tools
-  installwizard.py    installer questions: detect, protocols/features, missing packages
-  settings_tui.py     ⚙ Settings list (curses, in a floating terminal)
-  config.py           user config load/save (providers, tools_visible, ip_sources, dns_mode, …)
-  notifyutil.py       notify-send wrapper: text sanitising, in-place progress
-  fsutil.py           atomic 0600 JSON writes for state/cache/config
-  ipinfo.py           exit IP cache (+ --update-ip worker)
-  happmeta.py         Happ subscriptions, config merge, ping cache
-  delayping.py        the Ping button: delay through each server via xray under happd
-  killswitch.py       nft killswitch wrapper (mode-aware)
-  ipv6guard.py        disables IPv6 system-wide while any tunnel is active (leak guard)
-  reputation.py       exit-IP reputation orchestrator over ipsources/
-  dnsleak.py          DNS leak test (dnsleaktest.com protocol, no external script)
-  speedtest.py        tunnel throughput: preset services + custom URLs
-  logutil.py          file logging
-  providers/          VPN backend registry + implementations (VPNProvider ABC)
-  ipsources/          IP-intelligence source registry + implementations (IPInfoSource ABC)
-scripts/              happ-killswitch, openvpn-dns-updown
-tests/                pytest suite
-```
-
-## Development
-
-Pull requests go to `dev`, not `main` — see [CONTRIBUTING.md](CONTRIBUTING.md).
+**Lockdown** (on by default) keeps blocking even when no VPN is up, so a dropped tunnel never
+falls back to your real connection. If you're ever locked out:
 
 ```bash
-sudo pacman -S uv         # dev tools are locked in uv.lock
-uv sync --locked          # .venv with exactly those versions
-uv run pytest             # test suite
-make lint                 # ruff check, ruff format --check, mypy
-uv run ruff format src tests
+sudo /usr/local/bin/happ-killswitch off
 ```
 
-The test suite mocks every `subprocess`/socket call it's aware of (`happd`,
-`wg-quick`, `awg-quick`, `nmcli`, …), so it never needs real network or a real
-VPN connection — it's testing the plugin's own logic, not real connectivity.
-If you're running it on a machine with a live Happ/VPN connection you care
-about and want a hard guarantee against a mocking gap reaching real system
-state, run it containerized instead — no host `/tmp`/`/run`/`/etc/wireguard`
-mounts, no network:
+The rules don't survive a reboot.
 
-```bash
-make test-docker-build   # once, or after pyproject.toml's dev deps change
-make test-docker         # every run after that
-```
+## Happ setup
 
-The image also carries pinned upstream xray releases: `tests/test_xray_compat.py`
-checks every config the plugin generates against each of them (`xray run -test`,
-plus a real run that checks where DNS is routed), so an xray release that
-drops a field we emit is caught before Happ ships it. Skipped outside the image.
+Usually nothing to do: subscriptions are fetched the way the Happ app fetches them, as the same
+device, so no extra device slot is used.
 
-CI (`.github/workflows/`) runs on GitHub-hosted runners, which have none of
-your local VPN/happd state to begin with — the main suite uses the plain venv
-path. `xray-compat.yml` builds the same `Dockerfile.test` image for the pinned
-xray versions on every pull request, and weekly tests the newest upstream
-release (pre-releases included). Installing the plugin (`make install`) never
-touches Docker.
+If a provider still refuses (device limit, unsupported client), the server list shows
+`<provider> · ⚠ <its message>` — free a device slot with your provider. If a provider needs
+other request headers, put them in `~/.config/happ-capture/headers.json` as one JSON object
+(`{"User-Agent": "…", "X-Hwid": "…"}`) and `chmod 600` it; they replace the default ones.
 
-## Adding a new VPN provider
+## Privacy
 
-Create `src/providers/myprovider.py` implementing the `VPNProvider` base class:
+Besides your VPN servers and subscriptions, the plugin talks to: `ipwho.is` and `ip-api.com`
+(your exit IP and its country), `bash.ws` (DNS leak test), `www.gstatic.com` (ping),
+Cloudflare/OVH/Hetzner speed test servers (only when you run one). AbuseIPDB and IPQualityScore
+only if you add an API key. These lookups send only the IP address being checked, and go
+through the VPN while one is up.
 
-```python
-from .base import VPNProvider, VPNConnection, ActionResult
+## Troubleshooting
 
-class MyProvider(VPNProvider):
-    @property
-    def name(self) -> str:
-        return "MyVPN"
-
-    def connections(self) -> list[VPNConnection]: ...
-    def connect(self, connection) -> ActionResult: ...
-    def disconnect(self, connection) -> ActionResult: ...
-    def import_config(self, path) -> ActionResult: ...
-    # optional: toggle_autostart(), delete_config()
-```
-
-Register it in `src/providers/__init__.py`. Optional niceties: per-provider CSS
-class appears automatically (`vpn-<provider-lowercase>`).
-
-## Adding a new IP-intelligence source
-
-Same shape, for the window's IP info and the background reputation sweep.
-Create `src/ipsources/mysource.py` implementing `IPInfoSource`:
-
-```python
-from ipsources import base
-
-class MySource(base.IPInfoSource):
-    key = "mysource"
-    name = "My Source"
-    needs_api_key = False  # True reads config.json's ip_sources[key]["api_key"]
-
-    def lookup(self, ip: str) -> base.IPFinding | None: ...
-```
-
-Register it in `src/ipsources/__init__.py`'s `ALL_SOURCES`. Keyed sources are
-used only by the on-demand IP Info action, never by the daily background
-sweep — a present `api_key` in config *is* "enabled", no separate flag needed.
+- Log: `~/.local/state/vpn-manager/vpn-manager.log`
+- Errors (a config the installed xray rejects, a tunnel that died) show as notifications with
+  the reason.
+- Settings: `~/.config/vpn-manager/`; caches: `~/.cache/vpn-manager/` (the Clear caches tool
+  empties them).
 
 ## Uninstall
 
@@ -433,15 +133,13 @@ sweep — a present `api_key` in config *is* "enabled", no separate flag needed.
 omarchy plugin remove omarchy-vpn
 ```
 
-Run `uninstall.sh` **before** `omarchy plugin remove`: removing the plugin alone leaves the
-root helpers, the sudoers rule and possibly kill switch rules in place. From a checkout:
-`make uninstall`.
+Run `uninstall.sh` first: it turns the kill switch off and removes the helpers, the sudoers rule,
+the app and the key binding. Removing the plugin alone would leave them behind. Your settings,
+keys and favourites in `~/.config/vpn-manager` are kept. From a checkout: `make uninstall`.
 
-`uninstall.sh` turns the kill switch off (with Lockdown its rules would otherwise block all traffic until a
-reboot), then removes the bar widget plugin, the backend, the SUPER+Shift+V binding block in
-`bindings.lua`, `/usr/local/bin/omarchy-vpn-helper`, `happ-killswitch`, `openvpn-dns-updown`
-and the sudoers rule.
-`~/.config/vpn-manager` (keys, settings, favourites) is kept.
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Pull requests go to `dev`.
 
 ## License
 

@@ -41,7 +41,7 @@ def test_status_line_has_no_reputation_marker(tmp_path, monkeypatch):
         "fetched_at": time.time(),
         "ip": "1.2.3.4",
         "country_code": "DE",
-        "domain": "dhost.su",
+        "domain": "host.example",
     }
     p.write_text(json.dumps(entry))
     assert ipinfo.status_line("a", 600) == "Exit: 1.2.3.4 🇩🇪"

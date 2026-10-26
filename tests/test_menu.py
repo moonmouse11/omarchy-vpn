@@ -717,7 +717,7 @@ def test_ip_info_menu_builds_rows(monkeypatch):
     monkeypatch.setattr(vpn_manager, "notify", lambda *a, **k: None)
     monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
     findings = [
-        IPFinding(source="ipwho.is", ip="1.2.3.4", country_name="Germany", org="jogcorp"),
+        IPFinding(source="ipwho.is", ip="1.2.3.4", country_name="Germany", org="examplehost"),
         IPFinding(
             source="ip-api.com",
             ip="1.2.3.4",
@@ -744,7 +744,7 @@ def test_ip_info_menu_builds_rows(monkeypatch):
     assert result.success
     rows = seen[0]
     assert rows[0] == "IP: 1.2.3.4"
-    assert "ipwho.is: Germany · jogcorp" in rows
+    assert "ipwho.is: Germany · examplehost" in rows
     assert "ip-api.com: France · SMARTNET Germany GmbH" in rows
     assert "🏢 Datacenter/Hosting: Yes" in rows
     assert "🕵️ Proxy/VPN detected: No" in rows
@@ -948,7 +948,7 @@ def test_dns_leak_exit_row_eu_flag_accepts_any_member_state(monkeypatch):
 
 
 def test_dns_leak_exit_row_second_geo_opinion_clears_a_geo_db_mismatch(monkeypatch):
-    """Poland 1: bash.ws geolocated its exit 192.144.78.10 (leased IPbnb
+    """Poland 1: bash.ws geolocated its exit 198.51.100.10 (leased
     block) to KR, ipwho.is to PL/Warsaw, ip-api to FR — while the resolvers
     were Cloudflare's Polish PoP. One geo DB's opinion isn't a leak."""
     seen = _dns_leak_menu_env(
@@ -1080,7 +1080,7 @@ def _fake_report_data(monkeypatch):
         vpn_manager.happmeta,
         "providers",
         lambda: {
-            "1": {"name": "Unlock VPN", "url": "https://x/1"},
+            "1": {"name": "Provider A", "url": "https://x/1"},
             "2": {"name": "OK", "url": "https://x/2"},
             "0": {"name": "routing only", "url": None},
         },
@@ -1113,7 +1113,7 @@ def test_subscription_report_lists_ping_and_traffic_per_provider(monkeypatch):
     title, body = vpn_manager.subscription_report({})
     assert title == "Happ — subscriptions updated"
     assert body.splitlines() == [
-        "Unlock VPN: ✓ 2/2 · ⌀45ms · 6.5 GB / ∞ · until 14.12.2026",
+        "Provider A: ✓ 2/2 · ⌀45ms · 6.5 GB / ∞ · until 14.12.2026",
         "OK: 1 servers, no ping yet",
     ]
 

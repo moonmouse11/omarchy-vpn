@@ -44,8 +44,8 @@ XRAY_CONFIGS = Path.home() / ".config/happ-capture/xray-configs.json"
 HEADERS_FILE = Path.home() / ".config/happ-capture/headers.json"
 SUB_CACHE_DIR = Path.home() / ".cache/vpn-manager"
 # What a panel keys the full xray JSON on is a "Happ/<version>" User-Agent:
-# without it (plain curl/urllib UA) Unlock VPN answers a text/plain link list
-# instead. Device-limited panels (WireCat, oplVPN) also want X-HWID, else they
+# without it (plain curl/urllib UA) a panel may answer a text/plain link list
+# instead. Device-limited panels also want X-HWID, else they
 # answer stub "servers" ("Client not supported"). Happ's HWID is the raw
 # machine id (QSysInfo::machineUniqueId), so sending it makes us the same
 # device as the GUI, not one more against the limit.
@@ -56,7 +56,7 @@ MACHINE_ID_FILES = (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id"))
 PING_MAX_AGE = 86400  # seconds; older pings show with "~" — they are
 # measured only on the panel's Ping button (delayping), so they can be
 # any age. (The old 30-min background TCP sweep likely tripped server-side
-# rate limits — the ARTEMIDA IP ban.)
+# rate limits — one provider banned the IP.)
 SUB_MAX_AGE = 3600  # seconds
 SUBS_REFRESH_RETRY = 60  # seconds, avoid spawning a worker per status tick when the tunnel is down
 PING_TIMEOUT = 3.0
@@ -313,7 +313,7 @@ def has_headers() -> bool:
 
 
 # Outbounds that never reach a server, and addresses a panel's stub "server"
-# points at (ARTEMIDA: 0.0.0.0, oplVPN: 198.18.0.1).
+# points at (seen: 0.0.0.0 and 198.18.0.1).
 _STUB_IGNORED_PROTOCOLS = (*NON_PROXY_PROTOCOLS, "loopback")
 _PLACEHOLDER_NETS = tuple(ipaddress.ip_network(n) for n in ("0.0.0.0/8", "198.18.0.0/15"))
 
@@ -658,7 +658,7 @@ def build_runtime_config(server_cfg: dict, tunnel_dns: bool = True) -> dict:
 
     tunnel_dns (config.json "dns_mode": "tunnel"): pin dns-in to the
     subscription's own catch-all, ahead of its rules — otherwise a rule like
-    ARTΞMIDA's {"ip": ["1.1.1.1", ...], "ruleTag": "DNS_DIRECT",
+    one provider's {"ip": ["1.1.1.1", ...], "ruleTag": "DNS_DIRECT",
     "outboundTag": "direct"} sends every lookup out the real NIC. Costs the
     provider's split DNS (e.g. Yandex for .ru via geoip:ru) — it then
     resolves through the tunnel too; the traffic itself still splits."""

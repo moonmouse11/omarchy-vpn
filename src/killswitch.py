@@ -1,4 +1,4 @@
-"""Killswitch integration for the VPN menu.
+"""Killswitch integration for the VPN plugin.
 
 Wraps the /usr/local/bin/happ-killswitch script (installed root-owned by
 install.sh, driven via a NOPASSWD sudoers rule, so menu actions never

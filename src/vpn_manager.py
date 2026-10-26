@@ -682,7 +682,10 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
     return result
 
 
-HAPP_APP_CONNECTED = "The Happ app holds the connection — disconnect it in the Happ app first"
+HAPP_APP_CONNECTED = (
+    "The Happ app holds the connection — disconnect it first "
+    "(in the Happ app, or the panel's switch)"
+)
 SYS_NET = Path("/sys/class/net")
 OPENVPN_TUN_WAIT = 20.0  # s the connect-time DNS hole stays open for OpenVPN
 

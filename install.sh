@@ -71,8 +71,8 @@ SUDOERS_FILE="/etc/sudoers.d/vpn-manager"
 # Three things only, each with a fixed command surface:
 #   omarchy-vpn-helper (scripts/, root-owned): WireGuard/AmneziaWG/OpenVPN up/down,
 #     import, delete, autostart, endpoints — profile names only, never paths, and
-#     it refuses imports that would run commands as root (WireGuard PostUp/…,
-#     OpenVPN up/route-up/plugin/…);
+#     it refuses imports that could run commands as root (WireGuard PostUp/…,
+#     OpenVPN directives off its allowlist: up/route-up/plugin/…);
 #   happ-killswitch (root-owned): the kill switch's nft rules;
 #   sysctl -w net.ipv6.conf.{all,default}.disable_ipv6={0,1} (IPv6 leak guard —
 #     none of the providers tunnel IPv6, see src/ipv6guard.py).
@@ -98,7 +98,7 @@ sudo visudo -cf "$SUDOERS_FILE" > /dev/null && echo "==> sudoers rule validated"
 # some may predate the helper (the old rule let any process `cp` one there).
 unsafe_configs=$(sudo /usr/local/bin/omarchy-vpn-helper audit)
 if [[ -n $unsafe_configs ]]; then
-    echo "==> WARNING: these VPN configs run commands as root when connected:"
+    echo "==> WARNING: these VPN configs have lines an import would refuse (root commands or file reads):"
     echo "$unsafe_configs" | sed 's/^/      /'
     echo "    Remove those lines unless you put them there yourself."
 fi

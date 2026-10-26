@@ -38,10 +38,10 @@ def test_import_pipes_the_config_and_reports_a_refusal(tmp_path, monkeypatch):
 
     def helper(*args, stdin=None, **kw):
         seen.append((args, stdin))
-        return 1, "error: this OpenVPN config runs scripts or writes files as root (up)"
+        return 1, "error: this OpenVPN config has a directive the helper doesn't allow (up): …"
 
     monkeypatch.setattr(openvpn, "run_helper", helper)
     result = OpenVPNProvider().import_config(str(src))
     assert seen == [(("import", "ovpn", "us"), src.read_text())]
     assert not result.success
-    assert result.message.startswith("this OpenVPN config runs scripts")
+    assert result.message.startswith("this OpenVPN config has a directive")

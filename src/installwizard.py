@@ -126,7 +126,7 @@ def detect() -> Detection:
     for name in PROTOCOLS:
         try:
             note = _PROBES[name]()
-        except Exception:  # noqa: BLE001, S112 — a broken probe means "not found", never a failed install
+        except Exception:  # noqa: BLE001, S112 — a broken probe means "not found" and never a failed install
             continue
         if note:
             det.notes[name] = note
@@ -268,7 +268,15 @@ def ask(prompter: Prompter, det: Detection) -> Config | None:
     config.json, or on a fresh install from what detect() found. None = cancelled."""
     fresh = not config.CONFIG_PATH.exists()
     cfg = config.load_config()
+    if not _ask_protocols(prompter, det, cfg, fresh) or not _ask_features(prompter, cfg):
+        return None
+    if fresh or prompter.confirm("Set IP source API keys?", False):
+        _ask_api_keys(prompter, cfg)
+    return cfg
 
+
+def _ask_protocols(prompter: Prompter, det: Detection, cfg: Config, fresh: bool) -> bool:
+    """False = cancelled."""
     # gum's --selected is comma-separated
     labels = {
         (f"{n}  ({det.notes[n].replace(',', '')})" if n in det.notes else n): n for n in PROTOCOLS
@@ -281,11 +289,15 @@ def ask(prompter: Prompter, det: Detection) -> Config | None:
         "Protocols", list(labels), [label for label, n in labels.items() if n in preselect]
     )
     if picked is None:
-        return None
+        return False
     chosen = {labels.get(label, label) for label in picked}
     for name in PROTOCOLS:
         cfg.providers[name.lower()] = name in chosen
+    return True
 
+
+def _ask_features(prompter: Prompter, cfg: Config) -> bool:
+    """Features, then the kill switch mode and Lockdown. False = cancelled."""
     keyless = [s for s in ipsources.ALL_SOURCES if not s.needs_api_key]
     features = {
         KILLSWITCH: cfg.killswitch_mode != "off",
@@ -295,7 +307,7 @@ def ask(prompter: Prompter, det: Detection) -> Config | None:
     } | {s.name: _source_on(cfg, s.key) for s in keyless}
     picked = prompter.choose("Features", list(features), [f for f, on in features.items() if on])
     if picked is None:
-        return None
+        return False
     cfg.ipv6_guard = IPV6_GUARD in picked
     cfg.dns_mode = "tunnel" if DNS_TUNNEL in picked else "subscription"
     cfg.dns_autotest = DNS_AUTOTEST in picked
@@ -308,19 +320,20 @@ def ask(prompter: Prompter, det: Detection) -> Config | None:
         current = "Happ only" if cfg.killswitch_mode == "happ" else "Every provider"
         mode = prompter.choose("Kill switch", list(KILLSWITCH_MODES), [current], multi=False)
         if mode is None:
-            return None
+            return False
         cfg.killswitch_mode = KILLSWITCH_MODES.get(mode[0] if mode else current, "all")
         cfg.killswitch_lockdown = prompter.confirm(
             "Lockdown: keep blocking while no VPN is up?", cfg.killswitch_lockdown
         )
+    return True
 
-    if fresh or prompter.confirm("Set IP source API keys?", False):
-        for source in ipsources.ALL_SOURCES:
-            if source.needs_api_key:
-                answer = prompter.text(f"{source.name} API key (Enter — keep current / skip)")
-                if answer:
-                    cfg.ip_sources.setdefault(source.key, {})["api_key"] = answer
-    return cfg
+
+def _ask_api_keys(prompter: Prompter, cfg: Config) -> None:
+    for source in ipsources.ALL_SOURCES:
+        if source.needs_api_key:
+            answer = prompter.text(f"{source.name} API key (Enter — keep current / skip)")
+            if answer:
+                cfg.ip_sources.setdefault(source.key, {})["api_key"] = answer
 
 
 def run(prompter: Prompter, packages_file: Path | None) -> int:

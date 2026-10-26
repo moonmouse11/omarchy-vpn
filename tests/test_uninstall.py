@@ -26,7 +26,8 @@ def test_uninstall_turns_the_kill_switch_off_before_removing_it():
     # nothing is removed before the rules are gone: a failure keeps the install
     assert "exit 1" in commands[gone + 2]
     removals = [i for i, line in enumerate(commands) if "rm -" in line or "plugin disable" in line]
-    assert removals and min(removals) > gone
+    assert removals
+    assert min(removals) > gone
     sudoers = at("rm -f /etc/sudoers.d/vpn-manager")
     assert at("rm -f /usr/local/bin/happ-killswitch") < sudoers
     assert at("/usr/local/bin/omarchy-vpn-helper") < sudoers

@@ -309,19 +309,12 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
             ),
         }
     first = active[0]
-    badges = [
-        _exit_badge(first, cfg.exit_ip_max_age),
-        _dns_badge(first),
-        _badge("ipv6", "IPv6 blocked", "ok", "IPv6 is off while the VPN is up")
-        if ipv6_off
-        else _badge(
-            "ipv6",
-            "IPv6 leaks",
-            "bad",
-            "IPv6 is on and bypasses the tunnel"
-            + ("" if cfg.ipv6_guard else " — IPv6 guard is off in ⚙ Settings"),
-        ),
-    ]
+    if ipv6_off:
+        ipv6_badge = _badge("ipv6", "IPv6 blocked", "ok", "IPv6 is off while the VPN is up")
+    else:
+        why = "" if cfg.ipv6_guard else " — IPv6 guard is off in ⚙ Settings"
+        ipv6_badge = _badge("ipv6", "IPv6 leaks", "bad", f"IPv6 is on and bypasses the tunnel{why}")
+    badges = [_exit_badge(first, cfg.exit_ip_max_age), _dns_badge(first), ipv6_badge]
     if not _killswitch_unsupported(active):
         badges.append(ks_badge)
     if first.provider == "Happ" and happ_provider.app_owns_connection():
@@ -2222,7 +2215,7 @@ def main():
     elif args.settings:
         run_settings_window()
     elif args.configure or args.install_wizard:
-        import installwizard  # noqa: PLC0415 — install-time only, not on the 3 s --status path
+        import installwizard  # noqa: PLC0415 — install-time only: not on the 3 s --status path
 
         out = None
         if args.install_wizard:

@@ -594,9 +594,18 @@ def _subs_refresh_in_progress() -> bool:
         return False
 
 
-def _stamp_subs_refresh() -> None:
+def _stamp_subs_refresh(failed: dict[str, str] | None = None) -> None:
     with contextlib.suppress(OSError):
-        fsutil.write_json_atomic(_subs_refresh_path(), {"at": time.time()})
+        fsutil.write_json_atomic(_subs_refresh_path(), {"at": time.time(), "failed": failed or {}})
+
+
+def last_subs_failures() -> dict[str, str]:
+    """What the previous refresh couldn't update ({name: reason})."""
+    try:
+        failed = json.loads(_subs_refresh_path().read_text()).get("failed")
+    except OSError, json.JSONDecodeError, AttributeError:
+        return {}
+    return failed if isinstance(failed, dict) else {}
 
 
 def request_subscription_update() -> None:
@@ -635,6 +644,7 @@ def update_subscriptions(force: bool = False) -> dict[str, str]:
             error = _fetch_error_reason(e)
         if error:
             failed[prov.get("name") or sub_id] = error
+    _stamp_subs_refresh(failed)
     return failed
 
 

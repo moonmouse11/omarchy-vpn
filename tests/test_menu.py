@@ -790,15 +790,26 @@ def test_killswitch_tool_refuses_under_a_networkmanager_vpn(monkeypatch):
     assert "NetworkManager" in result.message
 
 
-def test_background_subs_refresh_logs_what_did_not_update(monkeypatch):
-    """--update-subs runs every hour with nobody watching: no bubble, but the log says why."""
+def test_background_subs_refresh_logs_a_reason_once(monkeypatch, tmp_path):
+    """--update-subs runs unattended — every minute while the network is down:
+    no bubble, and one log line per new reason, not one per retry."""
+    happmeta = vpn_manager.happmeta
+    monkeypatch.setattr(happmeta, "SUB_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(happmeta, "providers", lambda: {"1": {"name": "P", "url": "https://x/1"}})
+    reason = ["timed out"]
+    monkeypatch.setattr(happmeta, "_fetch_subscription", lambda *a: ([], reason[0]))
     logged = []
-    monkeypatch.setattr(vpn_manager.happmeta, "update_subscriptions", lambda: {"P": "HTTP 403"})
     monkeypatch.setattr(vpn_manager.logutil, "log", logged.append)
     monkeypatch.setattr(vpn_manager, "notify", lambda *a, **kw: pytest.fail("notified"))
     monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", "--update-subs"])
     vpn_manager.main()
-    assert logged == ["subscription P not updated: HTTP 403"]
+    vpn_manager.main()
+    reason[0] = "HTTP 403"
+    vpn_manager.main()
+    assert logged == [
+        "subscription P not updated: timed out",
+        "subscription P not updated: HTTP 403",
+    ]
 
 
 def test_refresh_all_menu_spawns_subs_unconditionally(monkeypatch):

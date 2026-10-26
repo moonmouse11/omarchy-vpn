@@ -38,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A tunnel of a provider hidden in ⚙ Settings no longer shows the bar as "not connected".
+- The hourly background subscription refresh logs why a subscription didn't update — it used to
+  fail silently, and the server list just stayed old.
 
 ### Removed
 

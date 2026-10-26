@@ -2205,7 +2205,9 @@ def main():
     elif args.update_reputation:
         reputation.write_reputations(_collect_ping_targets())
     elif args.update_subs:
-        happmeta.update_subscriptions()
+        # hourly, unattended: no bubble, but a stale subscription must leave a reason
+        for name, why in happmeta.update_subscriptions().items():
+            logutil.log(f"subscription {name} not updated: {why}")
     elif args.update_subs_force:
         # a manual refresh (menu or Refresh All) runs in the background:
         # report every provider — a silent failure looked like success

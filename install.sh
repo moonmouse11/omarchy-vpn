@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -e
+# Finish setup's terminal (omarchy-launch-floating-terminal-with-presentation)
+# prints "Done!" whatever the exit code: a failed step has to say so itself.
+# ERR, not EXIT: the wizard's cancel is an explicit exit with its own message.
+trap 'echo "==> Setup failed — see the error above. Fix it and run setup again." >&2' ERR
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Backend lives outside the plugin dir: omarchy-shell hot-reloads plugins on

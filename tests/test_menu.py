@@ -948,7 +948,7 @@ def test_dns_leak_exit_row_eu_flag_accepts_any_member_state(monkeypatch):
 
 
 def test_dns_leak_exit_row_second_geo_opinion_clears_a_geo_db_mismatch(monkeypatch):
-    """Poland 1: bash.ws geolocated its exit 192.144.78.10 (leased IPbnb
+    """Poland 1: bash.ws geolocated its exit 198.51.100.10 (leased
     block) to KR, ipwho.is to PL/Warsaw, ip-api to FR — while the resolvers
     were Cloudflare's Polish PoP. One geo DB's opinion isn't a leak."""
     seen = _dns_leak_menu_env(

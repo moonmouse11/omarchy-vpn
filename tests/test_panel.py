@@ -25,7 +25,7 @@ def env(monkeypatch):
     state = {
         "ks_on": False,
         "ipv6_off": True,
-        "exit": {"ip": "2.27.59.210", "country_code": "DE", "connection": DE_SERVER.name},
+        "exit": {"ip": "198.51.100.27", "country_code": "DE", "connection": DE_SERVER.name},
         "fresh": True,
         "app_owned": False,  # the plugin's keeper holds the Happ connection
     }
@@ -64,7 +64,7 @@ def test_untested_dns_is_unverified_not_protected(env):
     assert (panel["state"], panel["title"]) == ("unverified", "Unverified")
     assert panel["meta"] == "Provider B: 🇩🇪 Germany 1"  # the pill names the provider
     assert panel["detail"] == "Happ"
-    assert panel["exit_ip"] == "2.27.59.210 🇩🇪"
+    assert panel["exit_ip"] == "198.51.100.27 🇩🇪"
     assert panel["rate"] == "↓ 3 KiB/s ↑ 4 KiB/s"
     assert panel["total"] == "↓ 1 MiB  ↑ 2 MiB"
     assert _badges(panel) == {
@@ -334,7 +334,7 @@ def test_label_fields_carry_every_placeholder(env):
         "server": "🇩🇪 Germany 1",
         "count": "1",
         "state": "Unverified",
-        "exit_ip": "2.27.59.210",
+        "exit_ip": "198.51.100.27",
         "exit_country": "DE",
         "exit_flag": "🇩🇪",
         "rate": "↓ 3 KiB/s ↑ 4 KiB/s",

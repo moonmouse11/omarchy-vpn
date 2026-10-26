@@ -1214,8 +1214,8 @@ _BLACKHOLE = {"protocol": "blackhole"}
         ([_vless("0.0.0.0"), _FREEDOM, _BLACKHOLE], True),  # Provider B device limit
         ([_vless("198.18.0.1"), _FREEDOM], True),  # Provider D
         ([_vless("127.0.0.1")], False),  # a local test server is real
-        ([_vless("31.184.215.234"), _FREEDOM], False),
-        ([_vless("nl-t.creds.lol"), {"protocol": "dns"}], False),  # hostname
+        ([_vless("203.0.113.40"), _FREEDOM], False),
+        ([_vless("nl.example.net"), {"protocol": "dns"}], False),  # hostname
         ([{"protocol": "hysteria", "settings": {"address": "1.2.3.4", "port": 8443}}], False),
         ([{"protocol": "loopback"}, _vless("0.0.0.0"), _vless("5.6.7.8")], False),  # balancer
         # a format we can't parse is never hidden

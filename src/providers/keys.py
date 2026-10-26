@@ -68,7 +68,7 @@ def _kind_meta(kind: str) -> tuple[str, str, Path]:
 
 # xray 26 shadowsocks methods — AEAD only; the legacy stream ciphers
 # (aes-*-cfb/ctr, chacha20, salsa20, rc4-md5) were REMOVED from the core,
-# so OutlineKeys-style cfb keys are unusable on any modern core
+# so key-shop cfb keys are unusable on any modern core
 METHODS = {
     "aes-128-gcm",
     "aes-256-gcm",
@@ -119,7 +119,7 @@ def _parse_host_port(text: str) -> tuple[str, int]:
 def _split_fragment_query(rest: str) -> tuple[str, str, str | None]:
     """rest -> (rest, query, name) splitting off #fragment and ?query.
     Key-shop names carry a site attribution suffix ("Canada #41259 /
-    OutlineKeys.com") — drop it, it makes menu rows unreadable."""
+    keyshop.example") — drop it, it makes menu rows unreadable."""
     name = None
     if "#" in rest:
         rest, frag = rest.split("#", 1)

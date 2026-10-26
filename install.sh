@@ -197,7 +197,7 @@ fi
 if [[ -d "$LEGACY_DIR" ]]; then
     if pgrep -f "$LEGACY_DIR/src/" >/dev/null; then
         echo "==> $LEGACY_DIR is still in use by a running connection — kept."
-        echo "    Reconnect from the new menu, then run 'make install' again to remove it."
+        echo "    Reconnect from the bar panel, then run 'make install' again to remove it."
     else
         echo "==> Removing the old waybar install ($LEGACY_DIR)..."
         rm -rf "$LEGACY_DIR"
@@ -210,6 +210,6 @@ fi
 echo ""
 echo "==> Done!"
 echo "    - bar widget:  omarchy plugin enable/disable $PLUGIN_ID, move with omarchy bar move"
-echo "    - keybinding:  SUPER+Shift+V opens the VPN menu"
+echo "    - keybinding:  SUPER+Shift+V opens the VPN window"
 echo "    - settings:    the window's Settings button, or re-run this installer"
 echo ""

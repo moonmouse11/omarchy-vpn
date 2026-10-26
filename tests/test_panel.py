@@ -15,7 +15,7 @@ DE_SERVER = VPNConnection(
     active=True,
     interface="happ-xray",
     subscription_id="1",
-    subscription_name="ARTEMIDA",
+    subscription_name="Provider B",
 )
 
 
@@ -62,7 +62,7 @@ def test_untested_dns_is_unverified_not_protected(env):
     panel = _panel([DE_SERVER])
     assert panel["connected"] is True
     assert (panel["state"], panel["title"]) == ("unverified", "Unverified")
-    assert panel["meta"] == "ARTEMIDA: 🇩🇪 Germany 1"  # the pill names the provider
+    assert panel["meta"] == "Provider B: 🇩🇪 Germany 1"  # the pill names the provider
     assert panel["detail"] == "Happ"
     assert panel["exit_ip"] == "2.27.59.210 🇩🇪"
     assert panel["rate"] == "↓ 3 KiB/s ↑ 4 KiB/s"
@@ -328,9 +328,9 @@ def test_label_fields_carry_every_placeholder(env):
     fields = _panel([DE_SERVER])["fields"]
     assert set(fields) == set(vpn_manager.LABEL_FIELDS)
     assert fields == {
-        "label": "Happ · ARTEMIDA: 🇩🇪 Germany 1",
+        "label": "Happ · Provider B: 🇩🇪 Germany 1",
         "provider": "Happ",
-        "subscription": "ARTEMIDA",
+        "subscription": "Provider B",
         "server": "🇩🇪 Germany 1",
         "count": "1",
         "state": "Unverified",

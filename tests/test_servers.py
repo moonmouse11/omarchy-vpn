@@ -82,7 +82,7 @@ def test_server_list_groups_happ_per_subscription_and_other_providers(env, monke
         lambda provider: (
             [],
             {
-                "Unlock VPN": [
+                "Provider A": [
                     {"name": "🇩🇪 DE", "active": True, "provider_id": "15", "protocol": "vless"},
                     {"name": "🇳🇱 NL", "active": False, "provider_id": "15", "protocol": "ss"},
                 ]
@@ -92,7 +92,7 @@ def test_server_list_groups_happ_per_subscription_and_other_providers(env, monke
     listing = vpn_manager.server_list()
     groups = listing["groups"]
     assert [(g["provider"], g["title"], g["active"]) for g in groups] == [
-        ("Happ", "Unlock VPN", True),
+        ("Happ", "Provider A", True),
         ("WireGuard", "WireGuard", True),
     ]  # a provider with nothing to show has no group…
     # …but is still a protocol of the window's tree/tabs/sidebar
@@ -102,10 +102,10 @@ def test_server_list_groups_happ_per_subscription_and_other_providers(env, monke
         {"name": "OpenVPN", "importer": "file", "manage": False, "total": 0, "active": False},
     ]
     assert listing["layout"] == "tree"
-    unlock = groups[0]
-    assert unlock["subscription_id"] == "15"
-    assert unlock["summary"] == "✓ 2/2 · 60 ms"  # median of reachable
-    assert [(r["name"], r["ping"], r["active"]) for r in unlock["servers"]] == [
+    sub_a = groups[0]
+    assert sub_a["subscription_id"] == "15"
+    assert sub_a["summary"] == "✓ 2/2 · 60 ms"  # median of reachable
+    assert [(r["name"], r["ping"], r["active"]) for r in sub_a["servers"]] == [
         ("🇩🇪 DE", "40 ms", True),
         ("🇳🇱 NL", "60 ms", False),
     ]
@@ -143,14 +143,14 @@ def _guarded(monkeypatch):
 def test_panel_connect_happ_carries_the_subscription(monkeypatch):
     calls = _guarded(monkeypatch)
     monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("Happ", [])])
-    monkeypatch.setattr(happmeta, "providers", lambda: {"15": {"name": "Unlock VPN", "url": "u"}})
+    monkeypatch.setattr(happmeta, "providers", lambda: {"15": {"name": "Provider A", "url": "u"}})
     assert vpn_manager.panel_connect("Happ", "🇩🇪 DE", "15").success
     _, provider, conn = calls[0]
     assert (provider, conn.name, conn.subscription_id, conn.subscription_name) == (
         "Happ",
         "🇩🇪 DE",
         "15",
-        "Unlock VPN",
+        "Provider A",
     )
 
 
@@ -224,7 +224,7 @@ def test_server_list_says_why_a_subscription_sent_no_servers(env, monkeypatch):
         lambda provider: ([], {"OK": [{"name": "🇩🇪 DE", "active": False, "provider_id": "8"}]}),
     )
     monkeypatch.setattr(
-        happmeta, "providers", lambda: {"7": {"name": "WireCat"}, "8": {"name": "OK"}}
+        happmeta, "providers", lambda: {"7": {"name": "Provider C"}, "8": {"name": "OK"}}
     )
     monkeypatch.setattr(
         happmeta,
@@ -233,7 +233,7 @@ def test_server_list_says_why_a_subscription_sent_no_servers(env, monkeypatch):
     )
     titles = [g["title"] for g in vpn_manager.server_list()["groups"]]
     # OK still has (last known) servers: no extra group for it
-    assert titles == ["OK", "WireCat · ⚠ Достигнут лимит устройств: 4"]
+    assert titles == ["OK", "Provider C · ⚠ Достигнут лимит устройств: 4"]
 
 
 def test_server_list_never_blocks_on_the_network(env, monkeypatch):

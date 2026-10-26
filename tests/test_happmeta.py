@@ -27,7 +27,7 @@ def test_parse_providers_reads_real_log(tmp_path, monkeypatch):
         "[05.08.2026 12:53:51] [UPDATE][INFO] "
         "Subscription #4242 starting update from: https://sub.example.net/abc\n"
         "[05.08.2026 12:53:52] [UPDATE][INFO] "
-        "🌺 ARTΞMIDA VPN fetching subscription from sub.example.net\n"
+        "🌺 Provider B VPN fetching subscription from sub.example.net\n"
         "[05.08.2026 12:53:53] [UPDATE][INFO] "
         "Subscription #7 starting update from: https://sub.com/123\n"
         "[05.08.2026 12:53:54] [UPDATE][INFO] "
@@ -41,7 +41,7 @@ def test_parse_providers_reads_real_log(tmp_path, monkeypatch):
     providers = happmeta._parse_providers()
     # name found via host fallback: the named url is the bare host of the url
     assert providers["4242"] == {
-        "name": "🌺 ARTΞMIDA VPN",
+        "name": "🌺 Provider B VPN",
         "url": "https://sub.example.net/abc",
     }
     # same host fallback, name attached later in the log
@@ -65,16 +65,16 @@ def test_parse_providers_added_subscription(tmp_path, monkeypatch):
     id line — they must appear with a stable synthesized id and resolved name."""
     log_text = (
         "[20.09.2026 02:15:22] Subscription being added: "
-        "https://shop.wirecat.link/cart/TOKEN\n"
+        "https://shop.example.org/cart/TOKEN\n"
         "[20.09.2026 02:15:22] [UPDATE][INFO] "
-        "WireCat fetching subscription from shop.wirecat.link\n"
+        "Provider C fetching subscription from shop.example.org\n"
     )
     providers = _added_providers(tmp_path, monkeypatch, log_text)
-    (sub_id,) = [i for i, p in providers.items() if "wirecat" in p["url"]]
-    assert sub_id == "h" + hashlib.sha1(b"https://shop.wirecat.link/cart/TOKEN").hexdigest()[:10]
+    (sub_id,) = [i for i, p in providers.items() if "shop.example.org" in p["url"]]
+    assert sub_id == "h" + hashlib.sha1(b"https://shop.example.org/cart/TOKEN").hexdigest()[:10]
     assert providers[sub_id] == {
-        "name": "WireCat",
-        "url": "https://shop.wirecat.link/cart/TOKEN",
+        "name": "Provider C",
+        "url": "https://shop.example.org/cart/TOKEN",
     }
     # deterministic across runs/parses (on-disk cache stays valid)
     assert _added_providers(tmp_path, monkeypatch, log_text) == providers
@@ -141,13 +141,13 @@ def test_parse_providers_added_without_name_uses_host(tmp_path, monkeypatch):
     providers = _added_providers(
         tmp_path,
         monkeypatch,
-        "[20.09.2026 02:18:49] Subscription being added: https://sub.kushmakers.org/new/TOK\n",
+        "[20.09.2026 02:18:49] Subscription being added: https://sub.provider-e.example/new/TOK\n",
     )
     (sub_id,) = providers.keys()
-    assert sub_id == "h" + hashlib.sha1(b"https://sub.kushmakers.org/new/TOK").hexdigest()[:10]
+    assert sub_id == "h" + hashlib.sha1(b"https://sub.provider-e.example/new/TOK").hexdigest()[:10]
     assert providers[sub_id] == {
-        "name": "sub.kushmakers.org",
-        "url": "https://sub.kushmakers.org/new/TOK",
+        "name": "sub.provider-e.example",
+        "url": "https://sub.provider-e.example/new/TOK",
     }
 
 
@@ -740,7 +740,7 @@ def test_fetch_subscription_stores_parsed_info(tmp_path, monkeypatch):
     headers["Subscription-Userinfo"] = (
         "upload=0; download=1973660012446; total=0; expire=1797232846"
     )
-    headers["Profile-Title"] = "base64:b3BsVlBOX2JvdA=="
+    headers["Profile-Title"] = "base64:cHJvdmlkZXJfZF9ib3Q="
     _patch_fetch_env(tmp_path, monkeypatch, headers)
 
     servers = happmeta.fetch_subscription("7", "https://x/1")
@@ -750,7 +750,7 @@ def test_fetch_subscription_stores_parsed_info(tmp_path, monkeypatch):
         "download": 1973660012446,
         "total": 0,
         "expire": 1797232846,
-        "title": "oplVPN_bot",
+        "title": "provider_d_bot",
     }
 
 
@@ -987,7 +987,7 @@ def test_bootstrap_resolver_falls_back_when_subscription_has_none():
     assert boot["address"] == happmeta.DNS_BOOTSTRAP_FALLBACK
 
 
-# ARTΞMIDA's real shape: its own resolvers pinned direct by a subscription rule
+# Provider B's real shape: its own resolvers pinned direct by a subscription rule
 _SUB_DNS_DIRECT = {
     "remarks": "🇩🇪 Германия 1",
     "outbounds": [
@@ -1020,7 +1020,7 @@ def _dns_in_rules(cfg):
 
 
 def test_tunnel_dns_overrides_subscription_rules_that_send_dns_direct():
-    """Germany 1 (ARTΞMIDA) leaked: its DNS_DIRECT rule sent xray's lookups
+    """Germany 1 (Provider B) leaked: its DNS_DIRECT rule sent xray's lookups
     to 1.1.1.1 straight out the real NIC (DNS leak test: Cloudflare RU +
     the ISP's MSK-IX resolver). In tunnel mode dns-in gets its own rule,
     ahead of every subscription rule, to the subscription's own catch-all."""
@@ -1210,9 +1210,9 @@ _BLACKHOLE = {"protocol": "blackhole"}
 @pytest.mark.parametrize(
     ("outbounds", "stub"),
     [
-        ([_FREEDOM, _BLACKHOLE], True),  # WireCat "Client not supported"
-        ([_vless("0.0.0.0"), _FREEDOM, _BLACKHOLE], True),  # ARTEMIDA device limit
-        ([_vless("198.18.0.1"), _FREEDOM], True),  # oplVPN
+        ([_FREEDOM, _BLACKHOLE], True),  # Provider C "Client not supported"
+        ([_vless("0.0.0.0"), _FREEDOM, _BLACKHOLE], True),  # Provider B device limit
+        ([_vless("198.18.0.1"), _FREEDOM], True),  # Provider D
         ([_vless("127.0.0.1")], False),  # a local test server is real
         ([_vless("31.184.215.234"), _FREEDOM], False),
         ([_vless("nl-t.creds.lol"), {"protocol": "dns"}], False),  # hostname
@@ -1281,7 +1281,7 @@ def test_all_servers_hides_stubs_from_old_caches(tmp_path, monkeypatch):
     monkeypatch.setattr(happmeta, "SUB_CACHE_DIR", tmp_path)
     monkeypatch.setattr(happmeta, "XRAY_CONFIGS", tmp_path / "none.json")
     monkeypatch.setattr(
-        happmeta, "providers", lambda: {"1": {"name": "WireCat", "url": "https://x/1"}}
+        happmeta, "providers", lambda: {"1": {"name": "Provider C", "url": "https://x/1"}}
     )
     (tmp_path / "subscription-1.json").write_text(
         json.dumps(
@@ -1363,15 +1363,15 @@ def test_update_subscriptions_reports_what_did_not_update(tmp_path, monkeypatch)
         tmp_path,
         {
             "1": {"name": "OK", "url": "https://x/1"},
-            "2": {"name": "ARTEMIDA", "url": "https://x/2"},
-            "3": {"name": "WireCat", "url": "https://x/3"},
+            "2": {"name": "Provider B", "url": "https://x/2"},
+            "3": {"name": "Provider C", "url": "https://x/3"},
         },
     )
     timeout = TimeoutError("timed out")
     _scripted_urlopen(monkeypatch, tmp_path, [timeout, timeout, _STUBS, _REAL])
     assert happmeta.update_subscriptions(force=True) == {
         "OK": "timed out",
-        "ARTEMIDA": "📱 Достигнут лимит устройств: 4",
+        "Provider B": "📱 Достигнут лимит устройств: 4",
     }
 
 

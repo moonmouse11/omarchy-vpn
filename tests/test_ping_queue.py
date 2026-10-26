@@ -70,7 +70,7 @@ def _hold_ping_lock():
     ("scope", "xray", "direct"),
     [
         ({}, ["15\tDE", "15\tNL", "22\tDE", "mykey"], ["home", "work"]),
-        ({"group": "happ:15:Unlock VPN"}, ["15\tDE", "15\tNL"], []),
+        ({"group": "happ:15:Provider A"}, ["15\tDE", "15\tNL"], []),
         ({"group": "WireGuard"}, [], ["home", "work"]),
         ({"group": "VLESS"}, ["mykey"], []),
         ({"server": ["Happ", "DE", "22"]}, ["22\tDE"], []),  # not the other subscription's DE
@@ -87,7 +87,7 @@ def test_a_scope_measures_exactly_its_servers(pings, scope, xray, direct):
     ("argv", "scope"),
     [
         ([], {}),
-        (["group", "happ:15:Unlock VPN"], {"group": "happ:15:Unlock VPN"}),
+        (["group", "happ:15:Provider A"], {"group": "happ:15:Provider A"}),
         (["server", "Happ", "🇩🇪 DE", "15"], {"server": ["Happ", "🇩🇪 DE", "15"]}),
         (["server", "WireGuard", "home"], {"server": ["WireGuard", "home", ""]}),
         (["server"], None),

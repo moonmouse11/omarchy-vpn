@@ -395,7 +395,7 @@ Panel {
     return text
   }
 
-  // "{subscription}: {server}" -> "ARTEMIDA: 🇩🇪 Germany 1". An empty
+  // "{subscription}: {server}" -> "Provider B: 🇩🇪 Germany 1". An empty
   // placeholder takes one separator with it: the one before it when a value
   // precedes it ("{server} · {ping}" -> "server"), else the one after
   // ("{subscription}: {server}" -> "server" for WireGuard). A bracket pair

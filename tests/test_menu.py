@@ -1080,7 +1080,7 @@ def _fake_report_data(monkeypatch):
         vpn_manager.happmeta,
         "providers",
         lambda: {
-            "1": {"name": "Unlock VPN", "url": "https://x/1"},
+            "1": {"name": "Provider A", "url": "https://x/1"},
             "2": {"name": "OK", "url": "https://x/2"},
             "0": {"name": "routing only", "url": None},
         },
@@ -1113,7 +1113,7 @@ def test_subscription_report_lists_ping_and_traffic_per_provider(monkeypatch):
     title, body = vpn_manager.subscription_report({})
     assert title == "Happ — subscriptions updated"
     assert body.splitlines() == [
-        "Unlock VPN: ✓ 2/2 · ⌀45ms · 6.5 GB / ∞ · until 14.12.2026",
+        "Provider A: ✓ 2/2 · ⌀45ms · 6.5 GB / ∞ · until 14.12.2026",
         "OK: 1 servers, no ping yet",
     ]
 

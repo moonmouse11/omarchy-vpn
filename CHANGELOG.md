@@ -35,8 +35,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the new one coming up — and goes off for tunnels the plugin didn't start (WireGuard autostart at
   boot, the Happ app, NetworkManager).
 
+### Changed
+
+- A connect is refused, with a hint, while the open Happ app holds a tunnel: both ran xray under
+  the same id and knocked each other out. Either the plugin or the Happ app owns a connection.
+
 ### Fixed
 
+- Happ connects no longer hang on a stale subscription: the server comes from the cached list
+  (the fetch could take 15 s twice per click, past the connect timeout).
+- Quick clicks while switching no longer answer "Already switching": a new click waits for the
+  handover to the previous one and then takes over.
 - A tunnel of a provider hidden in ⚙ Settings no longer shows the bar as "not connected".
 - The background subscription refresh logs why a subscription didn't update (once per new
   reason) — it used to fail silently, and the server list just stayed old.

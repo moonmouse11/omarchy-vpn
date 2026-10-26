@@ -10,7 +10,7 @@
 #   omarchy-vpn-helper up KIND NAME               KIND: wg | awg | ovpn
 #   omarchy-vpn-helper down KIND NAME             (wg/awg: the interface name)
 #   omarchy-vpn-helper import KIND NAME < CONFIG  refuses WireGuard hooks and
-#                                                 OpenVPN scripts/file writes
+#                                                 OpenVPN directives off OVPN_SAFE
 #   omarchy-vpn-helper rm KIND NAME               wg | awg
 #   omarchy-vpn-helper autostart KIND NAME on|off wg | awg
 #   omarchy-vpn-helper endpoints KIND NAME        only the Endpoint / remote lines
@@ -42,10 +42,35 @@ MAX_IMPORT=1048576  # 1 MiB — a config, not a disk filler
 # WireGuard hooks run as root on `wg-quick up` (the same refusal as
 # limehawk/omarchy-vpn's helper; NetworkManager drops them on import instead).
 WG_HOOKS='^[[:space:]]*(PreUp|PostUp|PreDown|PostDown)[[:space:]]*='
-# OpenVPN directives that run a program or write a file as root (openvpn runs
-# with --script-security 2 for openvpn-dns-updown), pull in another config, or
-# open a control port on the root daemon (management).
-OVPN_UNSAFE='^[[:space:]]*(management|up|down|route-up|route-pre-down|ipchange|tls-verify|auth-user-pass-verify|client-connect|client-disconnect|learn-address|plugin|script-security|iproute|config|cd|chroot|log|log-append|status|writepid|replay-persist|ifconfig-pool-persist|tmp-dir)([[:space:]]|$)'
+# OpenVPN: an allowlist of client directives, never a denylist — openvpn also
+# reads `--up`, `"up"` and `setenv opt up` as `up` (checked on 2.7.8), and new
+# releases add new ways to run code as root (2.7's dns-updown). Anything not
+# here is refused: scripts (it runs with --script-security 2), plugins and
+# OpenSSL providers (.so), file writes, a management port, another config,
+# `setenv NAME` (the root dns script's environment: LD_PRELOAD, PATH).
+OVPN_SAFE='client tls-client pull dev dev-type proto port rport lport bind nobind
+remote remote-random remote-random-hostname resolv-retry connect-retry
+connect-retry-max connect-timeout server-poll-timeout explicit-exit-notify
+float persist-key persist-tun persist-remote-ip persist-local-ip
+ca cert key pkcs12 extra-certs tls-auth tls-crypt tls-crypt-v2 key-direction
+tls-timeout tls-exit replay-window topology nice
+route-ipv6 ifconfig-ipv6 block-ipv6 redirect-private
+remote-cert-tls remote-cert-ku remote-cert-eku verify-x509-name ns-cert-type
+tls-version-min tls-version-max tls-cipher tls-ciphersuites tls-groups
+tls-cert-profile ecdh-curve cipher data-ciphers data-ciphers-fallback ncp-ciphers
+auth auth-nocache auth-retry auth-user-pass static-challenge reneg-sec hand-window
+comp-lzo compress allow-compression redirect-gateway route route-nopull
+route-metric route-delay route-method dhcp-option block-outside-dns
+pull-filter ifconfig-nowarn tun-mtu tun-mtu-extra link-mtu mssfix fragment
+mtu-disc sndbuf rcvbuf fast-io ping ping-restart ping-exit ping-timer-rem keepalive
+inactive verb mute mute-replay-warnings suppress-timestamps push-peer-info
+ignore-unknown-option setenv-safe tun-ipv6 down-pre allow-pull-fqdn
+machine-readable-output'
+# Left out on purpose: http-proxy/socks-proxy (an auth file root would read
+# and send to the proxy), user/group (the dns script's revert needs root).
+# inline <tag> blocks that are data (keys, certs, credentials); <connection>
+# holds directives and is checked line by line
+OVPN_DATA_BLOCKS='ca cert key pkcs12 extra-certs tls-auth tls-crypt tls-crypt-v2 auth-user-pass'
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -92,11 +117,55 @@ need_conf() {
 
 # The first line that would run a command (or write a file) as root; empty if none.
 unsafe_line() {
-    local pattern=$WG_HOOKS
-    [[ $1 == ovpn ]] && pattern=$OVPN_UNSAFE
+    if [[ $1 == ovpn ]]; then
+        ovpn_unsafe_line "$2"
+        return
+    fi
     # sed, not xargs, to trim: xargs fails on an odd quote (`echo don't`) and
     # an empty answer here would wave the config through
-    grep -Ei "$pattern" "$2" | head -1 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true
+    grep -Ei "$WG_HOOKS" "$2" | head -1 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true
+}
+
+# The first OpenVPN line whose directive isn't in OVPN_SAFE. A quoted or
+# escaped directive never matches a name, so it is refused, not parsed.
+# Where openvpn and awk could read a line differently, the line is refused:
+# a block end with more on its line, a line of 256+ bytes (openvpn reads
+# OPTION_LINE_SIZE pieces), a remote that `endpoints` wouldn't see.
+ovpn_unsafe_line() {
+    LC_ALL=C awk -v safe="$OVPN_SAFE" -v data="$OVPN_DATA_BLOCKS" '
+        BEGIN {
+            n = split(safe, s); for (i = 1; i <= n; i++) ok[s[i]] = 1
+            n = split(data, s); for (i = 1; i <= n; i++) isdata[s[i]] = 1
+        }
+        function bad() { print line; exit }
+        {
+            line = $0
+            sub(/^[ \t]+/, "", line); sub(/[ \t\r]+$/, "", line)
+            if (block != "") {
+                if (line == "</" block ">") block = ""
+                else if (line ~ /^<\//) bad()
+                next
+            }
+            if (length($0) >= 256) bad()
+            if (line == "" || line ~ /^[#;]/) next
+            if (line ~ /^<\/?connection>$/) next
+            if (line ~ /^<[^\/]/) {
+                tag = line; gsub(/^<|>$/, "", tag)
+                if (!(tag in isdata) || line != "<" tag ">") bad()
+                block = tag; next
+            }
+            n = split(line, w, /[ \t]+/); i = 1
+            plain = w[1] !~ /^--/
+            sub(/^--/, "", w[1])
+            # `setenv opt X ...` is directive X, ignored if openvpn lacks it
+            while (w[i] == "setenv" && w[i + 1] == "opt") { i += 2; plain = 0; sub(/^--/, "", w[i]) }
+            if (!(w[i] in ok)) bad()
+            if (w[i] == "remote" && !plain) bad()
+            # a file argument root would read (auth-user-pass: sent to the server); inline blocks only
+            if ((w[i] in isdata) && i < n) bad()
+        }
+        END { if (block != "") print "<" block "> not closed" }
+    ' "$1"
 }
 
 wg_only() { [[ $1 == wg || $1 == awg ]] || die "$2 is for wg / awg profiles only"; }
@@ -149,7 +218,7 @@ cmd_import() {
     local unsafe
     unsafe=$(unsafe_line "$1" "$tmp")
     if [[ -n $unsafe && $1 == ovpn ]]; then
-        die "this OpenVPN config runs scripts or writes files as root (${unsafe%% *}); refusing to import. Remove those lines, or copy it into $dir yourself with sudo if you trust it."
+        die "this OpenVPN config has a directive the helper doesn't allow (${unsafe%% *}): it could run programs or read and write files as root; refusing to import. Remove that line, or copy it into $dir yourself with sudo if you trust it."
     elif [[ -n $unsafe ]]; then
         die "this config has PreUp/PostUp/PreDown/PostDown commands, which would run as root; refusing to import. Import it into NetworkManager instead (it drops them), or copy it into $dir yourself with sudo if you trust it."
     fi

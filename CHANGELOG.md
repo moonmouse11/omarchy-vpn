@@ -22,10 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wildcards that span `..` (any file, the private keys) and `kill` of any process. Now it allows
   three fixed entry points: the new root-owned `omarchy-vpn-helper` (profile names only, never
   paths), `happ-killswitch` and the IPv6 guard's `sysctl`. Run `make install` to replace the rule.
-- Importing a WireGuard config with `PreUp`/`PostUp`/`PreDown`/`PostDown`, or an OpenVPN config
-  that runs scripts or writes files (`up`, `route-up`, `plugin`, `log`, …), is refused — those
-  run as root.
-- `make install` lists VPN configs already on disk that run commands as root when connected.
+- Importing a WireGuard config with `PreUp`/`PostUp`/`PreDown`/`PostDown` is refused — those run
+  as root. An OpenVPN config is imported only when every directive is on a list of ordinary client
+  directives: anything else (`up`, `route-up`, `plugin`, `dns-updown`, `providers`, `setenv`,
+  `auth-user-pass FILE`, …, also written as `--up`, `"up"` or `setenv opt up`) is refused, and so
+  are keys and certificates given as file paths (only inline `<ca>`… blocks: root would read the
+  file), `http-proxy`/`socks-proxy` (an auth file) and `user`/`group`.
+- `make install` lists VPN configs already on disk that the import would refuse.
 - IPv6 stays off while switching servers — it came back on between the old tunnel going down and
   the new one coming up — and goes off for tunnels the plugin didn't start (WireGuard autostart at
   boot, the Happ app, NetworkManager).

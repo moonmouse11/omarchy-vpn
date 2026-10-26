@@ -71,7 +71,39 @@ def test_import_refuses_wireguard_hooks(tree, hook):
 
 @pytest.mark.parametrize(
     "line",
-    ["up /tmp/x", "route-up /tmp/x", "plugin /x.so", "log /etc/x", "management 0.0.0.0 1337"],
+    [
+        "up /tmp/x",
+        "route-up /tmp/x",
+        "plugin /x.so",
+        "log /etc/x",
+        "management 0.0.0.0 1337",
+        # openvpn reads all three as route-up (checked on 2.7.8): a denylist missed them
+        "--route-up /tmp/x",
+        '"route-up" /tmp/x',
+        "setenv opt route-up /tmp/x",
+        # code or file reads no denylist named (dns-updown is new in 2.7)
+        "dns-updown /tmp/x",
+        "pkcs11-providers /tmp/x.so",
+        "providers /tmp/x.so",
+        "auth-user-pass /etc/shadow",
+        # the --up script's environment: the dns script runs as root
+        "setenv LD_PRELOAD /tmp/x.so",
+        "<connection>\nremote h 1194\nroute-up /tmp/x\n</connection>",
+        "<x509-track>\nx\n</x509-track>",
+        # openvpn ends a block on a line that only starts with the tag
+        "<ca>\nx\n</ca>x\nroute-up /tmp/x\n<ca>\ny\n</ca>",
+        # file arguments root would read: only inline blocks
+        "ca /tmp/x",
+        "tls-auth /tmp/x 1",
+        "http-proxy h 8080 /tmp/x basic",
+        "socks-proxy h 1080 /tmp/x",
+        # the dns script's revert needs root
+        "user nobody",
+        # `endpoints` (kill switch whitelist, ping) reads only a plain remote
+        "--remote h 1194",
+        # openvpn reads a line in 256-byte pieces
+        "remote " + "h" * 250 + " route-up /tmp/x",
+    ],
 )
 def test_import_refuses_openvpn_scripts_and_file_writes(tree, line):
     result = tree("import", "ovpn", "evil", stdin=f"client\nremote h 1194\n{line}\n")
@@ -83,6 +115,21 @@ def test_openvpn_import_keeps_harmless_lookalikes(tree):
     ok = "client\nremote vpn.example 1194 udp\nremote-cert-tls server\ndown-pre\n"
     assert tree("import", "ovpn", "us.east_udp", stdin=ok).returncode == 0
     assert tree("endpoints", "ovpn", "us.east_udp").stdout == "remote vpn.example 1194 udp\n"
+
+
+def test_openvpn_import_keeps_a_typical_provider_config(tree):
+    ok = (
+        "# provider export\r\n"
+        "client\r\ndev tun\r\nproto udp\r\nremote nl1.vpn.example 1194\r\n"
+        "resolv-retry infinite\nnobind\npersist-key\npersist-tun\n"
+        "remote-cert-tls server\ncipher AES-256-GCM\nauth SHA512\nverb 3\n"
+        "auth-user-pass\nsetenv opt block-outside-dns\n--key-direction 1\n"
+        "route-ipv6 ::/0\nblock-ipv6\ntopology subnet\ntls-timeout 2\nreplay-window 64\n"
+        "<ca>\n-----BEGIN CERTIFICATE-----\nup /not/a/directive\n-----END CERTIFICATE-----\n</ca>\n"
+        "<tls-crypt>\nx\n</tls-crypt>\n"
+    )
+    result = tree("import", "ovpn", "nl", stdin=ok)
+    assert result.returncode == 0, result.stderr
 
 
 def test_import_never_replaces_a_profile_that_appears_meanwhile(tree, tmp_path):

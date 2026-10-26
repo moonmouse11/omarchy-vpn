@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "omarchy-vpn",
   "name": "VPN",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "omarchy-vpn",
   "license": "MIT",
   "description": "VPN status and menu: WireGuard, AmneziaWG, OpenVPN, NetworkManager, Happ and VLESS/Shadowsocks keys.",

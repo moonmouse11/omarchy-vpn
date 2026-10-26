@@ -1,5 +1,19 @@
 # omarchy-vpn
 
+[![Tests](https://github.com/moonmouse11/omarchy-vpn/actions/workflows/python.yml/badge.svg?branch=main)](https://github.com/moonmouse11/omarchy-vpn/actions/workflows/python.yml)
+[![xray compatibility](https://github.com/moonmouse11/omarchy-vpn/actions/workflows/xray-compat.yml/badge.svg?branch=main)](https://github.com/moonmouse11/omarchy-vpn/actions/workflows/xray-compat.yml)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=moonmouse11_omarchy-vpn&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=moonmouse11_omarchy-vpn)
+[![Release](https://img.shields.io/github/v/release/moonmouse11/omarchy-vpn)](https://github.com/moonmouse11/omarchy-vpn/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+![Omarchy 4](https://img.shields.io/badge/Omarchy-4-1e1e2e)
+![Arch Linux](https://img.shields.io/badge/Arch_Linux-1793D1?logo=archlinux&logoColor=white)
+![Hyprland](https://img.shields.io/badge/Hyprland-58E1FF?logo=hyprland&logoColor=black)
+![Python 3.14](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
+![QML / Quickshell](https://img.shields.io/badge/QML-Quickshell-41CD52?logo=qt&logoColor=white)
+![Bash](https://img.shields.io/badge/Bash-4EAA25?logo=gnubash&logoColor=white)
+![nftables](https://img.shields.io/badge/nftables-kill_switch-555)
+
 A VPN manager for the [Omarchy](https://omarchy.org/) 4 shell: a bar widget, a panel and an app
 window for **WireGuard, AmneziaWG, OpenVPN, VLESS and Shadowsocks keys, Happ subscriptions** and
 any VPN managed by **NetworkManager**.

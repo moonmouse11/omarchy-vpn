@@ -7,8 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-27
+
+Run **Update setup** in the panel (or `make install`) after updating: the sudoers rule, the root
+helpers and the backend are copies.
+
 ### Added
 
+- Install from the Omarchy plugin marketplace: `omarchy plugin add` downloads the plugin, the
+  panel's **Finish setup** runs the installer in a terminal, **Update setup** after an update.
+- An install wizard: protocols and features are asked before any password (preselected from
+  what's already set up), and only the packages your picks need are installed.
 - ⚙ Settings → "IPv6 guard" (on by default): IPv6 off while a VPN is up and at boot. Off, IPv6
   stays on under the tunnel and the IPv6 badge says why.
 
@@ -31,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WireGuard/AmneziaWG profile names longer than 15 characters are refused: `wg-quick` takes
   such a name for a path and read the config from the caller's current directory, as root.
 - `make install` lists VPN configs already on disk that the import would refuse.
+- The subscription header capture is gone: it installed a trusted local CA whose key sat in
+  the shared `/tmp`. `~/.config/happ-capture/headers.json` still works as a manual override.
 - IPv6 stays off while switching servers — it came back on between the old tunnel going down and
   the new one coming up — and goes off for tunnels the plugin didn't start (WireGuard autostart at
   boot, the Happ app, NetworkManager).
@@ -47,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Quick clicks while switching no longer answer "Already switching": a new click waits for the
   handover to the previous one and then takes over.
 - A tunnel of a provider hidden in ⚙ Settings no longer shows the bar as "not connected".
+- Switching servers fast could report the failure of the keeper it had just replaced (Happ,
+  keys): a connect now waits for its own keeper's answer.
 - The background subscription refresh logs why a subscription didn't update (once per new
   reason) — it used to fail silently, and the server list just stayed old.
 - A failed Finish setup / `make install` step now says "Setup failed" — the setup terminal
@@ -55,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - `socat` from the installed packages: nothing used it.
+- The header capture and happd sniffing scripts (`sub-intercept-*`, `happd-sniff*`,
+  `happd-extract-config.py`).
 
 ## [0.2.0] - 2026-10-18
 
@@ -113,6 +128,7 @@ window rules and restarts the shell so the new widget code loads.
 First release: a fork of [waybar-vpn-manager](https://github.com/moonmouse11/waybar-vpn-manager)
 0.3.0 (archived), renamed ahead of the Omarchy 4 port.
 
-[Unreleased]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/moonmouse11/omarchy-vpn/releases/tag/v0.1.0

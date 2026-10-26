@@ -154,3 +154,29 @@ def test_fd_3_reaches_what_install_sh_reads(monkeypatch):
         ["bash", "-c", script, "_", write], capture_output=True, text=True, check=True
     ).stdout
     assert out == "openvpn|:resolv-stub|"
+
+
+def _run_install(monkeypatch, tmp_path, failing):
+    """The real install.sh with its commands stubbed: `failing` exits 1, the rest 0."""
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+    shims = tmp_path / "bin"
+    shims.mkdir()
+    for cmd in ("omarchy-shell", "python3", "sudo"):
+        (shims / cmd).write_text(f"#!/bin/sh\nexit {int(cmd == failing)}\n")
+        (shims / cmd).chmod(0o755)
+    env = {"PATH": f"{shims}:/usr/bin:/bin", "HOME": str(tmp_path)}
+    return _REAL_RUN(["bash", str(INSTALL)], capture_output=True, text=True, env=env)
+
+
+def test_a_failed_root_step_says_setup_failed(monkeypatch, tmp_path):
+    """Finish setup's terminal prints omarchy's "Done!" whatever the exit code:
+    a failed step must say itself that setup didn't finish."""
+    result = _run_install(monkeypatch, tmp_path, failing="sudo")
+    assert result.returncode != 0
+    assert "Setup failed" in result.stdout + result.stderr
+
+
+def test_a_cancelled_wizard_is_not_a_failure(monkeypatch, tmp_path):
+    result = _run_install(monkeypatch, tmp_path, failing="python3")
+    assert "Cancelled" in result.stdout
+    assert "Setup failed" not in result.stdout + result.stderr

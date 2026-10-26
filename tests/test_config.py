@@ -125,3 +125,10 @@ def test_locations_layout_loads_known_values_only(tmp_path, monkeypatch, raw, la
     p.write_text(f'{{"locations_layout": {raw}}}')
     monkeypatch.setattr(config, "CONFIG_PATH", p)
     assert load_config().locations_layout == layout
+
+
+def test_ipv6_guard_defaults_on_and_round_trips(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    assert load_config().ipv6_guard is True
+    save_config(Config(ipv6_guard=False))
+    assert load_config().ipv6_guard is False

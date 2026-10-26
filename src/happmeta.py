@@ -3,7 +3,7 @@
 The full server list comes from the provider's subscription endpoint, fetched
 directly with Happ's User-Agent and HWID (panels answer plain curl with a stub;
 device-limited ones want the HWID too) — or with the app's full request headers
-when captured via scripts/sub-intercept-*. Subscription configs are merged into
+when set in ~/.config/happ-capture/headers.json. Subscription configs are merged into
 runnable xray configs the same way the GUI does it (local inbounds + dns-in +
 dns-out + local routing rules), so any server can be connected headless.
 
@@ -44,8 +44,8 @@ XRAY_CONFIGS = Path.home() / ".config/happ-capture/xray-configs.json"
 HEADERS_FILE = Path.home() / ".config/happ-capture/headers.json"
 SUB_CACHE_DIR = Path.home() / ".cache/vpn-manager"
 # What a panel keys the full xray JSON on is a "Happ/<version>" User-Agent:
-# without it (plain curl/urllib UA) Unlock VPN answers a text/plain link list
-# instead. Device-limited panels (WireCat, oplVPN) also want X-HWID, else they
+# without it (plain curl/urllib UA) a panel may answer a text/plain link list
+# instead. Device-limited panels also want X-HWID, else they
 # answer stub "servers" ("Client not supported"). Happ's HWID is the raw
 # machine id (QSysInfo::machineUniqueId), so sending it makes us the same
 # device as the GUI, not one more against the limit.
@@ -56,7 +56,7 @@ MACHINE_ID_FILES = (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id"))
 PING_MAX_AGE = 86400  # seconds; older pings show with "~" — they are
 # measured only on the panel's Ping button (delayping), so they can be
 # any age. (The old 30-min background TCP sweep likely tripped server-side
-# rate limits — the ARTEMIDA IP ban.)
+# rate limits — one provider banned the IP.)
 SUB_MAX_AGE = 3600  # seconds
 SUBS_REFRESH_RETRY = 60  # seconds, avoid spawning a worker per status tick when the tunnel is down
 PING_TIMEOUT = 3.0
@@ -258,7 +258,7 @@ def captured_providers() -> dict[str, str]:
 
 
 def _captured_headers() -> dict[str, str] | None:
-    """Captured Happ request headers (see scripts/sub-intercept-*)."""
+    """Request headers the user put in HEADERS_FILE (README: Happ setup)."""
     try:
         data = json.loads(HEADERS_FILE.read_text())
     except OSError, json.JSONDecodeError:
@@ -313,7 +313,7 @@ def has_headers() -> bool:
 
 
 # Outbounds that never reach a server, and addresses a panel's stub "server"
-# points at (ARTEMIDA: 0.0.0.0, oplVPN: 198.18.0.1).
+# points at (seen: 0.0.0.0 and 198.18.0.1).
 _STUB_IGNORED_PROTOCOLS = (*NON_PROXY_PROTOCOLS, "loopback")
 _PLACEHOLDER_NETS = tuple(ipaddress.ip_network(n) for n in ("0.0.0.0/8", "198.18.0.0/15"))
 
@@ -594,9 +594,18 @@ def _subs_refresh_in_progress() -> bool:
         return False
 
 
-def _stamp_subs_refresh() -> None:
+def _stamp_subs_refresh(failed: dict[str, str] | None = None) -> None:
     with contextlib.suppress(OSError):
-        fsutil.write_json_atomic(_subs_refresh_path(), {"at": time.time()})
+        fsutil.write_json_atomic(_subs_refresh_path(), {"at": time.time(), "failed": failed or {}})
+
+
+def last_subs_failures() -> dict[str, str]:
+    """What the previous refresh couldn't update ({name: reason})."""
+    try:
+        failed = json.loads(_subs_refresh_path().read_text()).get("failed")
+    except OSError, json.JSONDecodeError, AttributeError:
+        return {}
+    return failed if isinstance(failed, dict) else {}
 
 
 def request_subscription_update() -> None:
@@ -635,6 +644,7 @@ def update_subscriptions(force: bool = False) -> dict[str, str]:
             error = _fetch_error_reason(e)
         if error:
             failed[prov.get("name") or sub_id] = error
+    _stamp_subs_refresh(failed)
     return failed
 
 
@@ -648,7 +658,7 @@ def build_runtime_config(server_cfg: dict, tunnel_dns: bool = True) -> dict:
 
     tunnel_dns (config.json "dns_mode": "tunnel"): pin dns-in to the
     subscription's own catch-all, ahead of its rules — otherwise a rule like
-    ARTΞMIDA's {"ip": ["1.1.1.1", ...], "ruleTag": "DNS_DIRECT",
+    one provider's {"ip": ["1.1.1.1", ...], "ruleTag": "DNS_DIRECT",
     "outboundTag": "direct"} sends every lookup out the real NIC. Costs the
     provider's split DNS (e.g. Yandex for .ru via geoip:ru) — it then
     resolves through the tunnel too; the traffic itself still splits."""

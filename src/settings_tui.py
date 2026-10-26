@@ -84,6 +84,9 @@ def build_rows(
     def toggle_key_hints(d):
         d.panel_key_hints = not d.panel_key_hints
 
+    def toggle_ipv6_guard(d):
+        d.ipv6_guard = not d.ipv6_guard
+
     def next_locations_layout(d):
         layouts = config.LOCATIONS_LAYOUTS
         d.locations_layout = layouts[(layouts.index(d.locations_layout) + 1) % len(layouts)]
@@ -106,6 +109,11 @@ def build_rows(
             f"{KILLSWITCH_ICON} Killswitch mode: {mode} ({KILLSWITCH_MODES[mode]})",
             "toggle",
             next_killswitch_mode,
+        ),
+        Row(
+            f"{_checkbox(draft.ipv6_guard)} IPv6 guard: IPv6 off while a VPN is up and at boot",
+            "toggle",
+            toggle_ipv6_guard,
         ),
         Row(
             f"{_checkbox(draft.killswitch_lockdown)} Lockdown: block traffic while no VPN is up",

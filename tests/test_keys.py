@@ -28,7 +28,7 @@ def test_parse_sip002_with_name():
 
 
 def test_parse_legacy_cipher_rejected():
-    """Legacy ciphers (aes-256-cfb, still handed out by OutlineKeys) were
+    """Legacy ciphers (aes-256-cfb, still handed out by key shops) were
     removed from xray 26 — the import must say so instead of failing at
     connect time."""
     import pytest
@@ -42,10 +42,10 @@ def test_parse_legacy_cipher_rejected():
 
 def test_parse_vless_minimal():
     """The user's real key shape: no query params at all (tcp, no tls).
-    The key-shop " / OutlineKeys.com" suffix is stripped from the name."""
+    The key-shop " / keyshop.example" suffix is stripped from the name."""
     parsed = keys.parse_vless_key(
         "vless://3874802c-d7fb-43e3-aeed-d4413fe444b2@203.0.113.20:2222"
-        "#Germany%20%2341294%20%2F%20OutlineKeys.com"
+        "#Germany%20%2341294%20%2F%20keyshop.example"
     )
     assert parsed["kind"] == "vless"
     assert parsed["id"] == "3874802c-d7fb-43e3-aeed-d4413fe444b2"
@@ -394,3 +394,24 @@ def test_legacy_keys_get_a_uid_on_connect_not_on_status(store, monkeypatch):
     provider.connect(keys.VPNConnection(name="Old", provider=provider.name, active=False))
     uid = keys._load_servers()[0]["uid"]
     assert started == [uid]
+
+
+def test_headless_connect_ignores_a_superseded_keepers_exit(store, monkeypatch, tmp_path):
+    """Same race as Happ's: the replaced keeper's "exited" lands in the
+    unlinked state file before the new keeper's claim."""
+    state = tmp_path / "keys-keeper.json"
+    monkeypatch.setattr(keys, "_kind_meta", lambda kind: ("xray-keys-ss", "keys-ss-tun0", state))
+
+    class Keeper:
+        pid = 4242
+
+    def spawn(cmd, **kw):
+        state.write_text(json.dumps({"status": "exited", "pid": 999}))
+        return Keeper()
+
+    def sleep(s):
+        state.write_text(json.dumps({"status": "connected", "server": "S", "pid": 4242}))
+
+    monkeypatch.setattr(keys.subprocess, "Popen", spawn)
+    monkeypatch.setattr(keys.time, "sleep", sleep)
+    assert keys.KeysProvider("ss")._headless_connect("uid1").success

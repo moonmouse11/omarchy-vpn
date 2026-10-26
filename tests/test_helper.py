@@ -17,7 +17,7 @@ _REAL_POPEN = subprocess.Popen
 @pytest.fixture
 def tree(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
-    dirs = {name: tmp_path / name for name in ("wg", "awg", "ovpn", "run", "proc")}
+    dirs = {name: tmp_path / name for name in ("wg", "awg", "ovpn", "run", "proc", "systemd")}
     for d in dirs.values():
         d.mkdir()
     env = {
@@ -27,6 +27,7 @@ def tree(tmp_path, monkeypatch):
         "OVPN_DIR": str(dirs["ovpn"]),
         "PID_DIR": str(dirs["run"]),
         "PROC_DIR": str(dirs["proc"]),
+        "SYSTEMD_DIR": str(dirs["systemd"]),
         "DRY_RUN": "1",
     }
 
@@ -70,7 +71,39 @@ def test_import_refuses_wireguard_hooks(tree, hook):
 
 @pytest.mark.parametrize(
     "line",
-    ["up /tmp/x", "route-up /tmp/x", "plugin /x.so", "log /etc/x", "management 0.0.0.0 1337"],
+    [
+        "up /tmp/x",
+        "route-up /tmp/x",
+        "plugin /x.so",
+        "log /etc/x",
+        "management 0.0.0.0 1337",
+        # openvpn reads all three as route-up (checked on 2.7.8): a denylist missed them
+        "--route-up /tmp/x",
+        '"route-up" /tmp/x',
+        "setenv opt route-up /tmp/x",
+        # code or file reads no denylist named (dns-updown is new in 2.7)
+        "dns-updown /tmp/x",
+        "pkcs11-providers /tmp/x.so",
+        "providers /tmp/x.so",
+        "auth-user-pass /etc/shadow",
+        # the --up script's environment: the dns script runs as root
+        "setenv LD_PRELOAD /tmp/x.so",
+        "<connection>\nremote h 1194\nroute-up /tmp/x\n</connection>",
+        "<x509-track>\nx\n</x509-track>",
+        # openvpn ends a block on a line that only starts with the tag
+        "<ca>\nx\n</ca>x\nroute-up /tmp/x\n<ca>\ny\n</ca>",
+        # file arguments root would read: only inline blocks
+        "ca /tmp/x",
+        "tls-auth /tmp/x 1",
+        "http-proxy h 8080 /tmp/x basic",
+        "socks-proxy h 1080 /tmp/x",
+        # the dns script's revert needs root
+        "user nobody",
+        # `endpoints` (kill switch whitelist, ping) reads only a plain remote
+        "--remote h 1194",
+        # openvpn reads a line in 256-byte pieces
+        "remote " + "h" * 250 + " route-up /tmp/x",
+    ],
 )
 def test_import_refuses_openvpn_scripts_and_file_writes(tree, line):
     result = tree("import", "ovpn", "evil", stdin=f"client\nremote h 1194\n{line}\n")
@@ -82,6 +115,21 @@ def test_openvpn_import_keeps_harmless_lookalikes(tree):
     ok = "client\nremote vpn.example 1194 udp\nremote-cert-tls server\ndown-pre\n"
     assert tree("import", "ovpn", "us.east_udp", stdin=ok).returncode == 0
     assert tree("endpoints", "ovpn", "us.east_udp").stdout == "remote vpn.example 1194 udp\n"
+
+
+def test_openvpn_import_keeps_a_typical_provider_config(tree):
+    ok = (
+        "# provider export\r\n"
+        "client\r\ndev tun\r\nproto udp\r\nremote nl1.vpn.example 1194\r\n"
+        "resolv-retry infinite\nnobind\npersist-key\npersist-tun\n"
+        "remote-cert-tls server\ncipher AES-256-GCM\nauth SHA512\nverb 3\n"
+        "auth-user-pass\nsetenv opt block-outside-dns\n--key-direction 1\n"
+        "route-ipv6 ::/0\nblock-ipv6\ntopology subnet\ntls-timeout 2\nreplay-window 64\n"
+        "<ca>\n-----BEGIN CERTIFICATE-----\nup /not/a/directive\n-----END CERTIFICATE-----\n</ca>\n"
+        "<tls-crypt>\nx\n</tls-crypt>\n"
+    )
+    result = tree("import", "ovpn", "nl", stdin=ok)
+    assert result.returncode == 0, result.stderr
 
 
 def test_import_never_replaces_a_profile_that_appears_meanwhile(tree, tmp_path):
@@ -112,6 +160,23 @@ def test_names_are_never_paths_or_options(tree, name):
     assert "invalid profile name" in result.stderr
 
 
+@pytest.mark.parametrize("kind", ["wg", "awg"])
+def test_wireguard_names_fit_an_interface_name(tree, kind):
+    """wg-quick reads a name over 15 chars as a path from root's cwd."""
+    result = tree("up", kind, "a" * 16)
+    assert result.returncode != 0
+    assert "at most 15 characters" in result.stderr
+    assert tree("import", kind, "a" * 15, stdin=WG).returncode == 0
+    assert tree("import", "ovpn", "a" * 16, stdin="client\nremote h 1194\n").returncode == 0
+
+
+def test_a_long_named_profile_from_before_the_cap_can_still_be_deleted(tree):
+    """rm never runs wg-quick: the path is built by the helper."""
+    old = tree.dirs["wg"] / f"{'a' * 16}.conf"
+    old.write_text(WG)
+    assert tree("rm", "wg", "a" * 16).stdout.startswith(f"rm -f {old} ")
+
+
 def test_unknown_kind_and_verb_are_refused(tree):
     assert "unknown kind" in tree("up", "zz", "home").stderr
     tree("import", "wg", "home", stdin=WG)
@@ -124,7 +189,7 @@ def test_up_down_autostart_rm_run_fixed_commands(tree):
     assert tree("down", "awg", "home").stdout == "awg-quick down home\n"
     assert tree("autostart", "wg", "home", "on").stdout == "systemctl enable wg-quick@home\n"
     assert tree("autostart", "wg", "home", "off").stdout == "systemctl disable wg-quick@home\n"
-    assert tree("rm", "wg", "home").stdout == f"rm -f {tree.dirs['wg']}/home.conf\n"
+    assert tree("rm", "wg", "home").stdout.startswith(f"rm -f {tree.dirs['wg']}/home.conf ")
     assert "wg / awg" in tree("rm", "ovpn", "home").stderr
     assert "no wg profile" in tree("up", "wg", "nope").stderr
 
@@ -163,6 +228,55 @@ def test_audit_lists_configs_on_disk_that_run_root_commands(tree):
         f"{tree.dirs['ovpn']}/corp.ovpn: up /etc/openvpn/up.sh",
         f"{tree.dirs['wg']}/old.conf: PostUp = iptables -A x",
     ]
+
+
+def _enabled_units(tree, tmp_path, *units):
+    """A fake systemctl: `is-enabled` is true only for these units."""
+    fake = tmp_path / "systemctl"
+    fake.write_text(
+        '#!/bin/sh\n[ "$1" = is-enabled ] || { echo "systemctl $*"; exit 0; }\n'
+        f'case "$3" in {"|".join(units) or "none"}) exit 0 ;; esac\nexit 1\n'
+    )
+    fake.chmod(0o755)
+    return {"SYSTEMCTL": str(fake)}
+
+
+def test_ipv6_boot_drops_in_for_autostarted_profiles_only(tree, tmp_path):
+    """Autostarted tunnels come up before login: IPv6 goes off right before
+    them (a drop-in), not on the bar's first --status."""
+    for name in ("home", "work"):
+        tree("import", "wg", name, stdin=WG)
+    env = _enabled_units(tree, tmp_path, "wg-quick@home")
+    result = tree("ipv6-boot", "on", extra_env=env)
+    assert result.returncode == 0
+    assert "daemon-reload" in result.stdout
+    systemd = tree.dirs["systemd"]
+    dropin = systemd / "wg-quick@home.service.d" / "omarchy-vpn-ipv6.conf"
+    assert (
+        "ExecStartPre=/usr/bin/sysctl -q -w net.ipv6.conf.all.disable_ipv6=1" in dropin.read_text()
+    )
+    assert not (systemd / "wg-quick@work.service.d").exists()  # no autostart, no drop-in
+
+
+def test_ipv6_boot_off_and_deleted_profiles_lose_their_drop_ins(tree, tmp_path):
+    tree("import", "wg", "home", stdin=WG)
+    tree("import", "wg", "gone", stdin=WG)
+    env = _enabled_units(tree, tmp_path, "wg-quick@home", "wg-quick@gone")
+    tree("ipv6-boot", "on", extra_env=env)
+    (tree.dirs["wg"] / "gone.conf").unlink()  # deleted outside the helper
+    tree("ipv6-boot", "on", extra_env=env)
+    systemd = tree.dirs["systemd"]
+    assert not (systemd / "wg-quick@gone.service.d" / "omarchy-vpn-ipv6.conf").exists()
+    assert (systemd / "wg-quick@home.service.d" / "omarchy-vpn-ipv6.conf").exists()
+    tree("ipv6-boot", "off", extra_env=env)  # ⚙ IPv6 guard off
+    assert not (systemd / "wg-quick@home.service.d" / "omarchy-vpn-ipv6.conf").exists()
+    assert "on | off" in tree("ipv6-boot", "maybe").stderr
+
+
+def test_rm_also_removes_the_profiles_drop_in(tree):
+    tree("import", "wg", "home", stdin=WG)
+    dropin = tree.dirs["systemd"] / "wg-quick@home.service.d" / "omarchy-vpn-ipv6.conf"
+    assert str(dropin) in tree("rm", "wg", "home").stdout
 
 
 def test_overrides_are_ignored_under_sudo(tree):

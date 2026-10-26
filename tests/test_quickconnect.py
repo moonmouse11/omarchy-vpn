@@ -70,7 +70,7 @@ def test_server_list_chips_stars_and_the_last_server(monkeypatch):
         lambda provider: (
             [],
             {
-                "Unlock VPN": [
+                "Provider A": [
                     {"name": "🇩🇪 DE", "active": False, "provider_id": "15"},
                     {"name": "🇳🇱 NL", "active": False, "provider_id": "15"},
                 ]
@@ -88,8 +88,8 @@ def test_server_list_chips_stars_and_the_last_server(monkeypatch):
     # recent leaves the favourite out; the switch's last server is the newest
     assert [(c["name"], c["active"]) for c in quick["recent"]] == [("home", True)]
     assert quick["last"]["name"] == "home"
-    unlock = listing["groups"][0]
-    assert [(r["name"], r["favourite"]) for r in unlock["servers"]] == [
+    sub_a = listing["groups"][0]
+    assert [(r["name"], r["favourite"]) for r in sub_a["servers"]] == [
         ("🇩🇪 DE", True),
         ("🇳🇱 NL", False),
     ]

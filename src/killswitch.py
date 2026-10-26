@@ -1,4 +1,4 @@
-"""Killswitch integration for the VPN menu.
+"""Killswitch integration for the VPN plugin.
 
 Wraps the /usr/local/bin/happ-killswitch script (installed root-owned by
 install.sh, driven via a NOPASSWD sudoers rule, so menu actions never
@@ -224,7 +224,8 @@ def system_resolvers() -> list[str]:
         except OSError, subprocess.SubprocessError:
             out = ""
         for line in out.splitlines():
-            _, _, servers = line.partition(":")
+            # a wrapped server list continues on an unlabelled, indented line
+            servers = line if line[:1].isspace() else line.partition(":")[2]
             for token in servers.split():
                 match = _RESOLVECTL_ADDR.fullmatch(token)
                 addr = _ip(match.group(1)) if match else None

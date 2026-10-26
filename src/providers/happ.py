@@ -319,6 +319,14 @@ def app_owns_connection() -> bool:
     return False
 
 
+def app_connected() -> bool:
+    """The open Happ app holds a tunnel: a connect must leave it alone. Its
+    xray runs under the same happd id as ours, so taking it over makes the
+    app restart its own and knock ours out, back and forth. With the app
+    closed, a tunnel without a keeper is a leftover the plugin may replace."""
+    return bool(_happ_processes(fresh=True)) and app_owns_connection() and _gui_running()
+
+
 def _read_keeper_state() -> dict | None:
     try:
         data = json.loads(KEEPER_STATE.read_text())
@@ -447,6 +455,7 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
     try:
         cfg = happmeta.resolve_config(
             server_name or (_last_server_name() or ""),
+            allow_fetch=False,  # cache-only like the list it came from: a fetch blocks for minutes
             provider_id=provider_id,
             tunnel_dns=config.load_config().dns_mode == "tunnel",
         )
@@ -639,7 +648,8 @@ class HappProvider(VPNProvider):
         # observes the same happd state. Configs come from the provider
         # subscription (merged like the GUI does) or from captures.
         sub_id = connection.subscription_id
-        cfg = happmeta.resolve_config(connection.name, provider_id=sub_id)
+        # cache-only: a stale subscription's fetch (up to 30 s each) must never hold a click
+        cfg = happmeta.resolve_config(connection.name, allow_fetch=False, provider_id=sub_id)
         headless_error = None
         if cfg is not None:
             self._stop_running()  # switch servers if something else is up
@@ -683,7 +693,7 @@ class HappProvider(VPNProvider):
         cmd = [sys.executable, str(manager), "--happ-keeper", server_name]
         if provider_id:
             cmd.append(provider_id)
-        subprocess.Popen(
+        keeper = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -691,14 +701,16 @@ class HappProvider(VPNProvider):
         )
         deadline = time.time() + 25  # happd can be slow to ack
         try:
-            return self._await_keeper(deadline)
+            return self._await_keeper(deadline, keeper.pid)
         finally:
             _invalidate_procs_cache()
 
-    def _await_keeper(self, deadline: float) -> ActionResult:
+    def _await_keeper(self, deadline: float, pid: int) -> ActionResult:
         while time.time() < deadline:
             state = _read_keeper_state()
-            if state:
+            # only our keeper's verdict: the keeper a switch replaced can write
+            # its "exited" into the just-unlinked file before ours claims it
+            if state and state.get("pid") == pid:
                 if state.get("status") == "connected":
                     return ActionResult(True, f"Connected: {state.get('server', 'Happ')}")
                 if state.get("status") == "error":

@@ -489,13 +489,40 @@ def test_connect_passes_provider_to_resolve_and_keeper(tmp_path, monkeypatch):
     assert keeper_calls == [("S", "2")]
 
 
+class Keeper:
+    pid = 4242
+
+
+def test_headless_connect_ignores_a_superseded_keepers_exit(tmp_path, monkeypatch):
+    """A switch unlinks KEEPER_STATE and spawns a keeper; the keeper it
+    replaced can write its "exited" into the empty file before the new one
+    claims it (two connects within a second, 2026-10-20) — not our keeper's
+    verdict, so no "keeper exited before connecting" bubble."""
+    state = tmp_path / "keeper.json"
+    monkeypatch.setattr(happ, "KEEPER_STATE", state)
+
+    def spawn(cmd, **kw):
+        state.write_text(json.dumps({"status": "exited", "pid": 999}))
+        return Keeper()
+
+    def sleep(s):
+        state.write_text(json.dumps({"status": "connected", "server": "S", "pid": 4242}))
+
+    monkeypatch.setattr(happ.subprocess, "Popen", spawn)
+    monkeypatch.setattr(happ.time, "sleep", sleep)
+    assert happ.HappProvider()._headless_connect("S").success
+
+
 def test_headless_connect_passes_provider_on_command_line(tmp_path, monkeypatch):
     monkeypatch.setattr(happ, "KEEPER_STATE", tmp_path / "keeper.json")
     spawned = []
 
     def fake_popen(cmd, **kw):
         spawned.append(cmd)
-        (tmp_path / "keeper.json").write_text(json.dumps({"status": "connected", "server": "S"}))
+        (tmp_path / "keeper.json").write_text(
+            json.dumps({"status": "connected", "server": "S", "pid": 4242})
+        )
+        return Keeper()
 
     monkeypatch.setattr(happ.subprocess, "Popen", fake_popen)
     assert happ.HappProvider()._headless_connect("S", "2").success
@@ -607,6 +634,31 @@ def test_keeper_does_not_notify_on_user_disconnect(tmp_path, monkeypatch):
     assert notes == []
 
 
+def test_connect_and_keeper_never_fetch_subscriptions(tmp_path, monkeypatch):
+    # a click used to fetch every stale subscription first (15 s x 2 each, in
+    # a row): connects hung past the keeper timeout and clicks piled up
+    # (2026-10-24). The list the click came from is cache-only too.
+    import happmeta
+    from providers.base import ActionResult, VPNConnection
+
+    fetch = []
+    prov = happ.HappProvider()
+    monkeypatch.setattr(prov, "_stop_running", lambda: None)
+    monkeypatch.setattr(prov, "_headless_connect", lambda *a, **kw: ActionResult(True, "ok"))
+    sock = FakeSock(_frame({"request-id": "wm-12345", "status": "started"}))
+    _run_keeper_env(tmp_path, monkeypatch, sock, None)
+    monkeypatch.setattr(
+        happmeta,
+        "resolve_config",
+        lambda name, allow_fetch=True, **kw: fetch.append(allow_fetch) or {"remarks": name},
+    )
+
+    prov.connect(VPNConnection(name="S", provider="Happ", active=False, subscription_id="2"))
+    happ.run_keeper("S", "2")
+
+    assert fetch == [False, False]
+
+
 @pytest.mark.parametrize("mode, tunnel", [("tunnel", True), ("subscription", False)])
 def test_run_keeper_builds_config_with_the_configured_dns_mode(tmp_path, monkeypatch, mode, tunnel):
     import config
@@ -713,12 +765,12 @@ def test_connections_never_borrow_the_guis_last_server_for_a_tunnel_we_dont_own(
 ):
     """Right after a disconnect the (3 s-cached) process list still showed
     xray-core while our keeper state was already gone: the tunnel was named
-    after Happ.conf's lastServerName (the GUI's last pick, Unlock's
+    after Happ.conf's lastServerName (the GUI's last pick, Provider A's
     "Германия+"), so Waybar showed it connected and the menu's "↻" row
     reconnected *that* server. Only a running GUI may name a tunnel."""
     servers = [
-        {"name": "🇩🇪 Германия+", "provider_id": "u", "provider_name": "Unlock", "config": {}},
-        {"name": "🇵🇱 Польша 1", "provider_id": "a", "provider_name": "ARTΞMIDA", "config": {}},
+        {"name": "🇩🇪 Германия+", "provider_id": "u", "provider_name": "Provider A", "config": {}},
+        {"name": "🇵🇱 Польша 1", "provider_id": "a", "provider_name": "Provider B", "config": {}},
     ]
     _patch_env(monkeypatch, tmp_path, servers, [], ["xray-core"], "🇩🇪 Германия+", None, gui=False)
     conns = happ.HappProvider().connections()
@@ -761,7 +813,8 @@ def test_headless_connect_drops_the_process_list_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(happ, "KEEPER_STATE", state)
 
     def spawn(cmd, **kw):
-        state.write_text(json.dumps({"status": "connected", "server": "S"}))
+        state.write_text(json.dumps({"status": "connected", "server": "S", "pid": 4242}))
+        return Keeper()
 
     monkeypatch.setattr(happ.subprocess, "Popen", spawn)
     assert happ.HappProvider()._headless_connect("S").success

@@ -108,15 +108,15 @@ def test_ipwhois_lookup_happy_path(monkeypatch):
             "success": True,
             "country_code": "DE",
             "country": "Germany",
-            "connection": {"org": "jogcorp", "domain": "jogcorp.org"},
+            "connection": {"org": "examplehost", "domain": "examplehost.example"},
         },
     )
     finding = IpWhoIsSource().lookup("1.2.3.4")
     assert finding.source == "ipwho.is"
     assert finding.ip == "1.2.3.4"
     assert finding.country_code == "DE"
-    assert finding.org == "jogcorp"
-    assert finding.domain == "jogcorp.org"
+    assert finding.org == "examplehost"
+    assert finding.domain == "examplehost.example"
 
 
 def test_ipwhois_lookup_returns_none_on_failure(monkeypatch):

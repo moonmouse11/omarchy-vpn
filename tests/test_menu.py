@@ -717,7 +717,7 @@ def test_ip_info_menu_builds_rows(monkeypatch):
     monkeypatch.setattr(vpn_manager, "notify", lambda *a, **k: None)
     monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
     findings = [
-        IPFinding(source="ipwho.is", ip="1.2.3.4", country_name="Germany", org="jogcorp"),
+        IPFinding(source="ipwho.is", ip="1.2.3.4", country_name="Germany", org="examplehost"),
         IPFinding(
             source="ip-api.com",
             ip="1.2.3.4",
@@ -744,7 +744,7 @@ def test_ip_info_menu_builds_rows(monkeypatch):
     assert result.success
     rows = seen[0]
     assert rows[0] == "IP: 1.2.3.4"
-    assert "ipwho.is: Germany · jogcorp" in rows
+    assert "ipwho.is: Germany · examplehost" in rows
     assert "ip-api.com: France · SMARTNET Germany GmbH" in rows
     assert "🏢 Datacenter/Hosting: Yes" in rows
     assert "🕵️ Proxy/VPN detected: No" in rows
@@ -788,6 +788,28 @@ def test_killswitch_tool_refuses_under_a_networkmanager_vpn(monkeypatch):
     result = vpn_manager.run_tool("killswitch")
     assert not result.success
     assert "NetworkManager" in result.message
+
+
+def test_background_subs_refresh_logs_a_reason_once(monkeypatch, tmp_path):
+    """--update-subs runs unattended — every minute while the network is down:
+    no bubble, and one log line per new reason, not one per retry."""
+    happmeta = vpn_manager.happmeta
+    monkeypatch.setattr(happmeta, "SUB_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(happmeta, "providers", lambda: {"1": {"name": "P", "url": "https://x/1"}})
+    reason = ["timed out"]
+    monkeypatch.setattr(happmeta, "_fetch_subscription", lambda *a: ([], reason[0]))
+    logged = []
+    monkeypatch.setattr(vpn_manager.logutil, "log", logged.append)
+    monkeypatch.setattr(vpn_manager, "notify", lambda *a, **kw: pytest.fail("notified"))
+    monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", "--update-subs"])
+    vpn_manager.main()
+    vpn_manager.main()
+    reason[0] = "HTTP 403"
+    vpn_manager.main()
+    assert logged == [
+        "subscription P not updated: timed out",
+        "subscription P not updated: HTTP 403",
+    ]
 
 
 def test_refresh_all_menu_spawns_subs_unconditionally(monkeypatch):
@@ -926,7 +948,7 @@ def test_dns_leak_exit_row_eu_flag_accepts_any_member_state(monkeypatch):
 
 
 def test_dns_leak_exit_row_second_geo_opinion_clears_a_geo_db_mismatch(monkeypatch):
-    """Poland 1: bash.ws geolocated its exit 192.144.78.10 (leased IPbnb
+    """Poland 1: bash.ws geolocated its exit 198.51.100.10 (leased
     block) to KR, ipwho.is to PL/Warsaw, ip-api to FR — while the resolvers
     were Cloudflare's Polish PoP. One geo DB's opinion isn't a leak."""
     seen = _dns_leak_menu_env(
@@ -1058,7 +1080,7 @@ def _fake_report_data(monkeypatch):
         vpn_manager.happmeta,
         "providers",
         lambda: {
-            "1": {"name": "Unlock VPN", "url": "https://x/1"},
+            "1": {"name": "Provider A", "url": "https://x/1"},
             "2": {"name": "OK", "url": "https://x/2"},
             "0": {"name": "routing only", "url": None},
         },
@@ -1091,7 +1113,7 @@ def test_subscription_report_lists_ping_and_traffic_per_provider(monkeypatch):
     title, body = vpn_manager.subscription_report({})
     assert title == "Happ — subscriptions updated"
     assert body.splitlines() == [
-        "Unlock VPN: ✓ 2/2 · ⌀45ms · 6.5 GB / ∞ · until 14.12.2026",
+        "Provider A: ✓ 2/2 · ⌀45ms · 6.5 GB / ∞ · until 14.12.2026",
         "OK: 1 servers, no ping yet",
     ]
 
@@ -1394,3 +1416,47 @@ def test_a_failed_switch_teardown_still_syncs_ipv6(monkeypatch):
     monkeypatch.setattr(vpn_manager, "_disconnect_all", gone_but_failed)
     assert not vpn_manager.guarded_connect(wg, wg.connections()[0]).success
     assert calls == ["enable"]
+
+
+def test_with_the_ipv6_guard_off_a_connect_leaves_ipv6_on(monkeypatch):
+    """⚙ IPv6 guard off: the user's call — a connect turns IPv6 (back) on."""
+    wg = FakeProvider("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
+    patch_menu_env(monkeypatch, [wg], picks=[])
+    monkeypatch.setattr(vpn_manager.config, "load_config", lambda: config.Config(ipv6_guard=False))
+    calls = []
+    for name in ("disable", "enable"):
+        monkeypatch.setattr(
+            vpn_manager.ipv6guard,
+            name,
+            lambda name=name: calls.append(name) or ActionResult(True, ""),
+        )
+    assert vpn_manager.guarded_connect(wg, wg.connections()[0]).success
+    assert calls == ["enable"]
+
+
+@pytest.mark.parametrize(
+    ("ok", "guard", "state", "suffix"),
+    [
+        (True, True, "on", ""),
+        (True, False, "off", ""),  # ⚙ IPv6 guard off: no drop-ins at all
+        (False, True, "on", " — IPv6 at boot: no sudo"),
+    ],
+)
+def test_an_autostart_change_resyncs_the_boot_drop_ins(monkeypatch, ok, guard, state, suffix):
+    class Profiles(FakeProvider):
+        def toggle_autostart(self, conn):
+            return ActionResult(True, "Autostart enabled: nl")
+
+    wg = Profiles("WireGuard", [VPNConnection(name="nl", provider="WireGuard", active=False)])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [wg])
+    monkeypatch.setattr(vpn_manager.config, "load_config", lambda: config.Config(ipv6_guard=guard))
+    calls = []
+    monkeypatch.setattr(
+        vpn_manager,
+        "run_helper",
+        lambda *a, **kw: calls.append(a) or ((0, "") if ok else (1, "no sudo")),
+    )
+    result = vpn_manager.run_profile_action("autostart", "WireGuard", "nl")
+    assert calls == [("ipv6-boot", state)]
+    assert result.success
+    assert result.message == "Autostart enabled: nl" + suffix

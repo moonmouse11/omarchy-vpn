@@ -15,7 +15,7 @@ DE_SERVER = VPNConnection(
     active=True,
     interface="happ-xray",
     subscription_id="1",
-    subscription_name="ARTEMIDA",
+    subscription_name="Provider B",
 )
 
 
@@ -25,7 +25,7 @@ def env(monkeypatch):
     state = {
         "ks_on": False,
         "ipv6_off": True,
-        "exit": {"ip": "2.27.59.210", "country_code": "DE", "connection": DE_SERVER.name},
+        "exit": {"ip": "198.51.100.27", "country_code": "DE", "connection": DE_SERVER.name},
         "fresh": True,
         "app_owned": False,  # the plugin's keeper holds the Happ connection
     }
@@ -62,9 +62,9 @@ def test_untested_dns_is_unverified_not_protected(env):
     panel = _panel([DE_SERVER])
     assert panel["connected"] is True
     assert (panel["state"], panel["title"]) == ("unverified", "Unverified")
-    assert panel["meta"] == "ARTEMIDA: 🇩🇪 Germany 1"  # the pill names the provider
+    assert panel["meta"] == "Provider B: 🇩🇪 Germany 1"  # the pill names the provider
     assert panel["detail"] == "Happ"
-    assert panel["exit_ip"] == "2.27.59.210 🇩🇪"
+    assert panel["exit_ip"] == "198.51.100.27 🇩🇪"
     assert panel["rate"] == "↓ 3 KiB/s ↑ 4 KiB/s"
     assert panel["total"] == "↓ 1 MiB  ↑ 2 MiB"
     assert _badges(panel) == {
@@ -328,13 +328,13 @@ def test_label_fields_carry_every_placeholder(env):
     fields = _panel([DE_SERVER])["fields"]
     assert set(fields) == set(vpn_manager.LABEL_FIELDS)
     assert fields == {
-        "label": "Happ · ARTEMIDA: 🇩🇪 Germany 1",
+        "label": "Happ · Provider B: 🇩🇪 Germany 1",
         "provider": "Happ",
-        "subscription": "ARTEMIDA",
+        "subscription": "Provider B",
         "server": "🇩🇪 Germany 1",
         "count": "1",
         "state": "Unverified",
-        "exit_ip": "2.27.59.210",
+        "exit_ip": "198.51.100.27",
         "exit_country": "DE",
         "exit_flag": "🇩🇪",
         "rate": "↓ 3 KiB/s ↑ 4 KiB/s",
@@ -389,7 +389,7 @@ def test_manifest_lists_exactly_the_label_fields():
     import re
     from pathlib import Path
 
-    manifest = json.loads((Path(__file__).parent.parent / "plugin/manifest.json").read_text())
+    manifest = json.loads((Path(__file__).parent.parent / "manifest.json").read_text())
     entry = next(e for e in manifest["barWidget"]["schema"] if e["key"] == "labelFormat")
     assert re.findall(r"\{([a-z0-9_]+)\}", entry["description"]) == list(vpn_manager.LABEL_FIELDS)
 
@@ -411,3 +411,36 @@ def test_window_tools_follow_settings_and_the_kill_switch_support(env):
     assert "killswitch" in tools
     nm = VPNConnection(name="office", provider="NetworkManager", active=True)
     assert "killswitch" not in vpn_manager.panel_state([nm], cfg)["tools"]
+
+
+@pytest.mark.parametrize("guard", [True, False])
+def test_ipv6_badge_says_when_the_user_turned_the_guard_off(env, guard):
+    """IPv6 on under a tunnel is a leak either way ("bad"); with ⚙ IPv6 guard
+    off the hint says it is the user's own setting, not a failure."""
+    env["ipv6_off"] = False
+    panel = vpn_manager.panel_state([DE_SERVER], config.Config(ipv6_guard=guard))
+    badge = next(b for b in panel["badges"] if b["id"] == "ipv6")
+    assert (badge["label"], badge["state"]) == ("IPv6 leaks", "bad")
+    assert ("IPv6 guard is off in ⚙ Settings" in badge["hint"]) is not guard
+
+
+_REAL_APP_CONNECTED = vpn_manager.happ_provider.app_connected
+
+
+@pytest.mark.parametrize(
+    "procs, keeper_alive, gui, expected",
+    [
+        (["xray-core"], False, True, True),  # the app's tunnel
+        (["xray-core"], True, True, False),  # our keeper's, the app merely open
+        (["xray-core"], False, False, False),  # app closed: a leftover we may replace
+        ([], False, True, False),  # app open, nothing up
+    ],
+)
+def test_app_connected_needs_its_tunnel_no_keeper_of_ours_and_the_app(
+    monkeypatch, procs, keeper_alive, gui, expected
+):
+    happ = vpn_manager.happ_provider
+    monkeypatch.setattr(happ, "_happ_processes", lambda fresh=False: procs)
+    monkeypatch.setattr(happ, "app_owns_connection", lambda: not keeper_alive)
+    monkeypatch.setattr(happ, "_gui_running", lambda: gui)
+    assert _REAL_APP_CONNECTED() is expected

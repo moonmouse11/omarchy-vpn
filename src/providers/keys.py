@@ -68,7 +68,7 @@ def _kind_meta(kind: str) -> tuple[str, str, Path]:
 
 # xray 26 shadowsocks methods — AEAD only; the legacy stream ciphers
 # (aes-*-cfb/ctr, chacha20, salsa20, rc4-md5) were REMOVED from the core,
-# so OutlineKeys-style cfb keys are unusable on any modern core
+# so key-shop cfb keys are unusable on any modern core
 METHODS = {
     "aes-128-gcm",
     "aes-256-gcm",
@@ -119,7 +119,7 @@ def _parse_host_port(text: str) -> tuple[str, int]:
 def _split_fragment_query(rest: str) -> tuple[str, str, str | None]:
     """rest -> (rest, query, name) splitting off #fragment and ?query.
     Key-shop names carry a site attribution suffix ("Canada #41259 /
-    OutlineKeys.com") — drop it, it makes menu rows unreadable."""
+    keyshop.example") — drop it, it makes menu rows unreadable."""
     name = None
     if "#" in rest:
         rest, frag = rest.split("#", 1)
@@ -635,21 +635,22 @@ class KeysProvider(VPNProvider):
         _, _, state_path = _kind_meta(self._kind)
         state_path.unlink(missing_ok=True)
         manager = Path(__file__).resolve().parent.parent / "vpn_manager.py"
-        subprocess.Popen(
+        keeper = subprocess.Popen(
             [sys.executable, str(manager), "--keys-keeper", self._kind, server_id],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
         try:
-            return self._await_keeper(state_path, time.time() + 25)  # happd can be slow to ack
+            # happd can be slow to ack
+            return self._await_keeper(state_path, time.time() + 25, keeper.pid)
         finally:
             _invalidate_procs_cache()
 
-    def _await_keeper(self, state_path: Path, deadline: float) -> ActionResult:
+    def _await_keeper(self, state_path: Path, deadline: float, pid: int) -> ActionResult:
         while time.time() < deadline:
             state = _read_keeper_state(state_path)
-            if state:
+            if state and state.get("pid") == pid:  # not a replaced keeper's (see happ)
                 if state.get("status") == "connected":
                     return ActionResult(True, f"Connected: {state.get('server', self.name)}")
                 if state.get("status") == "error":

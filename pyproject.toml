@@ -1,6 +1,6 @@
 [project]
 name = "omarchy-vpn"
-version = "0.3.0"
+version = "0.3.1"
 description = "VPN manager for Omarchy: WireGuard, AmneziaWG, OpenVPN, NetworkManager, VLESS / Shadowsocks keys and Happ"
 license = "MIT"
 license-files = ["LICENSE"]

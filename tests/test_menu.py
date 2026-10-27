@@ -1114,7 +1114,7 @@ def test_subscription_report_lists_ping_and_traffic_per_provider(monkeypatch):
     assert title == "Happ — subscriptions updated"
     assert body.splitlines() == [
         "Provider A: ✓ 2/2 · ⌀45ms · 6.5 GB / ∞ · until 14.12.2026",
-        "OK: 1 servers, no ping yet",
+        "OK: 1 server, no ping yet",
     ]
 
 
@@ -1122,7 +1122,7 @@ def test_subscription_report_marks_what_did_not_update(monkeypatch):
     _fake_report_data(monkeypatch)
     title, body = vpn_manager.subscription_report({"OK": "timed out"})
     assert title == "Happ — 1 subscription(s) not updated"
-    assert "⚠️ OK: 1 servers, no ping yet\n    not updated: timed out" in body
+    assert "⚠️ OK: 1 server, no ping yet\n    not updated: timed out" in body
 
 
 def test_manual_subscription_refresh_always_reports(monkeypatch):

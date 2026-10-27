@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "omarchy-vpn",
   "name": "VPN",
-  "version": "0.3.0",
-  "author": "omarchy-vpn",
+  "version": "0.3.1",
+  "author": "moonmouse11",
   "license": "MIT",
-  "description": "VPN status and menu: WireGuard, AmneziaWG, OpenVPN, NetworkManager, Happ and VLESS/Shadowsocks keys.",
+  "description": "VPN manager: a bar widget, panel and window for WireGuard, AmneziaWG, OpenVPN, NetworkManager, Happ subscriptions and VLESS/Shadowsocks keys, with a kill switch and leak checks.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "VPN",
-    "description": "Active VPN connection; click for the protection panel, right click for the VPN menu.",
+    "description": "Active VPN connection; click for the protection panel, right click for the VPN window.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",

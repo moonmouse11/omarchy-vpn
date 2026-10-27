@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-27
+
+### Fixed
+
+- A protocol or subscription with one server says "1 server", not "1 servers".
+- The marketplace listing describes the window and panel, not the removed menu.
+
 ## [0.3.0] - 2026-10-27
 
 Run **Update setup** in the panel (or `make install`) after updating: the sudoers rule, the root
@@ -128,7 +135,8 @@ window rules and restarts the shell so the new widget code loads.
 First release: a fork of [waybar-vpn-manager](https://github.com/moonmouse11/waybar-vpn-manager)
 0.3.0 (archived), renamed ahead of the Omarchy 4 port.
 
-[Unreleased]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/moonmouse11/omarchy-vpn/releases/tag/v0.1.0

@@ -62,6 +62,7 @@ helpers and the backend are copies.
   keys): a connect now waits for its own keeper's answer.
 - The background subscription refresh logs why a subscription didn't update (once per new
   reason) — it used to fail silently, and the server list just stayed old.
+- A protocol or subscription with one server says "1 server", not "1 servers".
 - A failed Finish setup / `make install` step now says "Setup failed" — the setup terminal
   printed omarchy's green "Done!" under the error.
 

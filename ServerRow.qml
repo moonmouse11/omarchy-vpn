@@ -30,11 +30,12 @@ CursorSurface {
     return server.name
   }
   readonly property bool pinging: host.rowPinging(row)
+  readonly property string countText: row ? row.count + (row.count === 1 ? " server" : " servers") : ""
   readonly property string rightText: {
     if (!row) return ""
-    if (isProvider) return row.provider.total > 0 ? row.count + " servers" : "empty"
+    if (isProvider) return row.provider.total > 0 ? countText : "empty"
     if (pending || pinging) return "…"
-    if (isGroup) return row.group.summary || (row.count + " servers")
+    if (isGroup) return row.group.summary || countText
     return String(server.ping || "")
   }
 

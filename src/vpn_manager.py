@@ -1987,8 +1987,9 @@ def subscription_report(failed: dict[str, str]) -> tuple[str, str]:
             continue
         name = prov["name"]
         names = names_by_sub.get(sub_id, [])
+        count = f"{len(names)} server" + ("" if len(names) == 1 else "s")
         details = [
-            happmeta.provider_ping_summary(names) or f"{len(names)} servers, no ping yet",
+            happmeta.provider_ping_summary(names) or f"{count}, no ping yet",
             _traffic_summary(happmeta.subscription_info(sub_id)),
         ]
         line = f"{name}: " + " · ".join(d for d in details if d)

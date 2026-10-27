@@ -1,10 +1,14 @@
 version: 2
+# PRs go to dev, never main: main holds releases, and any commit there makes every
+# install show "Update setup" and needs a new marketplace verification.
+# Dependabot reads this file from main, so it takes effect with the next release.
 updates:
   # Actions are pinned to full commit SHAs, so they never move on their
   # own; Dependabot keeps the pins fresh and updates the version comments.
   # The CI workflows run on every such PR, so updates are gated by checks.
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
@@ -13,6 +17,7 @@ updates:
   # has no runtime dependencies (stdlib only).
   - package-ecosystem: uv
     directory: /
+    target-branch: dev
     schedule:
       interval: monthly
     open-pull-requests-limit: 5

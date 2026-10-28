@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "omarchy-vpn",
   "name": "VPN",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "author": "moonmouse11",
   "license": "MIT",
   "description": "VPN manager: a bar widget, panel and window for WireGuard, AmneziaWG, OpenVPN, NetworkManager, Happ subscriptions and VLESS/Shadowsocks keys, with a kill switch and leak checks.",

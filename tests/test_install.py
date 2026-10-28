@@ -180,3 +180,78 @@ def test_a_cancelled_wizard_is_not_a_failure(monkeypatch, tmp_path):
     result = _run_install(monkeypatch, tmp_path, failing="python3")
     assert "Cancelled" in result.stdout
     assert "Setup failed" not in result.stdout + result.stderr
+
+
+SWAPPING_SUDO = """#!/bin/bash
+# sudo -v (the password prompt) swaps the checkout's helper; everything else runs
+# unprivileged, /usr/local/bin mapped into $ROOT and install's -o/-g dropped
+if [ "$1" = -v ]; then echo "echo swapped" > "$REPO/scripts/omarchy-vpn-helper"; exit 0; fi
+args=(); skip=
+for a in "$@"; do
+    if [ -n "$skip" ]; then skip=; continue; fi
+    case $a in -o|-g) skip=1; continue;; esac
+    args+=("${a//\\/usr\\/local\\/bin/$ROOT}")
+done
+case $1 in install|sha256sum) exec "${args[@]}";; esac
+exit 0
+"""
+
+
+HELPERS = ("omarchy-vpn-helper", "happ-killswitch", "openvpn-dns-updown")
+
+
+def _install_from_checkout(monkeypatch, tmp_path, missing=()):
+    """The real install.sh from a copy of the checkout (`missing` helpers left
+    out), root steps through SWAPPING_SUDO. Returns (result, repo, root)."""
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+    repo, root, shims = tmp_path / "repo", tmp_path / "root", tmp_path / "bin"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "src").mkdir()
+    (repo / "manifest.json").write_text("{}")
+    (repo / "Widget.qml").write_text("")
+    (repo / "install.sh").write_text(INSTALL.read_text())
+    for name in set(HELPERS) - set(missing):
+        (repo / "scripts" / name).write_text((INSTALL.parent / "scripts" / name).read_text())
+    root.mkdir()
+    shims.mkdir()
+    for cmd, body in (("omarchy-shell", "exit 0"), ("python3", "exit 0"), ("omarchy", "exit 0")):
+        (shims / cmd).write_text(f"#!/bin/sh\n{body}\n")
+    (shims / "sudo").write_text(SWAPPING_SUDO)
+    for shim in shims.iterdir():
+        shim.chmod(0o755)
+    env = {
+        "PATH": f"{shims}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "REPO": str(repo),
+        "ROOT": str(root),
+    }
+    result = _REAL_RUN(["bash", str(repo / "install.sh")], capture_output=True, text=True, env=env)
+    return result, repo, root
+
+
+def test_root_installs_the_helpers_read_before_the_password_prompt(monkeypatch, tmp_path):
+    result, repo, root = _install_from_checkout(monkeypatch, tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (repo / "scripts" / "omarchy-vpn-helper").read_text() == "echo swapped\n"  # swapped…
+    for name in HELPERS:
+        # …but root got the bytes read before the prompt
+        assert (root / name).read_text() == (INSTALL.parent / "scripts" / name).read_text()
+
+
+def test_a_missing_helper_stops_setup_before_anything_is_installed(monkeypatch, tmp_path):
+    # `$(cat …; printf .)` took printf's status: an empty helper got installed as root
+    result, _, root = _install_from_checkout(monkeypatch, tmp_path, missing=["happ-killswitch"])
+    assert result.returncode != 0
+    assert "Setup failed" in result.stderr
+    assert list(root.iterdir()) == []
+
+
+def test_no_root_copy_from_the_checkout():
+    assert not any(c.startswith("sudo cp") for c in lines())
+    assert index("for name in omarchy-vpn-helper") < index("sudo ")
+
+
+def test_sudoers_subject_is_the_numeric_uid():
+    rule = lines()[index("NOPASSWD:")]
+    assert rule.startswith('echo "#$(id -u) ALL=(root) NOPASSWD:')
+    assert "$USER" not in rule

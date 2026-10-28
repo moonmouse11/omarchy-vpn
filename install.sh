@@ -42,6 +42,26 @@ if [[ ${#MISSING[@]} -gt 0 && ${MISSING[-1]} == ":resolv-stub" ]]; then
     MISSING=("${MISSING[@]:0:${#MISSING[@]}-1}")
 fi
 
+# ── Root helpers, read before any sudo ────────────────────────────────────────
+# The checkout is user-writable: root installs the bytes read here, so a file
+# swapped in during the password prompt never reaches /usr/local/bin.
+declare -A HELPER HELPER_SHA
+for name in omarchy-vpn-helper happ-killswitch openvpn-dns-updown; do
+    # "." keeps trailing newlines; && so a failed cat stops set -e (not printf's status)
+    HELPER[$name]=$(cat "$REPO_DIR/scripts/$name" && printf .)
+    HELPER[$name]=${HELPER[$name]%.}
+    HELPER_SHA[$name]=$(printf %s "${HELPER[$name]}" | sha256sum | cut -d' ' -f1)
+done
+
+install_helper() {  # NAME → /usr/local/bin/NAME, root:root 755, re-hashed as root
+    echo "==> Installing $1 to /usr/local/bin..."
+    printf %s "${HELPER[$1]}" | sudo install -o root -g root -m 755 /dev/stdin "/usr/local/bin/$1"
+    [[ $(sudo sha256sum "/usr/local/bin/$1" | cut -d' ' -f1) == "${HELPER_SHA[$1]}" ]] || {
+        echo "error: /usr/local/bin/$1 doesn't match the copy read before sudo" >&2
+        return 1
+    }
+}
+
 # ── Dependencies ──────────────────────────────────────────────────────────────
 
 echo ""
@@ -87,13 +107,11 @@ SUDOERS_FILE="/etc/sudoers.d/vpn-manager"
 # openvpn-dns-updown (root-owned) applies OpenVPN-pushed DNS via systemd-resolved;
 # openvpn runs as root, so its --up/--down child needs no entry of its own.
 # the helper first: a rule pointing at a missing (or old) helper breaks connects
-echo "==> Installing omarchy-vpn-helper to /usr/local/bin..."
-sudo cp "$REPO_DIR/scripts/omarchy-vpn-helper" /usr/local/bin/omarchy-vpn-helper
-sudo chown root:root /usr/local/bin/omarchy-vpn-helper
-sudo chmod 755 /usr/local/bin/omarchy-vpn-helper
+install_helper omarchy-vpn-helper
 
 echo "==> Writing sudoers rule..."
-echo "$USER ALL=(root) NOPASSWD: /usr/local/bin/omarchy-vpn-helper, /usr/local/bin/happ-killswitch, /usr/bin/sysctl -w net.ipv6.conf.all.disable_ipv6=1, /usr/bin/sysctl -w net.ipv6.conf.all.disable_ipv6=0, /usr/bin/sysctl -w net.ipv6.conf.default.disable_ipv6=1, /usr/bin/sysctl -w net.ipv6.conf.default.disable_ipv6=0" \
+# the numeric uid, not $USER: an unusual valid name (e.g. ALL) would change the rule's meaning
+echo "#$(id -u) ALL=(root) NOPASSWD: /usr/local/bin/omarchy-vpn-helper, /usr/local/bin/happ-killswitch, /usr/bin/sysctl -w net.ipv6.conf.all.disable_ipv6=1, /usr/bin/sysctl -w net.ipv6.conf.all.disable_ipv6=0, /usr/bin/sysctl -w net.ipv6.conf.default.disable_ipv6=1, /usr/bin/sysctl -w net.ipv6.conf.default.disable_ipv6=0" \
     | sudo tee "$SUDOERS_FILE" > /dev/null
 sudo chmod 440 "$SUDOERS_FILE"
 sudo visudo -cf "$SUDOERS_FILE" > /dev/null && echo "==> sudoers rule validated"
@@ -109,17 +127,11 @@ fi
 
 # ── killswitch script (root-owned, driven via the NOPASSWD sudoers rule) ─────
 
-echo "==> Installing happ-killswitch to /usr/local/bin..."
-sudo cp "$REPO_DIR/scripts/happ-killswitch" /usr/local/bin/happ-killswitch
-sudo chown root:root /usr/local/bin/happ-killswitch
-sudo chmod 755 /usr/local/bin/happ-killswitch
+install_helper happ-killswitch
 # Remove the user-writable copy if it exists (superseded by the root-owned one)
 rm -f "$HOME/.local/bin/happ-killswitch"
 
-echo "==> Installing openvpn-dns-updown to /usr/local/bin..."
-sudo cp "$REPO_DIR/scripts/openvpn-dns-updown" /usr/local/bin/openvpn-dns-updown
-sudo chown root:root /usr/local/bin/openvpn-dns-updown
-sudo chmod 755 /usr/local/bin/openvpn-dns-updown
+install_helper openvpn-dns-updown
 
 # ── /etc/wireguard permissions ────────────────────────────────────────────────
 

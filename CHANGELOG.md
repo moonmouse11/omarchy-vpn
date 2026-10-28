@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Setup installs the root helpers from a copy read before the password prompt and checks each
+  one's hash as root: a helper swapped in the plugin folder during the prompt no longer gets
+  installed. The sudoers rule names your numeric user id instead of your user name.
+
 ## [0.3.1] - 2026-10-27
 
 ### Fixed

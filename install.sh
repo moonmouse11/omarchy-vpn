@@ -47,7 +47,8 @@ fi
 # swapped in during the password prompt never reaches /usr/local/bin.
 declare -A HELPER HELPER_SHA
 for name in omarchy-vpn-helper happ-killswitch openvpn-dns-updown; do
-    HELPER[$name]=$(cat "$REPO_DIR/scripts/$name"; printf .)  # "." keeps trailing newlines
+    # "." keeps trailing newlines; && so a failed cat stops set -e (not printf's status)
+    HELPER[$name]=$(cat "$REPO_DIR/scripts/$name" && printf .)
     HELPER[$name]=${HELPER[$name]%.}
     HELPER_SHA[$name]=$(printf %s "${HELPER[$name]}" | sha256sum | cut -d' ' -f1)
 done

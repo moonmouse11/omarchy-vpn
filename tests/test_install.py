@@ -197,7 +197,12 @@ exit 0
 """
 
 
-def test_root_installs_the_helpers_read_before_the_password_prompt(monkeypatch, tmp_path):
+HELPERS = ("omarchy-vpn-helper", "happ-killswitch", "openvpn-dns-updown")
+
+
+def _install_from_checkout(monkeypatch, tmp_path, missing=()):
+    """The real install.sh from a copy of the checkout (`missing` helpers left
+    out), root steps through SWAPPING_SUDO. Returns (result, repo, root)."""
     monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
     repo, root, shims = tmp_path / "repo", tmp_path / "root", tmp_path / "bin"
     (repo / "scripts").mkdir(parents=True)
@@ -205,7 +210,7 @@ def test_root_installs_the_helpers_read_before_the_password_prompt(monkeypatch, 
     (repo / "manifest.json").write_text("{}")
     (repo / "Widget.qml").write_text("")
     (repo / "install.sh").write_text(INSTALL.read_text())
-    for name in ("omarchy-vpn-helper", "happ-killswitch", "openvpn-dns-updown"):
+    for name in set(HELPERS) - set(missing):
         (repo / "scripts" / name).write_text((INSTALL.parent / "scripts" / name).read_text())
     root.mkdir()
     shims.mkdir()
@@ -221,11 +226,24 @@ def test_root_installs_the_helpers_read_before_the_password_prompt(monkeypatch, 
         "ROOT": str(root),
     }
     result = _REAL_RUN(["bash", str(repo / "install.sh")], capture_output=True, text=True, env=env)
+    return result, repo, root
+
+
+def test_root_installs_the_helpers_read_before_the_password_prompt(monkeypatch, tmp_path):
+    result, repo, root = _install_from_checkout(monkeypatch, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     assert (repo / "scripts" / "omarchy-vpn-helper").read_text() == "echo swapped\n"  # swapped…
-    for name in ("omarchy-vpn-helper", "happ-killswitch", "openvpn-dns-updown"):
+    for name in HELPERS:
         # …but root got the bytes read before the prompt
         assert (root / name).read_text() == (INSTALL.parent / "scripts" / name).read_text()
+
+
+def test_a_missing_helper_stops_setup_before_anything_is_installed(monkeypatch, tmp_path):
+    # `$(cat …; printf .)` took printf's status: an empty helper got installed as root
+    result, _, root = _install_from_checkout(monkeypatch, tmp_path, missing=["happ-killswitch"])
+    assert result.returncode != 0
+    assert "Setup failed" in result.stderr
+    assert list(root.iterdir()) == []
 
 
 def test_no_root_copy_from_the_checkout():

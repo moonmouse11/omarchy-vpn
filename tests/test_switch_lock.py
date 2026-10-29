@@ -193,6 +193,96 @@ def test_connecting_hidden_when_lock_holder_is_not_vpn_manager(env, monkeypatch,
         os.close(fd)
 
 
+def test_connecting_text_empty_for_disconnect_lock(env, monkeypatch, tmp_path):
+    monkeypatch.setattr(vpn_manager, "SWITCH_LOCK", tmp_path / "switch.lock")
+    monkeypatch.setattr(vpn_manager, "_our_process", lambda pid, flags=None: True)
+    fd = _hold_lock(f"{os.getpid()}\ndisconnecting WireGuard: nl")
+    try:
+        assert vpn_manager.connecting_text() == ""
+    finally:
+        os.close(fd)
+
+
+def test_switch_in_progress_none_when_lock_is_free(env, monkeypatch, tmp_path):
+    lock = tmp_path / "switch.lock"
+    monkeypatch.setattr(vpn_manager, "SWITCH_LOCK", lock)
+    lock.write_text("stale\nconnecting to x")
+    assert vpn_manager._switch_in_progress() is None
+
+
+def test_child_pids_finds_direct_children(env, monkeypatch, tmp_path):
+    proc = tmp_path / "proc"
+    (proc / "100").mkdir(parents=True)
+    (proc / "201").mkdir()
+    (proc / "100" / "stat").write_text("100 (vpn_manager) R 1 100 100 0 0 0 0 0 0 0")
+    (proc / "201" / "stat").write_text("201 (sudo) S 100 201 201 0 0 0 0 0 0 0")
+    monkeypatch.setattr(vpn_manager, "PROC", proc)
+    assert vpn_manager._child_pids(100) == [201]
+
+
+def test_child_pids_skips_non_pid_entries_and_bad_stat(env, monkeypatch, tmp_path):
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    (proc / "self").mkdir()
+    (proc / "999").mkdir()
+    (proc / "999" / "stat").write_text("no closing paren")
+    monkeypatch.setattr(vpn_manager, "PROC", proc)
+    assert vpn_manager._child_pids(1) == []
+
+
+def test_signal_switch_tree_skips_duplicate_pids(env, monkeypatch):
+    killed: list[int] = []
+    monkeypatch.setattr(vpn_manager, "_child_pids", lambda ppid: [100] if ppid == 100 else [])
+    monkeypatch.setattr(vpn_manager.os, "kill", lambda pid, sig: killed.append(pid))
+    vpn_manager._signal_switch_tree(100, signal.SIGTERM)
+    assert killed == [100]
+
+
+def test_switch_in_progress_none_when_lock_unreadable(env, monkeypatch, tmp_path):
+    lock = tmp_path / "switch.lock"
+    monkeypatch.setattr(vpn_manager, "SWITCH_LOCK", lock)
+
+    def deny_open(path, flags):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(vpn_manager.os, "open", deny_open)
+    assert vpn_manager._switch_in_progress() is None
+
+
+def test_signal_switch_tree_signals_holder_and_children(env, monkeypatch):
+    killed: list[int] = []
+    monkeypatch.setattr(vpn_manager, "_child_pids", lambda ppid: [201] if ppid == 100 else [])
+    monkeypatch.setattr(vpn_manager.os, "kill", lambda pid, sig: killed.append(pid))
+    vpn_manager._signal_switch_tree(100, signal.SIGTERM)
+    assert sorted(killed) == [100, 201]
+
+
+def test_preempt_returns_false_on_permission_error(env, monkeypatch, tmp_path):
+    monkeypatch.setattr(vpn_manager, "_our_process", lambda pid, flags=None: True)
+
+    def deny(*a, **k):
+        raise PermissionError
+
+    monkeypatch.setattr(vpn_manager, "_signal_switch_tree", deny)
+    lock = tmp_path / "switch.lock"
+    monkeypatch.setattr(vpn_manager, "SWITCH_LOCK", lock)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    os.write(fd, b"100\nconnecting to x")
+    try:
+        assert vpn_manager._preempt(fd, 100) is False
+    finally:
+        os.close(fd)
+
+
+def test_cancel_switch_terminates_registered_helper(env, monkeypatch):
+    called = []
+    monkeypatch.setattr(vpn_manager, "terminate_registered_subprocesses", lambda: called.append(1))
+    with pytest.raises(vpn_manager.SwitchCancelled):
+        vpn_manager._cancel_switch(signal.SIGTERM, None)
+    assert called == [1]
+
+
 def test_a_dead_holder_leaves_no_stale_lock(env, monkeypatch):
     """flock dies with its holder: a closed (crashed) holder frees it."""
     nl = VPNConnection(name="nl", provider="WireGuard", active=False)

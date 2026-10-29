@@ -4,6 +4,7 @@
 import io
 import json
 import subprocess
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -168,3 +169,21 @@ def test_delete_refuses_an_active_profile(monkeypatch):
     result = vpn_manager.run_profile_action("delete", "WireGuard", "home")
     assert not result.success
     assert "Disconnect" in result.message
+
+
+def test_delete_refuses_an_active_key(monkeypatch, tmp_path):
+    import providers.keys as keys
+
+    store = tmp_path / "keys.json"
+    monkeypatch.setattr(keys, "STORE", store)
+    parsed = keys.parse_ss_key("ss://YWVzLTI1Ni1nY206c2VjcmV0@1.2.3.4:8388#Home")
+    assert keys.add_server(parsed).success
+    provider = keys.KeysProvider("ss")
+    conn = provider.connections()[0]
+    monkeypatch.setattr(provider, "connections", lambda: [replace(conn, active=True)])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
+    before = store.read_text()
+    result = vpn_manager.run_profile_action("delete", "Shadowsocks", conn.name)
+    assert not result.success
+    assert "Disconnect" in result.message
+    assert store.read_text() == before

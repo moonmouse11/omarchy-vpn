@@ -150,6 +150,10 @@ class OpenVPNProvider(VPNProvider):
             return ActionResult(False, f"Disconnect {connection.name} first")
         if not any((OVPN_DIR / f"{connection.name}{ext}").exists() for ext in (".conf", ".ovpn")):
             return ActionResult(False, f"Config not found: {connection.name}")
+        if self.autostart_enabled(connection.name):
+            code, out = run_helper("autostart", "ovpn", connection.name, "off")
+            if code != 0:
+                return ActionResult(False, f"Failed to disable autostart: {out}")
         code, out = run_helper("rm", "ovpn", connection.name)
         if code != 0:
             return ActionResult(False, f"Failed to delete {connection.name}: {out}")

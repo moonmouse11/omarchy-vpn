@@ -62,6 +62,7 @@ def test_delete_runs_helper_rm(monkeypatch, tmp_path):
     (tmp_path / "nl.conf").write_text("client\n")
     calls = []
     monkeypatch.setattr(openvpn, "run_helper", lambda *a, **kw: calls.append(a) or (0, ""))
+    monkeypatch.setattr(OpenVPNProvider, "autostart_enabled", lambda self, n: False)
     assert OpenVPNProvider().delete_config(_conn()).success
     assert calls == [("rm", "ovpn", "nl")]
 
@@ -72,3 +73,13 @@ def test_toggle_autostart(monkeypatch):
     monkeypatch.setattr(OpenVPNProvider, "autostart_enabled", lambda self, n: False)
     assert OpenVPNProvider().toggle_autostart(_conn()).success
     assert calls == [("autostart", "ovpn", "nl", "on")]
+
+
+def test_delete_disables_autostart_before_rm(monkeypatch, tmp_path):
+    monkeypatch.setattr(openvpn, "OVPN_DIR", tmp_path)
+    (tmp_path / "nl.conf").write_text("client\n")
+    calls = []
+    monkeypatch.setattr(openvpn, "run_helper", lambda *a, **kw: calls.append(a) or (0, ""))
+    monkeypatch.setattr(OpenVPNProvider, "autostart_enabled", lambda self, n: True)
+    assert OpenVPNProvider().delete_config(_conn()).success
+    assert calls == [("autostart", "ovpn", "nl", "off"), ("rm", "ovpn", "nl")]

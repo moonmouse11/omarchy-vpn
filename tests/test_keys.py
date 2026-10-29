@@ -440,3 +440,16 @@ def test_delete_config_unknown_server(monkeypatch, tmp_path):
     )
     assert not result.success
     assert "Unknown Shadowsocks server" in result.message
+
+
+def test_delete_config_refuses_active_server(monkeypatch, tmp_path):
+    from providers.base import VPNConnection
+
+    store = tmp_path / "keys.json"
+    monkeypatch.setattr(keys, "STORE", store)
+    assert keys.add_server(keys.parse_ss_key(ss_url(tag="Home"))).success
+    provider = keys.KeysProvider("ss")
+    conn = VPNConnection(name="Home", provider="Shadowsocks", active=True)
+    result = provider.delete_config(conn)
+    assert not result.success
+    assert "Disconnect" in result.message

@@ -134,6 +134,14 @@ def test_toggle_autostart_disables_when_enabled(monkeypatch):
     assert calls == [("autostart", "ovpn", "nl", "off")]
 
 
+def test_toggle_autostart_surfaces_helper_failure(monkeypatch):
+    monkeypatch.setattr(openvpn, "run_helper", lambda *a, **kw: (1, "unit masked"))
+    monkeypatch.setattr(OpenVPNProvider, "autostart_enabled", lambda self, n: False)
+    result = OpenVPNProvider().toggle_autostart(_conn())
+    assert not result.success
+    assert "Failed to toggle autostart" in result.message
+
+
 def test_autostart_enabled_reads_systemctl(monkeypatch):
     monkeypatch.setattr(openvpn, "_run", lambda cmd: (0, "enabled"))
     assert OpenVPNProvider().autostart_enabled("nl") is True

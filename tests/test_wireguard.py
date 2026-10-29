@@ -140,6 +140,21 @@ def test_amneziawg_connect_without_awg_quick(monkeypatch):
     assert result.message == AWG_INSTALL_HINT
 
 
+def test_delete_config_refuses_active_profile(tmp_path, monkeypatch):
+    from providers.base import VPNConnection
+
+    provider = _provider(tmp_path, monkeypatch)
+    (provider.config_dir / "nl.conf").write_text("[Interface]\n")
+    monkeypatch.setattr(
+        wireguard,
+        "run_helper",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("helper must not run")),
+    )
+    result = provider.delete_config(VPNConnection(name="nl", provider="WireGuard", active=True))
+    assert not result.success
+    assert "Disconnect" in result.message
+
+
 def test_delete_disables_autostart_before_rm(tmp_path, monkeypatch):
     from providers.base import VPNConnection
 

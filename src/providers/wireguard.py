@@ -234,6 +234,10 @@ class WireGuardProvider(VPNProvider):
         path = Path(connection.config_path or self.config_dir / f"{connection.name}.conf")
         if not path.exists():
             return ActionResult(False, f"Config not found: {path}")
+        if self.autostart_enabled(connection.name):
+            code, out = run_helper("autostart", self.helper_kind, connection.name, "off")
+            if code != 0:
+                return ActionResult(False, f"Failed to disable autostart: {out}")
         code, out = run_helper("rm", self.helper_kind, connection.name)
         if code != 0:
             return ActionResult(False, f"Failed to delete {path}: {out}")

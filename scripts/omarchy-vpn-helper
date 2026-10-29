@@ -307,12 +307,26 @@ cmd_import() {
 
 cmd_rm() {
     local conf
+    if [[ $1 == ovpn ]]; then
+        conf=$(need_conf ovpn "$2")
+        run rm -f "$conf"
+        return
+    fi
     wg_only "$1" rm
     conf=$(need_conf "$1" "$2")
     run rm -f "$conf" "$SYSTEMD_DIR/$1-quick@$2.service.d/$DROPIN"
 }
 
 cmd_autostart() {
+    if [[ $1 == ovpn ]]; then
+        need_conf ovpn "$2" >/dev/null
+        case ${3:-} in
+            on)  run systemctl enable "openvpn-client@$2" ;;
+            off) run systemctl disable "openvpn-client@$2" ;;
+            *)   die "autostart takes on | off" ;;
+        esac
+        return
+    fi
     wg_only "$1" autostart
     need_conf "$1" "$2" >/dev/null
     case ${3:-} in

@@ -260,7 +260,7 @@ Panel {
     profileMode = "import"
   }
 
-  // right click / a / x on a server whose protocol manages profiles
+  // right click on a server whose protocol manages profiles (not Happ subscriptions)
   function showProfile(row) {
     if (!row || row.kind !== "server") return false
     var info = providerInfo(row.group.provider)
@@ -296,6 +296,13 @@ Panel {
   function profileAction(action) {
     var row = profileTarget
     runArgs(["--profile", action, String(row.group.provider), String(row.server.name)])
+    closeProfileBar()
+  }
+
+  function profileDisconnect() {
+    var row = profileTarget
+    if (!row || !row.server) return
+    runArgs(["--disconnect", String(row.group.provider), String(row.server.name)])
     closeProfileBar()
   }
 

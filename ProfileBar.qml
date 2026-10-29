@@ -13,6 +13,8 @@ Column {
   readonly property var target: host.profileTarget
   readonly property bool keyImport: importing && target !== null && target.importer === "key"
   readonly property bool inputFocused: input.activeFocus
+  readonly property bool profileActive: !importing && target !== null && target.server && target.server.active === true
+  readonly property bool canAutostart: !importing && target !== null && bar.host.providerInfo(target.group.provider) && bar.host.providerInfo(target.group.provider).autostart === true
 
   visible: host.profileMode !== ""
   height: visible ? implicitHeight : 0
@@ -80,7 +82,16 @@ Column {
       onClicked: bar.submit()
     }
     Button {
-      visible: !bar.importing
+      visible: bar.profileActive
+      text: "Disconnect"
+      bordered: true
+      foreground: bar.host.foreground
+      fontFamily: bar.host.fontFamily
+      fontSize: Style.font.bodySmall
+      onClicked: bar.host.profileDisconnect()
+    }
+    Button {
+      visible: !bar.importing && !bar.profileActive && bar.canAutostart
       text: "Toggle autostart"
       bordered: true
       foreground: bar.host.foreground
@@ -89,7 +100,7 @@ Column {
       onClicked: bar.host.profileAction("autostart")
     }
     Button {
-      visible: !bar.importing
+      visible: !bar.importing && !bar.profileActive
       text: "Delete…"
       bordered: true
       foreground: bar.host.foreground

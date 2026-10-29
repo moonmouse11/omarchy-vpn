@@ -1405,8 +1405,16 @@ IMPORT_KINDS = {
     "Shadowsocks": "key",
 }
 IMPORT_EXTENSIONS = {"OpenVPN": "ovpn conf", "NetworkManager": "conf ovpn"}  # else "conf"
-# right click on a server: Toggle autostart / Delete
-MANAGED_PROVIDERS = ("WireGuard", "AmneziaWG", "NetworkManager")
+# App window only (right click on a server): disconnect / autostart / delete
+MANAGED_PROVIDERS = (
+    "WireGuard",
+    "AmneziaWG",
+    "NetworkManager",
+    "OpenVPN",
+    "VLESS",
+    "Shadowsocks",
+)
+AUTOSTART_PROVIDERS = ("WireGuard", "AmneziaWG", "NetworkManager", "OpenVPN")
 FILE_SELECT_TIMEOUT = 660  # omarchy-file-select gives up on an unanswered chooser at 600 s
 
 
@@ -1454,13 +1462,23 @@ def run_profile_action(action: str, provider_name: str, name: str) -> ActionResu
     if conn is None:
         return ActionResult(False, f"{provider_name}: {name} not found")
     if action == "autostart":
+        if provider_name not in AUTOSTART_PROVIDERS:
+            return ActionResult(False, f"{provider_name}: autostart not supported")
         result = provider.toggle_autostart(conn)
         if result.success:
-            boot = sync_ipv6_boot()  # the new autostart gets (or loses) its drop-in
+            boot = sync_ipv6_boot()  # wg/awg autostart drop-ins only; harmless for the rest
             if not boot.success:
                 return ActionResult(True, f"{result.message} — {boot.message}")
         return result
-    return provider.delete_config(conn)
+    result = provider.delete_config(conn)
+    if result.success:
+        with contextlib.suppress(OSError):
+            quickconnect.forget(
+                provider_name,
+                name,
+                conn.subscription_id or "",
+            )
+    return result
 
 
 def _ping_scope_targets(
@@ -1880,6 +1898,7 @@ def server_list() -> dict:
                 "name": provider.name,
                 "importer": IMPORT_KINDS.get(provider.name),
                 "manage": provider.name in MANAGED_PROVIDERS,
+                "autostart": provider.name in AUTOSTART_PROVIDERS,
             }
         )
         if provider.name == "Happ":

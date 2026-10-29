@@ -220,7 +220,7 @@ def test_wg_up_strips_ipv6_allowedips_then_restores_config(tree):
     assert tree("autostart", "wg", "home", "on").stdout == "systemctl enable wg-quick@home\n"
     assert tree("autostart", "wg", "home", "off").stdout == "systemctl disable wg-quick@home\n"
     assert tree("rm", "wg", "home").stdout.startswith(f"rm -f {tree.dirs['wg']}/home.conf ")
-    assert "wg / awg" in tree("rm", "ovpn", "home").stderr
+    assert tree("rm", "ovpn", "home").stderr == "error: no ovpn profile named 'home'\n"
     assert "no wg profile" in tree("up", "wg", "nope").stderr
 
 
@@ -307,6 +307,24 @@ def test_rm_also_removes_the_profiles_drop_in(tree):
     tree("import", "wg", "home", stdin=WG)
     dropin = tree.dirs["systemd"] / "wg-quick@home.service.d" / "omarchy-vpn-ipv6.conf"
     assert str(dropin) in tree("rm", "wg", "home").stdout
+
+
+def test_rm_deletes_an_openvpn_profile(tree):
+    tree("import", "ovpn", "nl", stdin="client\ndev tun\nremote 1.1.1.1 1194\n")
+    conf = tree.dirs["ovpn"] / "nl.conf"
+    assert conf.exists()
+    assert tree("rm", "ovpn", "nl").stdout == f"rm -f {conf}\n"
+
+
+def test_openvpn_autostart_enables_and_disables(tree):
+    tree("import", "ovpn", "nl", stdin="client\nremote 1.1.1.1 1194\n")
+    assert tree("autostart", "ovpn", "nl", "on").stdout == "systemctl enable openvpn-client@nl\n"
+    assert tree("autostart", "ovpn", "nl", "off").stdout == "systemctl disable openvpn-client@nl\n"
+
+
+def test_openvpn_autostart_rejects_bad_argument(tree):
+    tree("import", "ovpn", "nl", stdin="client\nremote 1.1.1.1 1194\n")
+    assert tree("autostart", "ovpn", "nl", "maybe").returncode != 0
 
 
 def test_overrides_are_ignored_under_sudo(tree):

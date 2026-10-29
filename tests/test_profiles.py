@@ -2,7 +2,9 @@
 (--profile autostart|delete)."""
 
 import io
+import json
 import subprocess
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -115,10 +117,79 @@ def test_profile_actions_reach_the_provider(wg):
     assert (wg.toggled, wg.deleted) == (["home"], ["home"])
 
 
+def test_autostart_refuses_providers_without_systemd_units(monkeypatch):
+    keys = FakeProvider("VLESS", [VPNConnection(name="x", provider="VLESS", active=False)])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [keys])
+    result = vpn_manager.run_profile_action("autostart", "VLESS", "x")
+    assert not result.success
+    assert "autostart not supported" in result.message
+    assert keys.toggled == []
+
+
+def test_autostart_reports_ipv6_boot_sync_failure(wg, monkeypatch):
+    monkeypatch.setattr(
+        vpn_manager,
+        "sync_ipv6_boot",
+        lambda: ActionResult(False, "daemon-reload failed"),
+    )
+    result = vpn_manager.run_profile_action("autostart", "WireGuard", "home")
+    assert result.success
+    assert "daemon-reload failed" in result.message
+    assert wg.toggled == ["home"]
+
+
+def test_delete_forgets_quick_connect_using_subscription_id(wg, monkeypatch, tmp_path):
+    import quickconnect
+
+    monkeypatch.setattr(quickconnect, "QUICK_FILE", tmp_path / "quick.json")
+    quickconnect.remember("WireGuard", "relay", "99")
+    home = VPNConnection(
+        name="relay",
+        provider="WireGuard",
+        active=False,
+        subscription_id="99",
+    )
+    provider = FakeProvider("WireGuard", [home])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
+    assert vpn_manager.run_profile_action("delete", "WireGuard", "relay").success
+    assert quickconnect.load()["recent"] == []
+
+
 def test_profile_actions_refuse_unknown_profiles_and_unmanaged_providers(wg):
     assert not vpn_manager.run_profile_action("delete", "WireGuard", "nope").success
     assert not vpn_manager.run_profile_action("delete", "Happ", "home").success
     assert wg.deleted == []
+
+
+def test_vless_delete_removes_key_from_store(monkeypatch, tmp_path):
+    import providers.keys as keys
+
+    store = tmp_path / "keys.json"
+    monkeypatch.setattr(keys, "STORE", store)
+    monkeypatch.setattr(
+        vpn_manager,
+        "ALL_PROVIDERS",
+        [keys.KeysProvider("ss"), FakeProvider("Happ")],
+    )
+    parsed = keys.parse_ss_key("ss://YWVzLTI1Ni1nY206c2VjcmV0@1.2.3.4:8388#Home")
+    assert keys.add_server(parsed).success
+    provider = keys.KeysProvider("ss")
+    conn = provider.connections()[0]
+    assert vpn_manager.run_profile_action("delete", "Shadowsocks", conn.name).success
+    assert provider.connections() == []
+    assert json.loads(store.read_text()) == []
+
+
+def test_delete_removes_quick_connect_entries(wg, monkeypatch, tmp_path):
+    import quickconnect
+
+    monkeypatch.setattr(quickconnect, "QUICK_FILE", tmp_path / "quick.json")
+    quickconnect.remember("WireGuard", "home")
+    quickconnect.toggle_favourite("WireGuard", "home")
+    assert vpn_manager.run_profile_action("delete", "WireGuard", "home").success
+    data = quickconnect.load()
+    assert data["recent"] == []
+    assert data["favourites"] == []
 
 
 def test_delete_refuses_an_active_profile(monkeypatch):
@@ -136,3 +207,21 @@ def test_delete_refuses_an_active_profile(monkeypatch):
     result = vpn_manager.run_profile_action("delete", "WireGuard", "home")
     assert not result.success
     assert "Disconnect" in result.message
+
+
+def test_delete_refuses_an_active_key(monkeypatch, tmp_path):
+    import providers.keys as keys
+
+    store = tmp_path / "keys.json"
+    monkeypatch.setattr(keys, "STORE", store)
+    parsed = keys.parse_ss_key("ss://YWVzLTI1Ni1nY206c2VjcmV0@1.2.3.4:8388#Home")
+    assert keys.add_server(parsed).success
+    provider = keys.KeysProvider("ss")
+    conn = provider.connections()[0]
+    monkeypatch.setattr(provider, "connections", lambda: [replace(conn, active=True)])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
+    before = store.read_text()
+    result = vpn_manager.run_profile_action("delete", "Shadowsocks", conn.name)
+    assert not result.success
+    assert "Disconnect" in result.message
+    assert store.read_text() == before

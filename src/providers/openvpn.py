@@ -1,6 +1,18 @@
+import subprocess
 from pathlib import Path
 
 from .base import ActionResult, VPNConnection, VPNProvider, read_config_text, run_helper
+
+TIMEOUT = 6
+
+
+def _run(cmd: list[str]) -> tuple[int, str]:
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT, check=False)
+    except subprocess.TimeoutExpired:
+        return 1, f"timeout after {TIMEOUT}s: {' '.join(cmd)}"
+    return result.returncode, (result.stdout + result.stderr).strip()
+
 
 OVPN_DIR = Path("/etc/openvpn/client")
 PID_DIR = Path("/run/openvpn")
@@ -118,3 +130,31 @@ class OpenVPNProvider(VPNProvider):
             return ActionResult(success=False, message=out.removeprefix("error: "))
 
         return ActionResult(success=True, message=f"Imported: {src.name}")
+
+    def autostart_enabled(self, profile: str) -> bool:
+        code, _ = _run(["systemctl", "is-enabled", f"openvpn-client@{profile}"])
+        return code == 0
+
+    def toggle_autostart(self, connection: VPNConnection) -> ActionResult:
+        if connection.active:
+            return ActionResult(False, f"Disconnect {connection.name} first")
+        enabled = self.autostart_enabled(connection.name)
+        code, out = run_helper("autostart", "ovpn", connection.name, "off" if enabled else "on")
+        if code != 0:
+            return ActionResult(False, f"Failed to toggle autostart: {out}")
+        state = "disabled" if enabled else "enabled"
+        return ActionResult(True, f"Autostart {state}: {connection.name}")
+
+    def delete_config(self, connection: VPNConnection) -> ActionResult:
+        if connection.active:
+            return ActionResult(False, f"Disconnect {connection.name} first")
+        if not any((OVPN_DIR / f"{connection.name}{ext}").exists() for ext in (".conf", ".ovpn")):
+            return ActionResult(False, f"Config not found: {connection.name}")
+        if self.autostart_enabled(connection.name):
+            code, out = run_helper("autostart", "ovpn", connection.name, "off")
+            if code != 0:
+                return ActionResult(False, f"Failed to disable autostart: {out}")
+        code, out = run_helper("rm", "ovpn", connection.name)
+        if code != 0:
+            return ActionResult(False, f"Failed to delete {connection.name}: {out}")
+        return ActionResult(True, f"Deleted: {connection.name}")

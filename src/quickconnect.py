@@ -80,3 +80,11 @@ def toggle_favourite(provider: str, name: str, sub_id: str | None = None) -> boo
             else [e for e in data["favourites"] if e != entry]
         )
     return starred
+
+
+def forget(provider: str, name: str, sub_id: str | None = None) -> None:
+    """Drop a deleted profile from favourites and recent (best effort)."""
+    entry = _entry(provider, name, sub_id)
+    with contextlib.suppress(OSError), _locked() as data:
+        data["favourites"] = [e for e in data["favourites"] if e != entry]
+        data["recent"] = [e for e in data["recent"] if e != entry]

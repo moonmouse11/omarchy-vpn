@@ -170,6 +170,84 @@ ovpn_unsafe_line() {
 
 wg_only() { [[ $1 == wg || $1 == awg ]] || die "$2 is for wg / awg profiles only"; }
 
+# None of our providers tunnel IPv6; awg/wg-quick still add ::/0 policy routes
+# when the profile lists them, which fails under disable_ipv6=1 (our leak guard).
+wg_conf_strip_v6_allowedips() {
+    awk '
+    function strip_allowedips(line,    key, rest, n, i, tok, out, sep) {
+        if (line !~ /^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*/) return line
+        match(line, /^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*/)
+        key = substr(line, 1, RLENGTH)
+        rest = substr(line, RLENGTH + 1)
+        n = split(rest, parts, ",")
+        out = ""
+        sep = ""
+        for (i = 1; i <= n; i++) {
+            tok = parts[i]
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", tok)
+            if (tok == "" || tok ~ /:/) continue
+            out = out sep tok
+            sep = ", "
+        }
+        if (out == "") return line
+        return key out
+    }
+    /^[[:space:]]*AllowedIPs[[:space:]]*=/ { print strip_allowedips($0); next }
+    { print }
+    ' "$1"
+}
+
+# Briefly re-enable IPv6 globally for the up script when the guard had it off;
+# strip IPv6 AllowedIPs so quick never needs working IPv6 on the tunnel device.
+wg_quick_up() {
+    local kind=$1 name=$2 conf dir bak ipv6_was_off=0 stripped=0 rc
+    conf=$(need_conf "$kind" "$name")
+    dir=$(dirname "$conf")
+    bak="$dir/.$name.conf.omarchy-up"
+
+    if grep -qE '^[[:space:]]*AllowedIPs[[:space:]]*=.*:' "$conf"; then
+        cp -a "$conf" "$bak"
+        wg_conf_strip_v6_allowedips "$bak" >"$conf"
+        stripped=1
+        if grep -qE '^[[:space:]]*AllowedIPs[[:space:]]*=.*:' "$conf"; then
+            mv -f "$bak" "$conf"
+            die "AllowedIPs are IPv6-only — omarchy-vpn tunnels IPv4 only; use 0.0.0.0/0 or IPv4 routes"
+        fi
+    fi
+
+    restore_wg_conf() {
+        [[ $stripped == 1 && -f $bak ]] || return 0
+        mv -f "$bak" "$conf"
+        stripped=0
+    }
+    trap restore_wg_conf EXIT
+
+    if [[ $(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || echo 0) == 1 ]]; then
+        ipv6_was_off=1
+        run sysctl -q -w net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0
+    fi
+    # a superseded switch can SIGKILL vpn_manager while awg/wg-quick is mid-up;
+    # the half-created link stays and the next up dies with "already exists"
+    if ip link show dev "$name" &>/dev/null; then
+        run "$kind-quick" down "$name" 2>/dev/null || run ip link delete dev "$name"
+    fi
+    if run "$kind-quick" up "$name"; then
+        restore_wg_conf
+        trap - EXIT
+        if [[ $ipv6_was_off == 1 ]]; then
+            run sysctl -q -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 || true
+        fi
+        return 0
+    fi
+    rc=$?
+    restore_wg_conf
+    trap - EXIT
+    if [[ $ipv6_was_off == 1 ]]; then
+        run sysctl -q -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 || true
+    fi
+    return "$rc"
+}
+
 cmd_up() {
     local conf
     conf=$(need_conf "$1" "$2")
@@ -181,7 +259,7 @@ cmd_up() {
             --script-security 2 --up "$DNS_UPDOWN up" --down "$DNS_UPDOWN down" \
             --persist-remote-ip
     else
-        run "$1-quick" up "$2"
+        wg_quick_up "$1" "$2"
     fi
 }
 

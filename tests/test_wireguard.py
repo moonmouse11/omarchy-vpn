@@ -75,6 +75,66 @@ def test_amneziawg_uses_its_own_kind(tmp_path, monkeypatch):
     from providers.wireguard import AmneziaWGProvider
 
     calls = []
+    monkeypatch.setattr(wireguard.shutil, "which", lambda b: "/usr/bin/awg-quick")
     monkeypatch.setattr(wireguard, "run_helper", lambda *a, **kw: calls.append(a) or (0, ""))
     AmneziaWGProvider().connect(VPNConnection(name="nl", provider="AmneziaWG", active=False))
     assert calls == [("up", "awg", "nl")]
+
+
+def test_quick_connect_error_prefers_last_error_line():
+    out = "[#] ip link add x\nError: IPv6 is disabled on nexthop device.\n"
+    assert wireguard._quick_connect_error(out) == "Error: IPv6 is disabled on nexthop device."
+
+
+def test_quick_connect_error_truncates_long_output_without_error_line():
+    lines = [f"[#] step {i}" for i in range(200)]
+    out = "\n".join(lines)
+    msg = wireguard._quick_connect_error(out)
+    assert msg.startswith("…")
+    assert "step 199" in msg
+
+
+def test_quick_connect_error_returns_plain_output_when_short():
+    assert wireguard._quick_connect_error("boom") == "boom"
+
+
+def test_wireguard_connect_without_wg_quick(monkeypatch):
+    from providers.base import VPNConnection
+
+    monkeypatch.setattr(wireguard.shutil, "which", lambda b: None)
+    result = WireGuardProvider().connect(
+        VPNConnection(name="nl", provider="WireGuard", active=False)
+    )
+    assert not result.success
+    assert result.message == "wg-quick not found"
+
+
+def test_connect_surfaces_helper_failure_via_quick_connect_error(tmp_path, monkeypatch):
+    from providers.base import VPNConnection
+
+    provider = _provider(
+        tmp_path,
+        monkeypatch,
+        run_result=(2, "[#] up\nError: already exists\n"),
+    )
+    monkeypatch.setattr(wireguard.shutil, "which", lambda b: "/usr/bin/wg-quick")
+    result = provider.connect(VPNConnection(name="nl", provider="WireGuard", active=False))
+    assert not result.success
+    assert result.message == "Error: already exists"
+
+
+def test_amneziawg_connect_without_awg_quick(monkeypatch):
+    from providers.base import VPNConnection
+    from providers.wireguard import AWG_INSTALL_HINT, AmneziaWGProvider
+
+    monkeypatch.setattr(wireguard.shutil, "which", lambda b: None)
+    monkeypatch.setattr(
+        wireguard,
+        "run_helper",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("helper must not run")),
+    )
+    result = AmneziaWGProvider().connect(
+        VPNConnection(name="nl", provider="AmneziaWG", active=False)
+    )
+    assert not result.success
+    assert result.message == AWG_INSTALL_HINT

@@ -352,6 +352,7 @@ def test_label_fields_carry_every_placeholder(env):
         "ipv6": "IPv6 blocked",
         "killswitch": "Kill switch off",
         "activity": "",
+        "connecting": "",
     }
 
 
@@ -381,6 +382,26 @@ def test_label_fields_when_disconnected(env):
     assert fields["state"] == "Not protected"
     assert fields["killswitch"] == "Kill switch off"
     assert fields["server"] == fields["label"] == ""
+
+
+def test_label_fields_connecting_while_switch_lock_held(env, monkeypatch, tmp_path):
+    import fcntl
+    import os
+
+    import vpn_manager
+
+    lock = tmp_path / "switch.lock"
+    monkeypatch.setattr(vpn_manager, "SWITCH_LOCK", lock)
+    monkeypatch.setattr(vpn_manager, "_our_process", lambda pid, flags=None: True)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    os.write(fd, f"{os.getpid()}\nconnecting to Happ: 🇩🇪 Germany".encode())
+    try:
+        fields = _panel([DE_SERVER])["fields"]
+        assert fields["connecting"] == "connecting"
+        assert fields["activity"] == ""
+    finally:
+        os.close(fd)
 
 
 def test_manifest_lists_exactly_the_label_fields():

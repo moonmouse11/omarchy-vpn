@@ -262,12 +262,12 @@ def _stub_privileged_read(monkeypatch, text, returncode=0):
 
     ran = []
 
-    def fake_run(cmd, **kwargs):
-        ran.append(cmd)
-        return FakeResult()
+    def fake_helper(*args, **kwargs):
+        ran.append(["sudo", "-n", base.HELPER, *args])
+        return returncode, text.strip()
 
     monkeypatch.setattr(base, "Path", DeniedPath)
-    monkeypatch.setattr(base.subprocess, "run", fake_run)
+    monkeypatch.setattr(base, "run_helper", fake_helper)
     return ran
 
 

@@ -57,7 +57,8 @@ After `omarchy plugin update omarchy-vpn` the panel shows **Update setup** — p
 From a checkout instead: `git clone https://github.com/moonmouse11/omarchy-vpn && cd omarchy-vpn && make install`.
 
 **You install yourself, if you want them:** Happ (AUR: `happ-desktop-bin` — also needed for
-VLESS/Shadowsocks keys) and AmneziaWG (`amneziawg-tools`, `amneziawg-dkms`). The installer
+VLESS/Shadowsocks keys) and AmneziaWG (AUR: `amneziawg-tools` plus `amneziawg-dkms` and
+`linux-headers`, or prebuilt `amneziawg-linux` for the stock kernel). The installer
 reminds you when you pick them.
 
 ### What setup changes

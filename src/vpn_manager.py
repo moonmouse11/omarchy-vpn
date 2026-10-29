@@ -45,6 +45,7 @@ from providers.base import (
     iface_traffic,
     run_helper,
     sample_iface_traffic,
+    terminate_registered_subprocesses,
 )
 from providers.happ import run_keeper as run_happ_keeper
 from providers.keys import KeysProvider
@@ -182,7 +183,7 @@ LABEL_FIELDS = (
     "exit_ip", "exit_country", "exit_flag",
     "rate", "down", "up", "total", "total_down", "total_up",
     "ping", "protocol", "interface", "sub_traffic", "sub_expire",
-    "dns", "ipv6", "killswitch", "activity",
+    "dns", "ipv6", "killswitch", "activity", "connecting",
 )  # fmt: skip
 
 
@@ -192,9 +193,37 @@ def _split_arrows(text: str) -> tuple[str, str]:
     return down.replace("↓", "").strip(), up.strip()
 
 
+def _switch_in_progress() -> str | None:
+    """Action line from whoever holds SWITCH_LOCK, or None when idle."""
+    if not SWITCH_LOCK.is_file():
+        return None
+    try:
+        fd = os.open(SWITCH_LOCK, os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return None
+        except BlockingIOError:
+            pid, action = _lock_holder(fd)
+            if pid and not _our_process(pid):
+                return None
+            return action or None
+    finally:
+        os.close(fd)
+
+
+def connecting_text() -> str:
+    """Mid-connect indicator for the bar label ({connecting})."""
+    action = _switch_in_progress()
+    if action and action.startswith("connecting to "):
+        return "connecting"
+    return ""
+
+
 def activity_text() -> str:
-    """What the plugin is busy with, for the bar: "ping 23/150" while the
-    Ping button's sweep runs, else "". One small file read per tick."""
+    """Ping progress for {activity}: "ping 23/150", else ""."""
     progress = delayping.read_progress()
     if progress is None:
         return ""
@@ -212,6 +241,7 @@ def label_fields(
     by_id = {b["id"]: b["label"] for b in badges}
     fields["killswitch"] = by_id.get("killswitch", "")
     fields["activity"] = activity_text()
+    fields["connecting"] = connecting_text()
     if not active:
         return fields
     first = active[0]
@@ -326,7 +356,6 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
                 "Started in the Happ app, not by this plugin — use one or the other",
             )
         )
-    # the pill names the provider: "Happ · Provider B: 🇩🇪 X" / "WireGuard: nl" -> the rest
     meta = first.label.removeprefix(f"{first.provider} · ").removeprefix(f"{first.provider}: ")
     cache = ipinfo.read_cache()
     exit_ip = ""
@@ -439,6 +468,42 @@ def _wait_flock(fd: int, seconds: float) -> bool:
         time.sleep(0.05)
 
 
+def _child_pids(ppid: int) -> list[int]:
+    children: list[int] = []
+    try:
+        entries = list(PROC.iterdir())
+    except OSError:
+        return children
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            line = (entry / "stat").read_text()
+        except OSError:
+            continue
+        rparen = line.rfind(")")
+        if rparen == -1:
+            continue
+        fields = line[rparen + 2 :].split()
+        if len(fields) > 1 and int(fields[1]) == ppid:
+            children.append(int(entry.name))
+    return children
+
+
+def _signal_switch_tree(pid: int, sig: signal.Signals) -> None:
+    """Holder plus its direct children (sudo, keeper) when SIGKILL skips Python handlers."""
+    stack = [pid]
+    seen: set[int] = set()
+    while stack:
+        target = stack.pop()
+        if target in seen:
+            continue
+        seen.add(target)
+        with contextlib.suppress(OSError, ProcessLookupError):
+            os.kill(target, sig)
+        stack.extend(_child_pids(target))
+
+
 def _preempt(fd: int, pid: int | None) -> bool:
     """Stop the switch holding the lock and take it. SIGTERM first (it
     unwinds through SwitchCancelled); SIGKILL if it doesn't let go — a
@@ -448,10 +513,10 @@ def _preempt(fd: int, pid: int | None) -> bool:
     if pid is None or pid == os.getpid() or not _our_process(pid):
         return False
     for sig, wait in ((signal.SIGTERM, PREEMPT_GRACE), (signal.SIGKILL, PREEMPT_WAIT)):
+        if sig == signal.SIGTERM:
+            terminate_registered_subprocesses()
         try:
-            os.kill(pid, sig)
-        except ProcessLookupError:
-            pass
+            _signal_switch_tree(pid, sig)
         except PermissionError:
             return False
         if _wait_flock(fd, wait):
@@ -474,6 +539,7 @@ def _abort_checks() -> None:
 
 
 def _cancel_switch(signum, frame) -> None:
+    terminate_registered_subprocesses()
     raise SwitchCancelled
 
 

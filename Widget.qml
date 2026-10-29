@@ -45,6 +45,7 @@ Panel {
     "{server}",
     "{server} · {ping}",
     "{server} · {activity}",
+    "{label} · {connecting}",
     "{exit_flag} {exit_ip}",
     "{state}",
     "{server} · ↓ {down} ↑ {up}",
@@ -361,6 +362,7 @@ Panel {
 
   // the one place --connect's args are built (rows, chips, the switch)
   function connectServer(provider, name, subId) {
+    busy = true
     var args = ["--connect", String(provider), String(name)]
     if (subId) args.push(String(subId))
     runArgs(args)

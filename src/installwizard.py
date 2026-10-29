@@ -174,8 +174,8 @@ def hints(cfg: Config, det: Detection, switched: bool = False) -> list[str]:
     lines = []
     if cfg.provider_visible("AmneziaWG") and not shutil.which("awg-quick"):
         lines.append(
-            "AmneziaWG: install it yourself — "
-            "sudo pacman -S amneziawg-tools amneziawg-dkms linux-headers"
+            "AmneziaWG: install from AUR — amneziawg-tools, amneziawg-dkms "
+            "(and linux-headers), or amneziawg-linux for stock kernel"
         )
     if any(cfg.provider_visible(p) for p in XRAY_USERS) and not HAPPD.is_file():
         lines.append(

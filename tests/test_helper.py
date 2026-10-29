@@ -316,6 +316,12 @@ def test_rm_deletes_an_openvpn_profile(tree):
     assert tree("rm", "ovpn", "nl").stdout == f"rm -f {conf}\n"
 
 
+def test_openvpn_autostart_enables_and_disables(tree):
+    tree("import", "ovpn", "nl", stdin="client\nremote 1.1.1.1 1194\n")
+    assert tree("autostart", "ovpn", "nl", "on").stdout == "systemctl enable openvpn-client@nl\n"
+    assert tree("autostart", "ovpn", "nl", "off").stdout == "systemctl disable openvpn-client@nl\n"
+
+
 def test_overrides_are_ignored_under_sudo(tree):
     """Run via sudo (SUDO_USER set), the helper uses the real directories —
     a caller can't point root at a tree of its own."""

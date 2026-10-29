@@ -415,3 +415,28 @@ def test_headless_connect_ignores_a_superseded_keepers_exit(store, monkeypatch, 
     monkeypatch.setattr(keys.subprocess, "Popen", spawn)
     monkeypatch.setattr(keys.time, "sleep", sleep)
     assert keys.KeysProvider("ss")._headless_connect("uid1").success
+
+
+def test_delete_config_removes_matching_key(monkeypatch, tmp_path):
+    store = tmp_path / "keys.json"
+    monkeypatch.setattr(keys, "STORE", store)
+    parsed = keys.parse_ss_key(ss_url(tag="Home"))
+    assert keys.add_server(parsed).success
+    provider = keys.KeysProvider("ss")
+    conn = provider.connections()[0]
+    result = provider.delete_config(conn)
+    assert result.success
+    assert provider.connections() == []
+
+
+def test_delete_config_unknown_server(monkeypatch, tmp_path):
+    from providers.base import VPNConnection
+
+    monkeypatch.setattr(keys, "STORE", tmp_path / "keys.json")
+    tmp_path.joinpath("keys.json").write_text("[]")
+    provider = keys.KeysProvider("ss")
+    result = provider.delete_config(
+        VPNConnection(name="missing", provider="Shadowsocks", active=False)
+    )
+    assert not result.success
+    assert "Unknown Shadowsocks server" in result.message

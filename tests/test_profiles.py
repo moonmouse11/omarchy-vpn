@@ -117,6 +117,44 @@ def test_profile_actions_reach_the_provider(wg):
     assert (wg.toggled, wg.deleted) == (["home"], ["home"])
 
 
+def test_autostart_refuses_providers_without_systemd_units(monkeypatch):
+    keys = FakeProvider("VLESS", [VPNConnection(name="x", provider="VLESS", active=False)])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [keys])
+    result = vpn_manager.run_profile_action("autostart", "VLESS", "x")
+    assert not result.success
+    assert "autostart not supported" in result.message
+    assert keys.toggled == []
+
+
+def test_autostart_reports_ipv6_boot_sync_failure(wg, monkeypatch):
+    monkeypatch.setattr(
+        vpn_manager,
+        "sync_ipv6_boot",
+        lambda: ActionResult(False, "daemon-reload failed"),
+    )
+    result = vpn_manager.run_profile_action("autostart", "WireGuard", "home")
+    assert result.success
+    assert "daemon-reload failed" in result.message
+    assert wg.toggled == ["home"]
+
+
+def test_delete_forgets_quick_connect_using_subscription_id(wg, monkeypatch, tmp_path):
+    import quickconnect
+
+    monkeypatch.setattr(quickconnect, "QUICK_FILE", tmp_path / "quick.json")
+    quickconnect.remember("WireGuard", "relay", "99")
+    home = VPNConnection(
+        name="relay",
+        provider="WireGuard",
+        active=False,
+        subscription_id="99",
+    )
+    provider = FakeProvider("WireGuard", [home])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
+    assert vpn_manager.run_profile_action("delete", "WireGuard", "relay").success
+    assert quickconnect.load()["recent"] == []
+
+
 def test_profile_actions_refuse_unknown_profiles_and_unmanaged_providers(wg):
     assert not vpn_manager.run_profile_action("delete", "WireGuard", "nope").success
     assert not vpn_manager.run_profile_action("delete", "Happ", "home").success

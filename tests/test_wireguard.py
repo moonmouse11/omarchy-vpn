@@ -138,3 +138,39 @@ def test_amneziawg_connect_without_awg_quick(monkeypatch):
     )
     assert not result.success
     assert result.message == AWG_INSTALL_HINT
+
+
+def test_delete_disables_autostart_before_rm(tmp_path, monkeypatch):
+    from providers.base import VPNConnection
+
+    provider = _provider(tmp_path, monkeypatch)
+    (provider.config_dir / "nl.conf").write_text("[Interface]\n")
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        wireguard,
+        "run_helper",
+        lambda *args: calls.append(args) or (0, ""),
+    )
+    monkeypatch.setattr(WireGuardProvider, "autostart_enabled", lambda self, n: True)
+    result = provider.delete_config(VPNConnection(name="nl", provider="WireGuard", active=False))
+    assert result.success
+    assert calls == [("autostart", "wg", "nl", "off"), ("rm", "wg", "nl")]
+
+
+def test_amnezia_delete_disables_autostart_before_rm(tmp_path, monkeypatch):
+    from providers.base import VPNConnection
+    from providers.wireguard import AmneziaWGProvider
+
+    provider = AmneziaWGProvider()
+    monkeypatch.setattr(provider, "config_dir", tmp_path)
+    (tmp_path / "nl.conf").write_text("[Interface]\n")
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        wireguard,
+        "run_helper",
+        lambda *args: calls.append(args) or (0, ""),
+    )
+    monkeypatch.setattr(AmneziaWGProvider, "autostart_enabled", lambda self, n: True)
+    result = provider.delete_config(VPNConnection(name="nl", provider="AmneziaWG", active=False))
+    assert result.success
+    assert calls == [("autostart", "awg", "nl", "off"), ("rm", "awg", "nl")]

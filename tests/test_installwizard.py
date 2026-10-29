@@ -245,8 +245,8 @@ def test_resolved_mismatch():
 def test_amneziawg_hint(monkeypatch):
     monkeypatch.setattr(installwizard.shutil, "which", lambda b: None)
     hint = (
-        "AmneziaWG: install it yourself — "
-        "sudo pacman -S amneziawg-tools amneziawg-dkms linux-headers"
+        "AmneziaWG: install from AUR — amneziawg-tools, amneziawg-dkms "
+        "(and linux-headers), or amneziawg-linux for stock kernel"
     )
     assert hint in installwizard.hints(only("AmneziaWG"), installwizard.Detection())
     assert hint not in installwizard.hints(only("WireGuard"), installwizard.Detection())

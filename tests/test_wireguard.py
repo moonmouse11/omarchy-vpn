@@ -75,6 +75,29 @@ def test_amneziawg_uses_its_own_kind(tmp_path, monkeypatch):
     from providers.wireguard import AmneziaWGProvider
 
     calls = []
+    monkeypatch.setattr(wireguard.shutil, "which", lambda b: "/usr/bin/awg-quick")
     monkeypatch.setattr(wireguard, "run_helper", lambda *a, **kw: calls.append(a) or (0, ""))
     AmneziaWGProvider().connect(VPNConnection(name="nl", provider="AmneziaWG", active=False))
     assert calls == [("up", "awg", "nl")]
+
+
+def test_quick_connect_error_prefers_last_error_line():
+    out = "[#] ip link add x\nError: IPv6 is disabled on nexthop device.\n"
+    assert wireguard._quick_connect_error(out) == "Error: IPv6 is disabled on nexthop device."
+
+
+def test_amneziawg_connect_without_awg_quick(monkeypatch):
+    from providers.base import VPNConnection
+    from providers.wireguard import AWG_INSTALL_HINT, AmneziaWGProvider
+
+    monkeypatch.setattr(wireguard.shutil, "which", lambda b: None)
+    monkeypatch.setattr(
+        wireguard,
+        "run_helper",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("helper must not run")),
+    )
+    result = AmneziaWGProvider().connect(
+        VPNConnection(name="nl", provider="AmneziaWG", active=False)
+    )
+    assert not result.success
+    assert result.message == AWG_INSTALL_HINT

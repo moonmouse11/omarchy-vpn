@@ -1,10 +1,27 @@
+import shutil
 import subprocess
 from pathlib import Path
 
 from .base import ActionResult, VPNConnection, VPNProvider, read_config_text, run_helper
 
+AWG_INSTALL_HINT = (
+    "awg-quick not found — install from AUR: amneziawg-tools "
+    "(with amneziawg-dkms and linux-headers, or amneziawg-linux for stock kernel)"
+)
+
 WG_DIR = Path("/etc/wireguard")
 AMNEZIA_DIR = Path("/etc/amnezia/amneziawg")
+
+
+def _quick_connect_error(output: str) -> str:
+    """awg/wg-quick logs steps as [#] …; the real failure is usually last."""
+    lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        if ln.startswith(("Error:", "error:", "awg-quick:", "wg-quick:")):
+            return ln
+    if len(output) > 800:
+        return "…\n" + "\n".join(lines[-8:])
+    return output
 
 
 def _run(cmd: list[str]) -> tuple[int, str]:
@@ -177,9 +194,15 @@ class WireGuardProvider(VPNProvider):
         return targets
 
     def connect(self, connection: VPNConnection) -> ActionResult:
+        if shutil.which(self.quick_bin) is None:
+            if self.quick_bin == "awg-quick":
+                msg = AWG_INSTALL_HINT
+            else:
+                msg = f"{self.quick_bin} not found"
+            return ActionResult(success=False, message=msg)
         code, out = run_helper("up", self.helper_kind, connection.name)
         if code != 0:
-            return ActionResult(success=False, message=out)
+            return ActionResult(success=False, message=_quick_connect_error(out))
         return ActionResult(success=True, message=f"Connected: {connection.name}")
 
     def disconnect(self, connection: VPNConnection) -> ActionResult:

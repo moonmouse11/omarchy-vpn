@@ -43,7 +43,19 @@ def _no_real_reputation_subprocess(monkeypatch):
     fresh test env), which would otherwise make real network calls out of a
     test run. test_reputation.py re-patches Popen itself per case, which
     layers on top of this."""
-    monkeypatch.setattr(reputation.subprocess, "Popen", lambda *a, **k: None)
+
+    class _FakePopen:
+        returncode = 0
+        stdout = None
+        stdin = None
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(reputation.subprocess, "Popen", lambda *a, **k: _FakePopen())
 
 
 @pytest.fixture(autouse=True)

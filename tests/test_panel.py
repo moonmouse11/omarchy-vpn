@@ -352,6 +352,7 @@ def test_label_fields_carry_every_placeholder(env):
         "ipv6": "IPv6 blocked",
         "killswitch": "Kill switch off",
         "activity": "",
+        "connecting": "",
     }
 
 

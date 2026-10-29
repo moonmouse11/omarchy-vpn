@@ -63,5 +63,6 @@ docs
 .agents/
 skills-lock.json
 .pi/
+.context/
 
 Backlog.md

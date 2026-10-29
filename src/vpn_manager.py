@@ -1481,31 +1481,6 @@ def run_profile_action(action: str, provider_name: str, name: str) -> ActionResu
     return result
 
 
-def run_subscription_delete(provider_name: str, sub_id: str) -> ActionResult:
-    """--subscription delete Happ SUB_ID: remove a subscription group from the
-    plugin (cache + local forget list). Does not remove it from the Happ app."""
-    if provider_name != "Happ":
-        return ActionResult(False, f"{provider_name}: subscriptions can't be removed here")
-    if not sub_id:
-        return ActionResult(False, "Missing subscription id")
-    happ = _provider_named("Happ")
-    if happ is None:
-        return ActionResult(False, "Happ not available")
-    for conn in happ.connections():
-        if conn.active and (conn.subscription_id or "") == sub_id:
-            return ActionResult(False, f"Disconnect {conn.name} first")
-    try:
-        title = happmeta.subscription_title(sub_id)
-        happmeta.forget_subscription(sub_id)
-    except ValueError as e:
-        return ActionResult(False, str(e))
-    except OSError as e:
-        return ActionResult(False, f"Could not remove subscription: {e}")
-    with contextlib.suppress(OSError):
-        quickconnect.forget_happ_subscription(sub_id)
-    return ActionResult(True, f"Removed subscription: {title}")
-
-
 def _ping_scope_targets(
     scope: dict,
 ) -> tuple[list[tuple[str, dict]], list[tuple[str, str, int]]]:
@@ -1891,21 +1866,16 @@ def _server_group(
         median = sorted(reachable)[len(reachable) // 2]
         stale = "~" if any(r["stale"] for r in rows if r["ping_ms"] is not None) else ""
         summary = f"✓ {len(reachable)}/{len(rows)} · {stale}{median:.0f} ms"
-    active_server = next((r["name"] for r in rows if r["active"]), "")
-    out = {
+    return {
         "id": group_id,
         "provider": provider,
         "title": title,
         "subscription_id": sub_id or "",
         "summary": summary,
         "active": any(r["active"] for r in rows),
-        "active_server": active_server,
         "pinging": group_pinging,
         "servers": rows,
     }
-    if provider == "Happ" and sub_id:
-        out["manage"] = True
-    return out
 
 
 HAPP_NO_HEADERS_TITLE = "⚠ No servers: the provider sent none (README: Happ setup)"
@@ -2207,12 +2177,6 @@ def main():
         help="Toggle a profile's autostart or delete it (a server row's right click)",
     )
     group.add_argument(
-        "--subscription",
-        nargs=3,
-        metavar=("delete", "PROVIDER", "SUBSCRIPTION_ID"),
-        help="Remove a Happ subscription from the plugin (subscription group right click)",
-    )
-    group.add_argument(
         "--check",
         nargs="+",
         metavar="dns|ip|speed [TARGET]",
@@ -2321,10 +2285,6 @@ def main():
         if args.profile[0] not in ("autostart", "delete"):
             parser.error("--profile takes autostart|delete PROVIDER NAME")
         _report(run_profile_action(*args.profile))
-    elif args.subscription is not None:
-        if args.subscription[0] != "delete":
-            parser.error("--subscription takes delete PROVIDER SUBSCRIPTION_ID")
-        _report(run_subscription_delete(*args.subscription[1:]))
     elif args.check is not None:
         if args.check[0] not in CHECK_TITLES or len(args.check) > 2:
             parser.error("--check takes dns|ip|speed [TARGET]")

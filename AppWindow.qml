@@ -89,13 +89,10 @@ FloatingWindow {
       else if (k === "/") locations.filterField.forceActiveFocus()
       else if (k === "s") win.host.toggleFavourite(win.cursorRow())
       else if (k === "i") win.host.startImport(win.importTarget())
-      else if (k === "a" && win.host.showProfile(win.cursorRow()) && win.cursorRow().kind === "server" && !win.cursorRow().server.active)
+      else if (k === "a" && win.host.showProfile(win.cursorRow()) && !win.cursorRow().server.active)
         win.host.profileAction("autostart")
-      else if (k === "x" && win.host.showProfile(win.cursorRow())) {
-        var cr = win.cursorRow()
-        if (cr.kind === "group" && cr.group && !cr.group.active) win.host.deleteConfirmOpen = true
-        else if (cr.kind === "server" && cr.server && !cr.server.active) win.host.deleteConfirmOpen = true
-      }
+      else if (k === "x" && win.host.showProfile(win.cursorRow()) && !win.cursorRow().server.active)
+        win.host.deleteConfirmOpen = true
       else if (k === "[") win.host.stepProvider(-1)
       else if (k === "]") win.host.stepProvider(1)
     }
@@ -245,21 +242,13 @@ FloatingWindow {
       id: deleteConfirm
       anchors.fill: parent
       opened: win.host.deleteConfirmOpen
-      message: {
-        if (!win.host.profileTarget) return ""
-        if (win.host.profileMode === "subscription" && win.host.profileTarget.group)
-          return "Remove " + win.host.profileTarget.group.title + " from this plugin?\nHapp's app is unchanged; add the subscription again there to restore."
-        if (win.host.profileTarget.server)
-          return "Delete " + win.host.profileTarget.server.name + " (" + win.host.profileTarget.group.provider + ")?"
-        return ""
-      }
+      message: win.host.profileTarget && win.host.profileTarget.server
+        ? "Delete " + win.host.profileTarget.server.name + " (" + win.host.profileTarget.group.provider + ")?"
+        : ""
       confirmText: "Delete"
       foreground: win.host.foreground
       fontFamily: win.host.fontFamily
-      onConfirmed: {
-        if (win.host.profileMode === "subscription") win.host.profileDeleteSubscription()
-        else win.host.profileAction("delete")
-      }
+      onConfirmed: win.host.profileAction("delete")
       onCanceled: win.host.deleteConfirmOpen = false
     }
   }

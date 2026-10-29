@@ -88,15 +88,3 @@ def forget(provider: str, name: str, sub_id: str | None = None) -> None:
     with contextlib.suppress(OSError), _locked() as data:
         data["favourites"] = [e for e in data["favourites"] if e != entry]
         data["recent"] = [e for e in data["recent"] if e != entry]
-
-
-def forget_happ_subscription(sub_id: str) -> None:
-    """Remove every Happ quick-connect entry for this subscription."""
-    sid = sub_id or ""
-
-    def drop(entry: dict) -> bool:
-        return entry["provider"] == "Happ" and entry.get("sub_id") == sid
-
-    with contextlib.suppress(OSError), _locked() as data:
-        data["favourites"] = [e for e in data["favourites"] if not drop(e)]
-        data["recent"] = [e for e in data["recent"] if not drop(e)]

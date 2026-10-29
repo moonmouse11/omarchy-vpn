@@ -260,15 +260,9 @@ Panel {
     profileMode = "import"
   }
 
-  // right click: Happ subscription group, or a server whose protocol manages profiles
+  // right click on a server whose protocol manages profiles (not Happ subscriptions)
   function showProfile(row) {
-    if (!row) return false
-    if (row.kind === "group" && row.group && row.group.manage === true) {
-      profileTarget = row
-      profileMode = "subscription"
-      return true
-    }
-    if (row.kind !== "server") return false
+    if (!row || row.kind !== "server") return false
     var info = providerInfo(row.group.provider)
     if (!info || !info.manage) return false
     profileTarget = row
@@ -307,25 +301,8 @@ Panel {
 
   function profileDisconnect() {
     var row = profileTarget
-    if (!row) return
-    if (profileMode === "subscription" && row.group) {
-      var g = row.group
-      if (!g.active_server) return
-      var args = ["--disconnect", String(g.provider), String(g.active_server)]
-      if (g.subscription_id) args.push(String(g.subscription_id))
-      runArgs(args)
-      closeProfileBar()
-      return
-    }
-    if (!row.server) return
+    if (!row || !row.server) return
     runArgs(["--disconnect", String(row.group.provider), String(row.server.name)])
-    closeProfileBar()
-  }
-
-  function profileDeleteSubscription() {
-    var row = profileTarget
-    if (!row || !row.group || !row.group.subscription_id) return
-    runArgs(["--subscription", "delete", String(row.group.provider), String(row.group.subscription_id)])
     closeProfileBar()
   }
 

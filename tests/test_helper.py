@@ -192,6 +192,20 @@ def test_up_down_autostart_rm_run_fixed_commands(tree):
     assert tree("down", "awg", "home").stdout == "awg-quick down home\n"
 
 
+def test_wg_up_refuses_ipv6_only_allowedips(tree):
+    v6only = (
+        "[Interface]\nPrivateKey = x\n\n[Peer]\n"
+        "PublicKey = y\nEndpoint = 1.2.3.4:51820\nAllowedIPs = ::/0\n"
+    )
+    tree("import", "wg", "home", stdin=v6only)
+    conf = tree.dirs["wg"] / "home.conf"
+    before = conf.read_text()
+    result = tree("up", "wg", "home")
+    assert result.returncode != 0
+    assert "IPv6-only" in result.stderr
+    assert conf.read_text() == before
+
+
 def test_wg_up_strips_ipv6_allowedips_then_restores_config(tree):
     v6 = (
         "[Interface]\nPrivateKey = x\n\n[Peer]\n"

@@ -209,6 +209,10 @@ wg_quick_up() {
         cp -a "$conf" "$bak"
         wg_conf_strip_v6_allowedips "$bak" >"$conf"
         stripped=1
+        if grep -qE '^[[:space:]]*AllowedIPs[[:space:]]*=.*:' "$conf"; then
+            mv -f "$bak" "$conf"
+            die "AllowedIPs are IPv6-only — omarchy-vpn tunnels IPv4 only; use 0.0.0.0/0 or IPv4 routes"
+        fi
     fi
 
     restore_wg_conf() {
@@ -230,6 +234,9 @@ wg_quick_up() {
     if run "$kind-quick" up "$name"; then
         restore_wg_conf
         trap - EXIT
+        if [[ $ipv6_was_off == 1 ]]; then
+            run sysctl -q -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 || true
+        fi
         return 0
     fi
     rc=$?

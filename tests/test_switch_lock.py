@@ -175,10 +175,20 @@ def test_connect_tearing_down_the_others_does_not_lock_itself_out(env, monkeypat
 
 def test_connecting_label_field_while_switch_lock_held(env, monkeypatch, tmp_path):
     monkeypatch.setattr(vpn_manager, "SWITCH_LOCK", tmp_path / "switch.lock")
+    monkeypatch.setattr(vpn_manager, "_our_process", lambda pid, flags=None: True)
     fd = _hold_lock(f"{os.getpid()}\nconnecting to Happ: 🇺🇸 USA")
     try:
         assert vpn_manager.connecting_text() == "connecting"
         assert vpn_manager.activity_text() == ""
+    finally:
+        os.close(fd)
+
+
+def test_connecting_hidden_when_lock_holder_is_not_vpn_manager(env, monkeypatch, tmp_path):
+    monkeypatch.setattr(vpn_manager, "SWITCH_LOCK", tmp_path / "switch.lock")
+    fd = _hold_lock("999999999\nconnecting to Happ: 🇺🇸 USA")
+    try:
+        assert vpn_manager.connecting_text() == ""
     finally:
         os.close(fd)
 

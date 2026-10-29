@@ -207,8 +207,8 @@ def _switch_in_progress() -> str | None:
             return None
         except BlockingIOError:
             pid, action = _lock_holder(fd)
-            if pid and _our_process(pid):
-                return action
+            if pid and not _our_process(pid):
+                return None
             return action or None
     finally:
         os.close(fd)

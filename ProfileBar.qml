@@ -5,14 +5,19 @@ import qs.Ui
 // The app window's Profiles strip above Locations (host.profileMode):
 // "import" — a protocol's "+ Import": a config path or the desktop file
 // chooser, or a pasted VLESS/SS key; "profile" — a server's right click (or
-// a / x): Toggle autostart, Delete….
+// a / x): autostart / delete; "subscription" — Happ group right click.
 Column {
   id: bar
   property var host: null
   readonly property bool importing: host.profileMode === "import"
+  readonly property bool subscription: host.profileMode === "subscription"
+  readonly property bool profile: host.profileMode === "profile"
   readonly property var target: host.profileTarget
   readonly property bool keyImport: importing && target !== null && target.importer === "key"
   readonly property bool inputFocused: input.activeFocus
+  readonly property bool profileActive: profile && target !== null && target.server && target.server.active === true
+  readonly property bool subscriptionActive: subscription && target !== null && target.group && target.group.active === true
+  readonly property bool canAutostart: profile && target !== null && bar.host.providerInfo(target.group.provider) && bar.host.providerInfo(target.group.provider).autostart === true
 
   visible: host.profileMode !== ""
   height: visible ? implicitHeight : 0
@@ -36,6 +41,7 @@ Column {
     elide: Text.ElideRight
     text: !bar.target ? ""
       : bar.importing ? "Import " + bar.target.name + (bar.keyImport ? " key" : " config")
+      : bar.subscription && bar.target.group ? bar.target.group.title + " · Happ subscription"
       : bar.target.server ? bar.target.server.name + " · " + bar.target.group.provider : ""
     color: bar.host.foreground
     font.family: bar.host.fontFamily
@@ -80,7 +86,16 @@ Column {
       onClicked: bar.submit()
     }
     Button {
-      visible: !bar.importing
+      visible: bar.profileActive || bar.subscriptionActive
+      text: "Disconnect"
+      bordered: true
+      foreground: bar.host.foreground
+      fontFamily: bar.host.fontFamily
+      fontSize: Style.font.bodySmall
+      onClicked: bar.host.profileDisconnect()
+    }
+    Button {
+      visible: bar.profile && !bar.profileActive && bar.canAutostart
       text: "Toggle autostart"
       bordered: true
       foreground: bar.host.foreground
@@ -89,7 +104,7 @@ Column {
       onClicked: bar.host.profileAction("autostart")
     }
     Button {
-      visible: !bar.importing
+      visible: (bar.profile && !bar.profileActive) || (bar.subscription && !bar.subscriptionActive)
       text: "Delete…"
       bordered: true
       foreground: bar.host.foreground

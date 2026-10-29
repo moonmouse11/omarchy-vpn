@@ -2,6 +2,7 @@
 (--profile autostart|delete)."""
 
 import io
+import json
 import subprocess
 from types import SimpleNamespace
 
@@ -119,6 +120,37 @@ def test_profile_actions_refuse_unknown_profiles_and_unmanaged_providers(wg):
     assert not vpn_manager.run_profile_action("delete", "WireGuard", "nope").success
     assert not vpn_manager.run_profile_action("delete", "Happ", "home").success
     assert wg.deleted == []
+
+
+def test_vless_delete_removes_key_from_store(monkeypatch, tmp_path):
+    import providers.keys as keys
+
+    store = tmp_path / "keys.json"
+    monkeypatch.setattr(keys, "STORE", store)
+    monkeypatch.setattr(
+        vpn_manager,
+        "ALL_PROVIDERS",
+        [keys.KeysProvider("ss"), FakeProvider("Happ")],
+    )
+    parsed = keys.parse_ss_key("ss://YWVzLTI1Ni1nY206c2VjcmV0@1.2.3.4:8388#Home")
+    assert keys.add_server(parsed).success
+    provider = keys.KeysProvider("ss")
+    conn = provider.connections()[0]
+    assert vpn_manager.run_profile_action("delete", "Shadowsocks", conn.name).success
+    assert provider.connections() == []
+    assert json.loads(store.read_text()) == []
+
+
+def test_delete_removes_quick_connect_entries(wg, monkeypatch, tmp_path):
+    import quickconnect
+
+    monkeypatch.setattr(quickconnect, "QUICK_FILE", tmp_path / "quick.json")
+    quickconnect.remember("WireGuard", "home")
+    quickconnect.toggle_favourite("WireGuard", "home")
+    assert vpn_manager.run_profile_action("delete", "WireGuard", "home").success
+    data = quickconnect.load()
+    assert data["recent"] == []
+    assert data["favourites"] == []
 
 
 def test_delete_refuses_an_active_profile(monkeypatch):

@@ -97,9 +97,30 @@ def test_server_list_groups_happ_per_subscription_and_other_providers(env, monke
     ]  # a provider with nothing to show has no group…
     # …but is still a protocol of the window's tree/tabs/sidebar
     assert listing["providers"] == [
-        {"name": "Happ", "importer": None, "manage": False, "total": 2, "active": True},
-        {"name": "WireGuard", "importer": "file", "manage": True, "total": 1, "active": True},
-        {"name": "OpenVPN", "importer": "file", "manage": False, "total": 0, "active": False},
+        {
+            "name": "Happ",
+            "importer": None,
+            "manage": False,
+            "autostart": False,
+            "total": 2,
+            "active": True,
+        },
+        {
+            "name": "WireGuard",
+            "importer": "file",
+            "manage": True,
+            "autostart": True,
+            "total": 1,
+            "active": True,
+        },
+        {
+            "name": "OpenVPN",
+            "importer": "file",
+            "manage": True,
+            "autostart": True,
+            "total": 0,
+            "active": False,
+        },
     ]
     assert listing["layout"] == "tree"
     sub_a = groups[0]

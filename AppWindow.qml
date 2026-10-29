@@ -89,8 +89,13 @@ FloatingWindow {
       else if (k === "/") locations.filterField.forceActiveFocus()
       else if (k === "s") win.host.toggleFavourite(win.cursorRow())
       else if (k === "i") win.host.startImport(win.importTarget())
-      else if (k === "a" && win.host.showProfile(win.cursorRow())) win.host.profileAction("autostart")
-      else if (k === "x" && win.host.showProfile(win.cursorRow())) win.host.deleteConfirmOpen = true
+      else if (k === "a" && win.host.showProfile(win.cursorRow()) && win.cursorRow().kind === "server" && !win.cursorRow().server.active)
+        win.host.profileAction("autostart")
+      else if (k === "x" && win.host.showProfile(win.cursorRow())) {
+        var cr = win.cursorRow()
+        if (cr.kind === "group" && cr.group && !cr.group.active) win.host.deleteConfirmOpen = true
+        else if (cr.kind === "server" && cr.server && !cr.server.active) win.host.deleteConfirmOpen = true
+      }
       else if (k === "[") win.host.stepProvider(-1)
       else if (k === "]") win.host.stepProvider(1)
     }
@@ -213,7 +218,7 @@ FloatingWindow {
       anchors.right: parent.right
       anchors.bottom: parent.bottom
       textFormat: Text.PlainText
-      text: "j/k move · h/l fold · enter connect · p ping · s star · / filter · i import · a autostart · x delete"
+      text: "j/k move · h/l fold · enter connect · p ping · s star · / filter · i import · right click profile · a autostart · x delete"
         + (win.host.windowLayout !== "tree" ? " · [ ] protocol" : "")
         + " · t toggle · d DNS · r refresh · esc close"
       color: win.host.dim
@@ -240,13 +245,21 @@ FloatingWindow {
       id: deleteConfirm
       anchors.fill: parent
       opened: win.host.deleteConfirmOpen
-      message: win.host.profileTarget && win.host.profileTarget.server
-        ? "Delete " + win.host.profileTarget.server.name + " (" + win.host.profileTarget.group.provider + ")?"
-        : ""
+      message: {
+        if (!win.host.profileTarget) return ""
+        if (win.host.profileMode === "subscription" && win.host.profileTarget.group)
+          return "Remove " + win.host.profileTarget.group.title + " from this plugin?\nHapp's app is unchanged; add the subscription again there to restore."
+        if (win.host.profileTarget.server)
+          return "Delete " + win.host.profileTarget.server.name + " (" + win.host.profileTarget.group.provider + ")?"
+        return ""
+      }
       confirmText: "Delete"
       foreground: win.host.foreground
       fontFamily: win.host.fontFamily
-      onConfirmed: win.host.profileAction("delete")
+      onConfirmed: {
+        if (win.host.profileMode === "subscription") win.host.profileDeleteSubscription()
+        else win.host.profileAction("delete")
+      }
       onCanceled: win.host.deleteConfirmOpen = false
     }
   }

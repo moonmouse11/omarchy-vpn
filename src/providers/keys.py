@@ -707,3 +707,15 @@ class KeysProvider(VPNProvider):
         except ValueError as e:
             return ActionResult(False, f"Bad key: {e}")
         return add_server(parsed)
+
+    def delete_config(self, connection: VPNConnection) -> ActionResult:
+        if connection.active:
+            return ActionResult(False, f"Disconnect {connection.name} first")
+        servers = _load_servers()
+        kept = [
+            s for s in servers if not (s.get("kind") == self._kind and s["name"] == connection.name)
+        ]
+        if len(kept) == len(servers):
+            return ActionResult(False, f"Unknown {self.name} server: {connection.name}")
+        _save_servers(kept)
+        return ActionResult(True, f"Deleted: {connection.name}")

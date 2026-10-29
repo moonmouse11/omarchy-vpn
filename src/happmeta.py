@@ -43,6 +43,7 @@ CAPTURED_PROVIDERS = Path.home() / ".config/happ-capture/xray-providers.json"
 XRAY_CONFIGS = Path.home() / ".config/happ-capture/xray-configs.json"
 HEADERS_FILE = Path.home() / ".config/happ-capture/headers.json"
 SUB_CACHE_DIR = Path.home() / ".cache/vpn-manager"
+REMOVED_SUBSCRIPTIONS = Path.home() / ".config/vpn-manager/removed-happ-subscriptions.json"
 # What a panel keys the full xray JSON on is a "Happ/<version>" User-Agent:
 # without it (plain curl/urllib UA) a panel may answer a text/plain link list
 # instead. Device-limited panels also want X-HWID, else they
@@ -223,6 +224,23 @@ def _parse_providers() -> dict[str, dict]:
 PROVIDERS_CACHE_VERSION = 2  # bump when _parse_providers learns new log shapes
 
 
+def _load_removed_subscriptions() -> set[str]:
+    try:
+        data = json.loads(REMOVED_SUBSCRIPTIONS.read_text())
+    except OSError, json.JSONDecodeError:
+        return set()
+    if not isinstance(data, list):
+        return set()
+    return {str(x) for x in data if x}
+
+
+def _without_removed_subscriptions(providers: dict[str, dict]) -> dict[str, dict]:
+    removed = _load_removed_subscriptions()
+    if not removed:
+        return providers
+    return {sub_id: prov for sub_id, prov in providers.items() if sub_id not in removed}
+
+
 def providers() -> dict[str, dict]:
     """id -> {"name", "url"}, cached by the log's mtime."""
     try:
@@ -232,7 +250,7 @@ def providers() -> dict[str, dict]:
     try:
         cache = json.loads(PROVIDERS_CACHE.read_text())
         if cache.get("version") == PROVIDERS_CACHE_VERSION and cache.get("mtime") == mtime:
-            return cache.get("providers", {})
+            return _without_removed_subscriptions(cache.get("providers", {}))
     except OSError, json.JSONDecodeError:
         pass
     result = _parse_providers()
@@ -242,7 +260,7 @@ def providers() -> dict[str, dict]:
             PROVIDERS_CACHE,
             {"version": PROVIDERS_CACHE_VERSION, "mtime": mtime, "providers": result},
         )
-    return result
+    return _without_removed_subscriptions(result)
 
 
 def captured_providers() -> dict[str, str]:
@@ -352,6 +370,24 @@ def _sub_cache_path(sub_id: str) -> Path:
     # crafted id (e.g. containing "../") can't escape SUB_CACHE_DIR.
     safe_id = re.sub(r"[^\w-]", "_", sub_id)
     return SUB_CACHE_DIR / f"subscription-{safe_id}.json"
+
+
+def forget_subscription(sub_id: str) -> None:
+    """Local forget list + drop subscription cache. Happ's app is unchanged."""
+    if not sub_id:
+        raise ValueError("missing subscription id")
+    known = _without_removed_subscriptions(_parse_providers())
+    if sub_id not in known:
+        raise ValueError(f"subscription {sub_id!r} not found")
+    removed = _load_removed_subscriptions()
+    removed.add(sub_id)
+    fsutil.write_json_atomic(REMOVED_SUBSCRIPTIONS, sorted(removed), indent=2)
+    _sub_cache_path(sub_id).unlink(missing_ok=True)
+
+
+def subscription_title(sub_id: str) -> str:
+    prov = _without_removed_subscriptions(_parse_providers()).get(sub_id)
+    return (prov or {}).get("name") or sub_id
 
 
 def fetch_subscription(sub_id: str, url: str, force: bool = False) -> list[dict]:

@@ -1,3 +1,5 @@
+import pytest
+
 from providers import openvpn
 from providers.base import VPNConnection
 from providers.openvpn import OpenVPNProvider
@@ -45,3 +47,28 @@ def test_import_pipes_the_config_and_reports_a_refusal(tmp_path, monkeypatch):
     assert seen == [(("import", "ovpn", "us"), src.read_text())]
     assert not result.success
     assert result.message.startswith("this OpenVPN config has a directive")
+
+
+def test_delete_refuses_active_profile(monkeypatch):
+    conn = VPNConnection(name="nl", provider="OpenVPN", active=True)
+    monkeypatch.setattr(openvpn, "run_helper", lambda *a, **kw: pytest.fail("must not run helper"))
+    result = OpenVPNProvider().delete_config(conn)
+    assert not result.success
+    assert "Disconnect" in result.message
+
+
+def test_delete_runs_helper_rm(monkeypatch, tmp_path):
+    monkeypatch.setattr(openvpn, "OVPN_DIR", tmp_path)
+    (tmp_path / "nl.conf").write_text("client\n")
+    calls = []
+    monkeypatch.setattr(openvpn, "run_helper", lambda *a, **kw: calls.append(a) or (0, ""))
+    assert OpenVPNProvider().delete_config(_conn()).success
+    assert calls == [("rm", "ovpn", "nl")]
+
+
+def test_toggle_autostart(monkeypatch):
+    calls = []
+    monkeypatch.setattr(openvpn, "run_helper", lambda *a, **kw: calls.append(a) or (0, ""))
+    monkeypatch.setattr(OpenVPNProvider, "autostart_enabled", lambda self, n: False)
+    assert OpenVPNProvider().toggle_autostart(_conn()).success
+    assert calls == [("autostart", "ovpn", "nl", "on")]

@@ -10,16 +10,14 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import fsutil
 from app.spawn import spawn_manager
+from happ.constants import *  # noqa: F403  # NOSONAR — re-export constants for happmeta facade
 from lazyimports import statistics  # noqa: F401 — registers urllib.request & co. lazily
 
-if TYPE_CHECKING:
-    pass
-
-from happ.constants import *  # noqa: F403
+_HTTP_SCHEME_RE = re.compile(r"^https?://")
 
 
 def _happmeta():
@@ -68,13 +66,13 @@ def _parse_providers() -> dict[str, dict]:
     def _resolve_name(url: str, fallback: str) -> str:
         name = url_name.get(url)
         if not name:
-            host = re.sub(r"^https?://", "", url).split("/")[0]
+            host = _HTTP_SCHEME_RE.sub("", url).split("/")[0]
             name = next((n for u, n in url_name.items() if host in u), None)
         return name or fallback
 
     host_ids: dict[str, list[str]] = {}
     for sub_id, url in id_url.items():
-        host = re.sub(r"^https?://", "", url).split("/")[0]
+        host = _HTTP_SCHEME_RE.sub("", url).split("/")[0]
         host_ids.setdefault(host, []).append(sub_id)
 
     def _path_prefix_len(a: str, b: str) -> int:
@@ -93,7 +91,7 @@ def _parse_providers() -> dict[str, dict]:
     for pos, url in added_urls:
         if url in id_url.values():
             continue
-        host = re.sub(r"^https?://", "", url).split("/")[0]
+        host = _HTTP_SCHEME_RE.sub("", url).split("/")[0]
         ids = host_ids.get(host)
         if ids:
             # Re-added with a fresh token for a host Happ already updates
@@ -103,10 +101,14 @@ def _parse_providers() -> dict[str, dict]:
             newest_real = max(id_pos[i] for i in ids)
             if pos < newest_real:
                 continue
+
             # Path-aware pick: the id whose current url shares the longest
             # path prefix with the added url — a sibling subscription on the
             # same host must not swallow another's rotated token.
-            real_id = max(ids, key=lambda i: _path_prefix_len(id_url[i], url))
+            def _prefix_key(sub_id: str, added_url: str = url) -> int:
+                return _path_prefix_len(id_url[sub_id], added_url)
+
+            real_id = max(ids, key=_prefix_key)
             id_url[real_id] = url
             continue
         synth[host] = url

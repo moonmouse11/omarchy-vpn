@@ -11,7 +11,7 @@ from lazyimports import statistics  # noqa: F401 — registers urllib.request & 
 if TYPE_CHECKING:
     import urllib.request
 
-from happ.constants import *  # noqa: F403
+from happ.constants import *  # noqa: F403  # NOSONAR — shared constants with happmeta/tests
 from happ.subscriptions import (
     is_stub_server,
     providers,

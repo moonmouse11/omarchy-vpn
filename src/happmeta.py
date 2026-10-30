@@ -11,7 +11,7 @@ from pathlib import Path
 
 import lazyimports
 from app.spawn import MANAGER
-from happ import *
+from happ import *  # NOSONAR — facade re-exports; tests patch happmeta.*
 from happ.constants import (
     CAPTURED_PROVIDERS,
     CATCH_ALL_RULE,

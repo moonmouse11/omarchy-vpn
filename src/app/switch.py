@@ -39,13 +39,13 @@ class SwitchBusy(Exception):
     """Another connect/disconnect holds SWITCH_LOCK and won't let go."""
 
 
-class SwitchCancelled(BaseException):
+class SwitchCancelled(BaseException):  # NOSONAR — must not inherit Exception; see docstring
     """This switch was superseded by a newer one (SIGTERM from its switch_lock).
     BaseException, like KeyboardInterrupt: a provider's `except Exception`
     must not swallow it and carry on connecting."""
 
 
-class CheckCancelled(BaseException):
+class CheckCancelled(BaseException):  # NOSONAR — see SwitchCancelled
     """A DNS leak test stopped by a switch (_abort_checks)."""
 
 

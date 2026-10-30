@@ -328,7 +328,12 @@ def _dns_check(progress: _CheckProgress) -> dict:
         texts.append(f"bash.ws: {result['conclusion']}")
     rows = _check_rows(texts)
     bad = any(r["state"] == "bad" for r in rows)
-    state = "bad" if bad else ("ok" if verdict else "unknown")
+    if bad:
+        state = "bad"
+    elif verdict:
+        state = "ok"
+    else:
+        state = "unknown"
     # lead with a verdict line (exit, IPv6, resolvers), not one resolver's row
     text = next((r["text"] for r in rows if r["text"].startswith("Leaked")), verdict)
     return {

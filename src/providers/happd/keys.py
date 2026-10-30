@@ -62,6 +62,14 @@ def _kind_meta(kind: str) -> tuple[str, str, Path]:
 # xray 26 shadowsocks methods — AEAD only; the legacy stream ciphers
 # (aes-*-cfb/ctr, chacha20, salsa20, rc4-md5) were REMOVED from the core,
 # so key-shop cfb keys are unusable on any modern core
+_SS_SCHEME = "ss://"
+_VLESS_SCHEME = "vless://"
+_GARBLED_HOSTPORT = "garbled host:port in key"
+_ERR_NOT_SS = f"not an {_SS_SCHEME} key"
+_ERR_NOT_VLESS = f"not a {_VLESS_SCHEME} key"
+_ERR_NO_KEY_IN_FILE = f"No {_SS_SCHEME} or {_VLESS_SCHEME} key found in the file"
+_ERR_UNSUPPORTED_SCHEME = f"unsupported key scheme (supported: {_SS_SCHEME}, {_VLESS_SCHEME})"
+
 METHODS = {
     "aes-128-gcm",
     "aes-256-gcm",
@@ -95,14 +103,14 @@ def _parse_host_port(text: str) -> tuple[str, int]:
     if text.startswith("["):
         end = text.find("]")
         if end == -1 or end + 1 >= len(text) or text[end + 1] != ":":
-            raise ValueError("garbled host:port in key")
+            raise ValueError(_GARBLED_HOSTPORT)
         host, port_s = text[1:end], text[end + 2 :]
     elif ":" in text:
         host, _, port_s = text.rpartition(":")
     else:
-        raise ValueError("garbled host:port in key")
+        raise ValueError(_GARBLED_HOSTPORT)
     if not host or not port_s.isdigit():
-        raise ValueError("garbled host:port in key")
+        raise ValueError(_GARBLED_HOSTPORT)
     port = int(port_s)
     if not 1 <= port <= 65535:
         raise ValueError("port out of range in key")
@@ -140,8 +148,8 @@ def parse_ss_key(url: str) -> dict:
 
     Raises ValueError with a user-facing reason for anything unsupported."""
     rest = url.strip()
-    if not rest.lower().startswith("ss://"):
-        raise ValueError("not an ss:// key")
+    if not rest.lower().startswith(_SS_SCHEME):
+        raise ValueError(_ERR_NOT_SS)
     rest, query, name = _split_fragment_query(rest[5:])
 
     if query:
@@ -215,8 +223,8 @@ def parse_ss_key(url: str) -> dict:
 def parse_vless_key(url: str) -> dict:
     """vless:// share link -> server dict (kind "vless", outbound params)."""
     rest = url.strip()
-    if not rest.lower().startswith("vless://"):
-        raise ValueError("not a vless:// key")
+    if not rest.lower().startswith(_VLESS_SCHEME):
+        raise ValueError(_ERR_NOT_VLESS)
     rest, query, name = _split_fragment_query(rest[8:])
     rest = rest.split("/", 1)[0]  # tolerate trailing junk after host:port
     if "@" not in rest:
@@ -270,11 +278,11 @@ def parse_vless_key(url: str) -> dict:
 def parse_key(url: str) -> dict:
     """Any supported key scheme -> server dict."""
     lowered = url.strip().lower()
-    if lowered.startswith("ss://"):
+    if lowered.startswith(_SS_SCHEME):
         return parse_ss_key(url)
-    if lowered.startswith("vless://"):
+    if lowered.startswith(_VLESS_SCHEME):
         return parse_vless_key(url)
-    raise ValueError("unsupported key scheme (supported: ss://, vless://)")
+    raise ValueError(_ERR_UNSUPPORTED_SCHEME)
 
 
 # ── server store (keys carry passwords/UUIDs — keep it 0600) ──────────────────
@@ -698,7 +706,7 @@ class KeysProvider(VPNProvider):
     def import_config(self, path: str) -> ActionResult:
         # the menu input may be a pasted key itself, not a file path
         text = path.strip()
-        if text.lower().startswith(("ss://", "vless://")):
+        if text.lower().startswith((_SS_SCHEME, _VLESS_SCHEME)):
             try:
                 return add_server(parse_key(text))
             except ValueError as e:
@@ -709,7 +717,7 @@ class KeysProvider(VPNProvider):
             return ActionResult(False, f"Cannot read {path}: {e}")
         match = _KEY_RE.search(text)
         if not match:
-            return ActionResult(False, "No ss:// or vless:// key found in the file")
+            return ActionResult(False, _ERR_NO_KEY_IN_FILE)
         try:
             parsed = parse_key(match.group(0))
         except ValueError as e:

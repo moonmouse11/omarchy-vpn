@@ -11,6 +11,11 @@ def run_helper(*args, **kwargs):
 
 
 TIMEOUT = 6
+_OVPN_GLOB_CONF = "*.conf"
+_OVPN_GLOB_OVPN = "*.ovpn"
+_OVPN_SUFFIX_CONF = ".conf"
+_OVPN_SUFFIX_OVPN = ".ovpn"
+_OVPN_SUFFIXES = (_OVPN_SUFFIX_CONF, _OVPN_SUFFIX_OVPN)
 
 
 def _run(cmd: list[str]) -> tuple[int, str]:
@@ -88,7 +93,7 @@ class OpenVPNProvider(VPNProvider):
         if not ovpn_dir.exists():
             return result
 
-        for conf in sorted(ovpn_dir.glob("*.conf")) + sorted(ovpn_dir.glob("*.ovpn")):
+        for conf in sorted(ovpn_dir.glob(_OVPN_GLOB_CONF)) + sorted(ovpn_dir.glob(_OVPN_GLOB_OVPN)):
             profile = conf.stem
             is_active = _is_running(profile)
             result.append(
@@ -134,10 +139,10 @@ class OpenVPNProvider(VPNProvider):
         src = Path(path)
         if not src.exists():
             return ActionResult(success=False, message=f"File not found: {path}")
-        if src.suffix not in (".conf", ".ovpn"):
+        if src.suffix not in _OVPN_SUFFIXES:
             return ActionResult(success=False, message="File must have .conf or .ovpn extension")
 
-        if any((_ovpn_dir() / f"{src.stem}{ext}").exists() for ext in (".conf", ".ovpn")):
+        if any((_ovpn_dir() / f"{src.stem}{ext}").exists() for ext in _OVPN_SUFFIXES):
             return ActionResult(success=False, message=f"Config already exists: {src.stem}")
         try:
             text = src.read_text(errors="replace")
@@ -169,9 +174,7 @@ class OpenVPNProvider(VPNProvider):
     def delete_config(self, connection: VPNConnection) -> ActionResult:
         if connection.active:
             return ActionResult(False, f"Disconnect {connection.name} first")
-        if not any(
-            (_ovpn_dir() / f"{connection.name}{ext}").exists() for ext in (".conf", ".ovpn")
-        ):
+        if not any((_ovpn_dir() / f"{connection.name}{ext}").exists() for ext in _OVPN_SUFFIXES):
             return ActionResult(False, f"Config not found: {connection.name}")
         if self.autostart_enabled(connection.name):
             code, out = run_helper("autostart", "ovpn", connection.name, "off")

@@ -12,6 +12,9 @@ from providers.common.types import ActionResult, VPNConnection, VPNProvider
 
 # nmcli connection types that are VPNs (anything else — ethernet, wifi,
 # bridge, loopback... — is ignored)
+_ERR_MISSING_UUID = "Missing connection UUID"
+_ERR_NMCLI_FAILED = "nmcli failed"
+
 VPN_TYPES = {
     "vpn",  # generic NM VPN plugin (openvpn/vpnc/... via D-Bus service)
     "wireguard",
@@ -121,24 +124,24 @@ class NetworkManagerProvider(VPNProvider):
 
     def connect(self, connection: VPNConnection) -> ActionResult:
         if not connection.uuid:
-            return ActionResult(False, "Missing connection UUID")
+            return ActionResult(False, _ERR_MISSING_UUID)
         code, out = _nm_run(["nmcli", "connection", "up", "uuid", connection.uuid])
         if code != 0:
-            return ActionResult(False, out.splitlines()[-1] if out else "nmcli failed")
+            return ActionResult(False, out.splitlines()[-1] if out else _ERR_NMCLI_FAILED)
         return ActionResult(True, f"Connected: {connection.name}")
 
     def disconnect(self, connection: VPNConnection) -> ActionResult:
         if not connection.uuid:
-            return ActionResult(False, "Missing connection UUID")
+            return ActionResult(False, _ERR_MISSING_UUID)
         code, out = _nm_run(["nmcli", "connection", "down", "uuid", connection.uuid])
         if code != 0:
-            return ActionResult(False, out.splitlines()[-1] if out else "nmcli failed")
+            return ActionResult(False, out.splitlines()[-1] if out else _ERR_NMCLI_FAILED)
         return ActionResult(True, f"Disconnected: {connection.name}")
 
     def toggle_autostart(self, connection: VPNConnection) -> ActionResult:
         """Toggle NM 'autoconnect' flag."""
         if not connection.uuid:
-            return ActionResult(False, "Missing connection UUID")
+            return ActionResult(False, _ERR_MISSING_UUID)
         code, out = _nm_run(
             [
                 "nmcli",
@@ -174,10 +177,10 @@ class NetworkManagerProvider(VPNProvider):
         if connection.active:
             return ActionResult(False, f"Disconnect {connection.name} first")
         if not connection.uuid:
-            return ActionResult(False, "Missing connection UUID")
+            return ActionResult(False, _ERR_MISSING_UUID)
         code, out = _nm_run(["nmcli", "connection", "delete", "uuid", connection.uuid])
         if code != 0:
-            return ActionResult(False, out.splitlines()[-1] if out else "nmcli failed")
+            return ActionResult(False, out.splitlines()[-1] if out else _ERR_NMCLI_FAILED)
         return ActionResult(True, f"Deleted: {connection.name}")
 
     def import_config(self, path: str) -> ActionResult:

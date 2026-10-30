@@ -25,6 +25,7 @@ AWG_INSTALL_HINT = (
 
 WG_DIR = Path("/etc/wireguard")
 AMNEZIA_DIR = Path("/etc/amnezia/amneziawg")
+_WG_CONF_GLOB = "*.conf"
 
 
 def _quick_connect_error(output: str) -> str:
@@ -223,7 +224,7 @@ class WireGuardProvider(VPNProvider):
         result: list[VPNConnection] = []
 
         if self.config_dir.exists():
-            for conf in sorted(self.config_dir.glob("*.conf")):
+            for conf in sorted(self.config_dir.glob(_WG_CONF_GLOB)):
                 profile = conf.stem
                 is_active = profile in active
                 result.append(
@@ -242,7 +243,7 @@ class WireGuardProvider(VPNProvider):
         # that share a kind) can misattribute an active interface to us
         # even though its profile actually lives under the other provider.
         known = {c.name for c in result}
-        excluded = {p.stem for d in self.other_config_dirs for p in d.glob("*.conf")}
+        excluded = {p.stem for d in self.other_config_dirs for p in d.glob(_WG_CONF_GLOB)}
         result.extend(
             VPNConnection(name=iface, provider=self.name, active=True, interface=iface)
             for iface in active
@@ -365,7 +366,7 @@ class AmneziaWGProvider(WireGuardProvider):
         from_conf = set()
         if self.config_dir.exists():
             from_conf = {
-                p.stem for p in self.config_dir.glob("*.conf") if _net_iface_exists(p.stem)
+                p.stem for p in self.config_dir.glob(_WG_CONF_GLOB) if _net_iface_exists(p.stem)
             }
         if _active_interfaces(self.link_type):
             return from_conf

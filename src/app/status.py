@@ -3,7 +3,6 @@
 import fcntl
 import subprocess
 import sys
-from pathlib import Path
 
 import config
 import delayping
@@ -22,6 +21,7 @@ from app.switch import (
     _our_process,
     _vm,
 )
+from happ.constants import MANAGER
 from providers.base import VPNConnection
 
 
@@ -372,7 +372,7 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
 def request_ip_update(connection_name: str):
     """Fire-and-forget background exit-IP refresh (never blocks the bar)."""
     subprocess.Popen(
-        [sys.executable, str(Path(__file__)), "--update-ip", connection_name],
+        [sys.executable, str(MANAGER), "--update-ip", connection_name],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,

@@ -10,7 +10,7 @@ import quickconnect
 from app.checks import _name_flag_country
 from app.helpers import notify, refresh_bar
 from app.ping import _ping_worker_alive
-from app.providers import provider_named as _provider_named
+from app.provider_lookup import provider_named as _provider_named
 from app.registry import visible_providers
 from app.switch import guarded_connect, guarded_disconnect
 from providers.base import ActionResult, VPNConnection

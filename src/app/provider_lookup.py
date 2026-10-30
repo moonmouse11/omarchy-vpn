@@ -1,4 +1,4 @@
-"""Lookup helpers shared by tools and servers."""
+"""Lookup helpers shared by tools and servers (not the `providers` package)."""
 
 from app.registry import _provider_pool
 

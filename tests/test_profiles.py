@@ -55,6 +55,18 @@ def _chooser(monkeypatch, rc, out="", err=""):
     return calls
 
 
+def test_profile_autostart_resolves_a_provider_hidden_from_the_server_list(wg, monkeypatch):
+    monkeypatch.setattr(
+        vpn_manager.config,
+        "load_config",
+        lambda: config.Config(providers={"wireguard": False}),
+    )
+    monkeypatch.setattr(vpn_manager, "sync_ipv6_boot", lambda: ActionResult(True, ""))
+    result = vpn_manager.run_profile_action("autostart", "WireGuard", "home")
+    assert result.success
+    assert wg.toggled == ["home"]
+
+
 def test_import_resolves_a_provider_hidden_from_the_server_list(wg, monkeypatch):
     """Settings can hide a protocol from Locations; import/profile still use it."""
     monkeypatch.setattr(

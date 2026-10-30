@@ -85,7 +85,6 @@ FloatingWindow {
       if (k === "t") win.host.togglePower()
       else if (k === "d") win.host.runDnsTest()
       else if (k === "r" || k === "к") {
-        win.host.refreshHappSubscriptions()
         win.host.refresh()
         win.host.loadServers()
       }
@@ -221,7 +220,7 @@ FloatingWindow {
       textFormat: Text.PlainText
       text: "j/k move · h/l fold · enter connect · p ping · s star · / filter · i import · right click profile · a autostart · x delete"
         + (win.host.windowLayout !== "tree" ? " · [ ] protocol" : "")
-        + " · t toggle · d DNS · r refresh subs · esc close"
+        + " · t toggle · d DNS · r refresh · esc close"
       color: win.host.dim
       font.family: win.host.fontFamily
       font.pixelSize: Style.font.caption

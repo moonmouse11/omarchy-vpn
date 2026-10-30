@@ -19,6 +19,7 @@ Column {
   // tabs/sidebar with one protocol picked: its "+ Import" sits by Ping
   readonly property var pickedProvider: inWindow && host.rowsLayout !== "tree" && host.providerFilter !== ""
     ? host.providerInfo(host.providerFilter) : null
+  readonly property bool showHappRefresh: list.host.providerFilter === "Happ"
 
   spacing: Style.space(12)
 
@@ -67,9 +68,34 @@ Column {
     }
 
     Text {
+      id: happRefreshButton
+      visible: list.showHappRefresh
+      anchors.right: pingButton.left
+      anchors.rightMargin: Style.space(12)
+      anchors.verticalCenter: parent.verticalCenter
+      textFormat: Text.PlainText
+      text: " Refresh subs"  // nf-fa-refresh
+      color: happRefreshMouse.containsMouse ? list.host.foreground : list.host.dim
+      font.family: list.host.fontFamily
+      font.pixelSize: Style.font.caption
+
+      MouseArea {
+        id: happRefreshMouse
+        anchors.fill: parent
+        enabled: happRefreshButton.visible
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: {
+          list.host.refreshHappSubscriptions()
+          list.host.loadServers()
+        }
+      }
+    }
+
+    Text {
       id: headerImport
       visible: !!list.pickedProvider && !!list.pickedProvider.importer
-      anchors.right: pingButton.left
+      anchors.right: (happRefreshButton.visible ? happRefreshButton.left : pingButton.left)
       anchors.rightMargin: Style.space(12)
       anchors.verticalCenter: parent.verticalCenter
       textFormat: Text.PlainText
@@ -105,6 +131,12 @@ Column {
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
       onClicked: list.host.run("--ping-now")
+    }
+
+    PanelToolTip {
+      visible: happRefreshMouse.containsMouse
+      text: "Fetch every Happ subscription from its provider now"
+      fontFamily: list.host.fontFamily
     }
 
     PanelToolTip {

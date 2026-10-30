@@ -839,8 +839,7 @@ Panel {
         if (k === "t") root.togglePower()
         else if (k === "m") root.openWindow()
         else if (k === "d") root.runDnsTest()
-        else if (k === "r" || k === "к") {  // к: the r key on a Russian layout
-          root.refreshHappSubscriptions()
+        else if (k === "r" || k === "к") {
           root.refresh()
           root.loadServers()
         }
@@ -955,7 +954,7 @@ Panel {
           visible: root.panelData.key_hints !== false
           textFormat: Text.PlainText
           width: parent.width
-          text: "j/k move · enter connect · p ping · s star · / filter · t toggle · m window · d DNS · f label · r refresh subs"
+          text: "j/k move · enter connect · p ping · s star · / filter · t toggle · m window · d DNS · f label · r refresh"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

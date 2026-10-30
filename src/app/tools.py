@@ -11,7 +11,7 @@ import killswitch
 import quickconnect
 import settings_tui
 from app.checks import run_check
-from app.helpers import notify, refresh_bar
+from app.helpers import notify, refresh_bar, spawn_manager
 from app.provider_lookup import provider_named as _provider_named
 from app.registry import _provider_pool, active_connections
 from app.status import _killswitch_unsupported
@@ -55,12 +55,7 @@ KILLSWITCH_ICON = settings_tui.KILLSWITCH_ICON
 
 
 def refresh_all_menu() -> ActionResult:
-    subprocess.Popen(
-        [sys.executable, str(MANAGER), "--update-subs-force"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    spawn_manager("--update-subs-force")
     return ActionResult(True, "Refresh started in the background")
 
 

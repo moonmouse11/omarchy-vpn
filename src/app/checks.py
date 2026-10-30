@@ -4,8 +4,6 @@ import contextlib
 import json
 import re
 import signal
-import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import NoReturn
@@ -20,10 +18,9 @@ import logutil
 import notifyutil
 import reputation
 import speedtest
-from app.helpers import notify, refresh_bar
+from app.helpers import notify, refresh_bar, spawn_manager
 from app.registry import active_connections
 from app.switch import CheckCancelled
-from happ.constants import MANAGER
 from providers.base import (
     ActionResult,
     VPNConnection,
@@ -180,12 +177,7 @@ DNS_AUTOTEST_SETTLE = 3  # s more for routes and DNS to settle
 
 def request_dns_autotest() -> None:
     """Fire-and-forget --dns-autotest after a connect (config dns_autotest)."""
-    subprocess.Popen(
-        [sys.executable, str(MANAGER), "--dns-autotest"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    spawn_manager("--dns-autotest")
 
 
 def run_dns_autotest() -> None:

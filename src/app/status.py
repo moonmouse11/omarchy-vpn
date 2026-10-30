@@ -1,8 +1,6 @@
 """Bar widget JSON (--status) and panel hero state."""
 
 import fcntl
-import subprocess
-import sys
 
 import config
 import delayping
@@ -13,6 +11,7 @@ import killswitch
 import providers.happd.happ as happ_provider
 import reputation
 from app.checks import _exit_fits, _name_flag_country, _read_dns_verdict
+from app.helpers import spawn_manager
 from app.registry import active_connections
 from app.switch import (
     KILLSWITCH_PROVIDERS,
@@ -21,7 +20,6 @@ from app.switch import (
     _our_process,
     _vm,
 )
-from happ.constants import MANAGER
 from providers.base import VPNConnection
 
 
@@ -371,9 +369,4 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
 
 def request_ip_update(connection_name: str):
     """Fire-and-forget background exit-IP refresh (never blocks the bar)."""
-    subprocess.Popen(
-        [sys.executable, str(MANAGER), "--update-ip", connection_name],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    spawn_manager("--update-ip", connection_name)

@@ -27,26 +27,33 @@ def patch_env(
     monkeypatch.setattr(vpn_manager.ipinfo, "status_line", lambda conn, age: "Exit: 9.9.9.9")
 
 
-def test_request_ip_update_spawns_vpn_manager(monkeypatch):
-    argv = []
+def _expect_manager_spawn(monkeypatch, fn, *expected_flags: str) -> None:
+    calls = []
 
     def popen(cmd, **kw):
-        argv.append(cmd)
+        calls.append((cmd, kw))
 
     monkeypatch.setattr(vpn_manager.subprocess, "Popen", popen)
-    vpn_manager.request_ip_update("nl")
-    assert argv == [[vpn_manager.sys.executable, str(MANAGER), "--update-ip", "nl"]]
+    fn()
+    assert len(calls) == 1
+    cmd, kw = calls[0]
+    assert cmd == [vpn_manager.sys.executable, str(MANAGER), *expected_flags]
+    assert kw["start_new_session"] is True
+    assert kw["stdout"] is vpn_manager.subprocess.DEVNULL
+    assert kw["stderr"] is vpn_manager.subprocess.DEVNULL
+
+
+def test_request_ip_update_spawns_vpn_manager(monkeypatch):
+    _expect_manager_spawn(
+        monkeypatch,
+        lambda: vpn_manager.request_ip_update("nl"),
+        "--update-ip",
+        "nl",
+    )
 
 
 def test_request_dns_autotest_spawns_vpn_manager(monkeypatch):
-    argv = []
-
-    def popen(cmd, **kw):
-        argv.append(cmd)
-
-    monkeypatch.setattr(vpn_manager.subprocess, "Popen", popen)
-    vpn_manager.request_dns_autotest()
-    assert argv == [[vpn_manager.sys.executable, str(MANAGER), "--dns-autotest"]]
+    _expect_manager_spawn(monkeypatch, vpn_manager.request_dns_autotest, "--dns-autotest")
 
 
 def test_disconnected(monkeypatch):

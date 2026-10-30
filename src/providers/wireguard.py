@@ -2,7 +2,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .base import ActionResult, VPNConnection, VPNProvider, read_config_text, run_helper
+from .base import ActionResult, PingTarget, VPNConnection, VPNProvider, read_config_text, run_helper
 
 AWG_INSTALL_HINT = (
     "awg-quick not found — install from AUR: amneziawg-tools "
@@ -114,6 +114,27 @@ def _has_dns_directive(path: Path) -> bool:
     return False
 
 
+def _runtime_endpoint(iface: str, *, awg: bool) -> tuple[str, int] | None:
+    """Live [Peer] endpoint from `wg show` / `awg show` when the profile file is gone."""
+    cmd = ["awg" if awg else "wg", "show", iface, "endpoints"]
+    if shutil.which(cmd[0]) is None:
+        return None
+    code, out = _run(cmd)
+    if code != 0:
+        return None
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        ep = parts[1].strip()
+        if not ep or ep == "(none)":
+            continue
+        parsed = _split_host_port(ep, 51820)
+        if parsed:
+            return parsed
+    return None
+
+
 def wg_endpoint(conf_path) -> tuple[str, int] | None:
     """(host, port) of a config's [Peer] Endpoint, None when absent/garbled."""
     text = read_config_text(conf_path)
@@ -191,14 +212,18 @@ class WireGuardProvider(VPNProvider):
 
         return result
 
-    def ping_targets(self) -> list[tuple[str, str, int]]:
-        targets = []
+    def ping_targets(self) -> list[PingTarget]:
+        """(name, host, port[, icmp_only]). WG endpoints are UDP-only — ping uses ICMP."""
+        awg = self.quick_bin == "awg-quick"
+        targets: list[PingTarget] = []
         for conn in self.connections():
-            if not conn.config_path:
-                continue
-            ep = wg_endpoint(conn.config_path)
+            ep = None
+            if conn.config_path:
+                ep = wg_endpoint(conn.config_path)
+            elif conn.active:
+                ep = _runtime_endpoint(conn.interface or conn.name, awg=awg)
             if ep:
-                targets.append((conn.name, ep[0], ep[1]))
+                targets.append((conn.name, ep[0], ep[1], True))
         return targets
 
     def connect(self, connection: VPNConnection) -> ActionResult:

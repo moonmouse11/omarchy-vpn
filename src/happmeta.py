@@ -1107,6 +1107,16 @@ def _measure_tcp(host: str, port: int, iface: str | None) -> float | None:
     return round(best, 1) if best is not None else None
 
 
+def _parse_ping_rtt(output: str) -> float | None:
+    """Milliseconds from iputils `ping` stdout (Linux)."""
+    m = re.search(r"time[=<]([\d.]+)\s*ms", output)
+    if not m:
+        m = re.search(r"rtt min/avg/max/mdev = [\d.]+/([\d.]+)/", output)
+    if not m:
+        return None
+    return round(float(m.group(1)), 1)
+
+
 def _measure_icmp(host: str, iface: str | None) -> float | None:
     """ICMP echo RTT to host (WireGuard/AmneziaWG endpoints are UDP-only)."""
     if shutil.which("ping") is None:
@@ -1129,16 +1139,10 @@ def _measure_icmp(host: str, iface: str | None) -> float | None:
         return None
     if proc.returncode != 0:
         return None
-    out = proc.stdout + proc.stderr
-    m = re.search(r"time[=<]([\d.]+)\s*ms", out)
-    if not m:
-        m = re.search(r"rtt min/avg/max/mdev = [\d.]+/([\d.]+)/", out)
-    if not m:
-        return None
-    return round(float(m.group(1)), 1)
+    return _parse_ping_rtt(proc.stdout + proc.stderr)
 
 
-def measure_ping(host: str, port: int) -> float | None:
+def measure_ping(host: str, port: int, *, icmp_only: bool = False) -> float | None:
     """TCP connect RTT to host:port, else ICMP echo to the host.
 
     The socket is bound to uplink_interface() (SO_BINDTODEVICE, unprivileged
@@ -1146,12 +1150,13 @@ def measure_ping(host: str, port: int) -> float | None:
     tunnel doesn't answer for them. Used for WireGuard/OpenVPN only (Happ
     and Keys go through xray, see delayping); under the kill switch these
     direct probes are dropped, so the Ping button skips them then. UDP-only
-    WireGuard/AmneziaWG [Peer] endpoints never accept TCP — ICMP to the same
-    host is the fallback."""
+    WireGuard/AmneziaWG [Peer] endpoints never accept TCP — pass icmp_only
+    to skip TCP and measure ICMP only."""
     iface = uplink_interface()
-    ms = _measure_tcp(host, port, iface)
-    if ms is not None:
-        return ms
+    if not icmp_only:
+        ms = _measure_tcp(host, port, iface)
+        if ms is not None:
+            return ms
     return _measure_icmp(host, iface)
 
 

@@ -70,7 +70,7 @@ def test_wg_provider_ping_targets(tmp_path, monkeypatch):
     provider.config_dir = tmp_path
     provider.other_config_dirs = ()
     targets = provider.ping_targets()
-    assert targets == [("good", "vpn.example.com", 51820)]
+    assert targets == [("good", "vpn.example.com", 51820, True)]
 
 
 def test_amneziawg_lists_its_own_dir_independently(tmp_path, monkeypatch):

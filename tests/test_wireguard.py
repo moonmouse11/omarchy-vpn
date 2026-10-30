@@ -10,6 +10,30 @@ def _provider(tmp_path, monkeypatch, run_result=(0, "")):
     return provider
 
 
+def test_runtime_endpoint_parses_wg_show(monkeypatch):
+    def fake_run(cmd):
+        if cmd[:3] == ["wg", "show", "tun0"]:
+            return 0, "peerkey\t45.140.17.3:4098\n"
+        return 1, ""
+
+    monkeypatch.setattr(wireguard, "_run", fake_run)
+    monkeypatch.setattr(wireguard.shutil, "which", lambda b: "/usr/bin/wg" if b == "wg" else None)
+    assert wireguard._runtime_endpoint("tun0", awg=False) == ("45.140.17.3", 4098)
+
+
+def test_orphan_ping_target_uses_runtime_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(wireguard, "_active_interfaces", lambda *_: ["gone"])
+    monkeypatch.setattr(
+        wireguard,
+        "_runtime_endpoint",
+        lambda iface, awg: ("203.0.113.9", 51820) if iface == "gone" and awg else None,
+    )
+    awg = AmneziaWGProvider()
+    awg.config_dir = tmp_path / "missing"
+    awg.other_config_dirs = ()
+    assert awg.ping_targets() == [("gone", "203.0.113.9", 51820, True)]
+
+
 def test_awg_interface_names_empty_without_awg_binary(monkeypatch):
     monkeypatch.setattr(wireguard.shutil, "which", lambda b: None if b == "awg" else "/bin/sh")
     assert wireguard._awg_interface_names() == set()

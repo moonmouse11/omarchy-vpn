@@ -139,6 +139,11 @@ def main() -> None:
         help="Like --update-subs but bypassing the SUB_MAX_AGE cache gate (Refresh All)",
     )
     group.add_argument(
+        "--update-incy-subs",
+        action="store_true",
+        help="Refresh INCY subscription caches in the background (internal)",
+    )
+    group.add_argument(
         "--update-reputation",
         action="store_true",
         help="Refresh server IP-reputation cache in the background (internal)",
@@ -232,6 +237,11 @@ def main() -> None:
         failed = happmeta.update_subscriptions(force=True)
         notify(*_patched("subscription_report", subscription_report)(failed))
         _patched("refresh_bar", refresh_bar)()
+    elif args.update_incy_subs:
+        from incy.subscriptions import update_subscriptions as update_incy_subs  # noqa: PLC0415
+
+        for name, why in update_incy_subs().items():
+            logutil.log(f"incy subscription {name} not updated: {why}")
     elif args.happ_keeper is not None:
         run_happ_keeper(*args.happ_keeper[:2])
     elif args.keys_keeper is not None:

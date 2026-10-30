@@ -60,7 +60,7 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
     logutil.log(f"incy keeper: starting ({server_name or '?'})")
     state: dict = {"status": "connecting", "pid": os.getpid()}
     _write_state(state)
-    proc: subprocess.Popen[str] | None = None
+    proc: subprocess.Popen[bytes] | None = None
     cfg_path: Path | None = None
     try:
         name = server_name or ""

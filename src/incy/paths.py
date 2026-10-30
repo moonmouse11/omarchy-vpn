@@ -43,9 +43,9 @@ def _discover_root() -> Path | None:
         text = ""
     for raw in text.splitlines():
         if raw.startswith("Exec="):
-            root = _root_from_exec(raw[5:])
-            if root and (root / XRAY_REL).is_file():
-                return root
+            desktop_root = _root_from_exec(raw[5:])
+            if desktop_root and (desktop_root / XRAY_REL).is_file():
+                return desktop_root
     return None
 
 

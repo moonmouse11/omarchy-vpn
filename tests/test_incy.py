@@ -68,6 +68,46 @@ def test_fetch_incy_subscription_cache(tmp_path, monkeypatch):
     assert servers[0]["remarks"] == "S1"
 
 
+def test_resolve_config_from_incy_db_full_config(tmp_path, monkeypatch):
+    import json
+
+    from incy.config import resolve_config
+
+    db = tmp_path / "incy.db"
+    conn = sqlite3.connect(db)
+    cfg = {
+        "remarks": "🇩🇪 DE",
+        "outbounds": [
+            {
+                "protocol": "vless",
+                "tag": "proxy",
+                "settings": {"vnext": [{"address": "1.2.3.4", "port": 443}]},
+            }
+        ],
+    }
+    conn.executescript(
+        """
+        CREATE TABLE subscriptions (id TEXT PRIMARY KEY, name TEXT, isEnabled INTEGER DEFAULT 1);
+        CREATE TABLE servers (
+            id TEXT PRIMARY KEY, name TEXT, subscriptionId TEXT, orderIndex INTEGER DEFAULT 0,
+            fullConfigJson TEXT
+        );
+        INSERT INTO subscriptions VALUES ('sub1', 'Prov', 1);
+        """
+    )
+    conn.execute(
+        "INSERT INTO servers VALUES ('s1', ?, 'sub1', 0, ?)",
+        ("🇩🇪 DE", json.dumps(cfg)),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(incy_mod, "INCY_DB", db)
+
+    runtime = resolve_config("🇩🇪 DE", provider_id="sub1", allow_fetch=False)
+    assert runtime is not None
+    assert any(i.get("protocol") == "tun" for i in runtime.get("inbounds") or [])
+
+
 def test_incy_paths_from_desktop_exec(tmp_path, monkeypatch):
     from incy import paths as incy_paths
 

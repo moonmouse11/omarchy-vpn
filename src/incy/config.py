@@ -19,6 +19,15 @@ def _patch_tun(cfg: dict) -> dict:
     return out
 
 
+def server_endpoints(
+    name: str, *, provider_id: str | None = None, allow_fetch: bool = False
+) -> list[tuple[str, int]]:
+    from happ.servers import server_endpoints_of  # noqa: PLC0415 — shared parser
+
+    cfg = resolve_config(name, provider_id=provider_id, allow_fetch=allow_fetch)
+    return server_endpoints_of(cfg) if cfg else []
+
+
 def resolve_config(
     name: str,
     *,
@@ -26,6 +35,11 @@ def resolve_config(
     allow_fetch: bool = True,
 ) -> dict | None:
     tunnel_dns = config.load_config().dns_mode == "tunnel"
+    from incy.subscriptions import db_server_raw_config  # noqa: PLC0415 — break cycle
+
+    if raw := db_server_raw_config(name, provider_id):
+        merged = build_runtime_config(raw, tunnel_dns=tunnel_dns)
+        return _patch_tun(merged)
     catalog = all_catalog_entries(allow_fetch=allow_fetch)
     if provider_id and not any(s["provider_id"] == provider_id for s in catalog):
         servers, _ = fetch_servers(provider_id, force=allow_fetch)

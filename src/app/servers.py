@@ -199,6 +199,9 @@ def server_list() -> dict:
     (it runs when the panel opens); stale subscriptions refresh in the
     background like the menu's, pings only on the Ping button."""
     happmeta.request_subscription_update()
+    from incy.subscriptions import request_subscription_update as request_incy_subs  # noqa: PLC0415
+
+    request_incy_subs()
     pinging = _pinging()
     groups: list[dict] = []
     # every visible protocol, empty ones too: the window's tree/tabs/sidebar list them

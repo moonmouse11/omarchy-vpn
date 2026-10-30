@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from incy.config import TUN_IFACE
-from providers.common.types import ActionResult, VPNConnection, VPNProvider
+from providers.common.types import ActionResult, PingTarget, VPNConnection, VPNProvider
 
 INCY_CONFIG = Path.home() / ".config/incy"
 INCY_SOCK = Path.home() / ".cache/incy/incy.sock"
@@ -148,6 +148,18 @@ class IncyProvider(VPNProvider):
 
     def connections(self) -> list[VPNConnection]:
         return _load_connections()
+
+    def ping_targets(self) -> list[PingTarget]:
+        from happ.servers import server_endpoints_of  # noqa: PLC0415
+        from incy.subscriptions import all_db_catalog_entries  # noqa: PLC0415
+
+        targets: list[PingTarget] = []
+        for entry in all_db_catalog_entries():
+            cfg = entry["config"]
+            name = entry["name"]
+            for host, port in server_endpoints_of(cfg):
+                targets.append((name, host, port))
+        return targets
 
     def connect(self, connection: VPNConnection) -> ActionResult:
         if not incy_installed():

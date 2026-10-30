@@ -22,7 +22,6 @@ import json
 import os
 import socket
 import subprocess
-import tempfile
 import threading
 import time
 import urllib
@@ -154,6 +153,7 @@ def incy_targets(
     subscription_id: str | None = None, name: str | None = None
 ) -> list[tuple[str, dict]]:
     """(ping cache key, tunnel config) for INCY servers — xray runs locally."""
+    from incy.config import build_incy_runtime_config  # noqa: PLC0415 — lazy
     from incy.subscriptions import all_catalog_entries  # noqa: PLC0415 — lazy
 
     targets: dict[str, dict] = {}
@@ -163,7 +163,7 @@ def incy_targets(
             continue
         if name is not None and entry["name"] != name:
             continue
-        cfg = happmeta.build_runtime_config(entry["config"], tunnel_dns=True)
+        cfg = build_incy_runtime_config(entry["config"], tunnel_dns=True)
         targets.setdefault(happmeta.ping_key(entry["name"], sub_id), cfg)
     return list(targets.items())
 
@@ -251,31 +251,13 @@ def _start(sock: socket.socket, process_id: str, cfg: dict) -> bool:
 
 def incy_probe(runtime_cfg: dict, url: str, uplink: str | None) -> float | None:
     """Delay through one INCY server via a short-lived local xray (no happd)."""
-    from incy.paths import incy_xray  # noqa: PLC0415
-    from incy.xray import asset_dir  # noqa: PLC0415
+    from incy.xray_run import PROBE_CFG, popen_xray  # noqa: PLC0415
 
-    xray = incy_xray()
-    if not xray.is_file():
-        return None
     port = _free_port()
     cfg = probe_config(runtime_cfg, port, uplink)
-    env = {**os.environ}
-    if ad := asset_dir():
-        env["XRAY_LOCATION_ASSET"] = str(ad)
-    fd, cfg_path_str = tempfile.mkstemp(prefix="incy-ping-", suffix=".json")
-    os.close(fd)
-    cfg_path = Path(cfg_path_str)
     proc: subprocess.Popen[bytes] | None = None
     try:
-        cfg_path.write_text(json.dumps(cfg))
-        cfg_path.chmod(0o600)
-        proc = subprocess.Popen(
-            [str(xray), "run", "-config", str(cfg_path)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=env,
-            start_new_session=True,
-        )
+        proc = popen_xray(cfg, PROBE_CFG)
         if not _wait_listening(port, LISTEN_TIMEOUT):
             return None
         return _request_ms(port, url)
@@ -287,7 +269,6 @@ def incy_probe(runtime_cfg: dict, url: str, uplink: str | None) -> float | None:
                 proc.terminate()
             with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(timeout=2)
-        cfg_path.unlink(missing_ok=True)
 
 
 def probe(process_id: str, runtime_cfg: dict, url: str, uplink: str | None) -> float | None:

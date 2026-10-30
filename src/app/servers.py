@@ -345,6 +345,20 @@ def panel_connect(provider_name: str, name: str, sub_id: str | None = None) -> A
             subscription_id=sub_id or None,
             subscription_name=sub_name,
         )
+    elif provider.name == "INCY" and sub_id:
+        found = next(
+            (
+                c
+                for c in provider.connections()
+                if c.name == name and c.subscription_id == sub_id
+            ),
+            None,
+        )
+        if found is None:
+            return ActionResult(
+                False, f"{provider_name}: {name} not found in that subscription"
+            )
+        conn = found
     else:
         found = next((c for c in provider.connections() if c.name == name), None)
         if found is None:
@@ -352,7 +366,8 @@ def panel_connect(provider_name: str, name: str, sub_id: str | None = None) -> A
         conn = found
     result = _guarded_connect(provider, conn)
     if result.success:  # QUICK CONNECT's recent, and the power switch's "last server"
-        quickconnect.remember(provider.name, name, sub_id if provider.name == "Happ" else None)
+        remember_sub = sub_id if provider.name in ("Happ", "INCY") else None
+        quickconnect.remember(provider.name, name, remember_sub)
     return result
 
 

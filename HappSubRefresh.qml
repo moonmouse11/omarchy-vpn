@@ -2,10 +2,11 @@ import QtQuick
 import qs.Commons
 import qs.Ui
 
-// ⟳ on the Happ protocol row or the SERVERS header (tabs): fetch every subscription.
+// ⟳ on a Happ/INCY protocol row or the SERVERS header (tabs): refresh subscription caches.
 Item {
   id: root
   property var host: null
+  property string provider: "Happ"
 
   implicitWidth: refreshText.implicitWidth
   implicitHeight: refreshText.implicitHeight
@@ -26,15 +27,19 @@ Item {
     enabled: root.host !== null
     hoverEnabled: enabled
     cursorShape: Qt.PointingHandCursor
-    onClicked: {
-      root.host.refreshHappSubscriptions()
+    onClicked: function(mouse) {
+      mouse.accepted = true
+      if (root.provider === "INCY") root.host.refreshIncySubscriptions()
+      else root.host.refreshHappSubscriptions()
       root.host.loadServers()
     }
   }
 
   PanelToolTip {
     visible: refreshMouse.containsMouse
-    text: "Fetch every Happ subscription from its provider now"
+    text: root.provider === "INCY"
+      ? "Fetch every INCY subscription from its provider now"
+      : "Fetch every Happ subscription from its provider now"
     fontFamily: root.host ? root.host.fontFamily : Style.font.family
   }
 }

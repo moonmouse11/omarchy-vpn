@@ -68,6 +68,19 @@ def test_fetch_incy_subscription_cache(tmp_path, monkeypatch):
     assert servers[0]["remarks"] == "S1"
 
 
+def test_incy_runtime_config_is_tun_only(tmp_path, monkeypatch):
+    from incy.config import build_incy_runtime_config
+
+    cfg = {
+        "remarks": "x",
+        "outbounds": [{"protocol": "vless", "tag": "proxy", "settings": {}}],
+    }
+    runtime = build_incy_runtime_config(cfg, tunnel_dns=True)
+    protocols = [i.get("protocol") for i in runtime.get("inbounds") or []]
+    assert protocols == ["tun"]
+    assert runtime["inbounds"][0]["settings"]["name"] == "incy-xray"
+
+
 def test_resolve_config_from_incy_db_full_config(tmp_path, monkeypatch):
     import json
 

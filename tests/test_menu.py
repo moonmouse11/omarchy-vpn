@@ -818,19 +818,16 @@ def test_refresh_all_menu_spawns_subs_unconditionally(monkeypatch):
     result = vpn_manager.refresh_all_menu()
     assert result.success
     flags = [c[2] for c in calls]  # [sys.executable, script_path, flag]
-    assert flags == ["--update-subs-force"]  # pings: only the panel's Ping button
-    # the forced variant — plain --update-subs would keep the SUB_MAX_AGE
-    # gate inside fetch_subscription and no-op on a fresh cache
-    assert "--update-subs-force" in flags
+    assert sorted(flags) == ["--update-incy-subs-force", "--update-subs-force"]
 
 
 def test_run_tool_refresh_all_still_works_after_tools_button_removed(monkeypatch):
-    """Happ ⟳ calls --tool refresh_all even though refresh_all is not in panel tools."""
+    """Tools → Refresh All and the wizard still spawn forced Happ + INCY updates."""
     calls = []
     monkeypatch.setattr(vpn_manager.subprocess, "Popen", lambda cmd, **k: calls.append(cmd) or None)
     result = vpn_manager.run_tool("refresh_all")
     assert result.success
-    assert [c[2] for c in calls] == ["--update-subs-force"]
+    assert sorted(c[2] for c in calls) == ["--update-incy-subs-force", "--update-subs-force"]
 
 
 def test_clear_caches_menu_removes_only_json_files(tmp_path, monkeypatch):

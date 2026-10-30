@@ -94,7 +94,8 @@ SUDOERS_FILE="/etc/sudoers.d/vpn-manager"
 # Managed by this installer: rewrite on every run so upgrades pick up new rules.
 # Three things only, each with a fixed command surface:
 #   omarchy-vpn-helper (scripts/, root-owned): WireGuard/AmneziaWG/OpenVPN up/down,
-#     import, delete, autostart, endpoints — profile names only, never paths, and
+#     import, delete, autostart, endpoints, incy-run (INCY xray TUN) — profile names
+#     only, never paths, and
 #     it refuses imports that could run commands as root (WireGuard PostUp/…,
 #     OpenVPN directives off its allowlist: up/route-up/plugin/…);
 #   happ-killswitch (root-owned): the kill switch's nft rules;

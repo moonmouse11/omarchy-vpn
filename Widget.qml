@@ -269,14 +269,21 @@ Panel {
     profileMode = "import"
   }
 
-  // right click on a server whose protocol manages profiles (not Happ subscriptions)
+  // right click: managed profiles (delete/autostart) or Happ/INCY (disconnect only)
   function showProfile(row) {
     if (!row || row.kind !== "server") return false
     var info = providerInfo(row.group.provider)
-    if (!info || !info.manage) return false
-    profileTarget = row
-    profileMode = "profile"
-    return true
+    if (info && info.manage) {
+      profileTarget = row
+      profileMode = "profile"
+      return true
+    }
+    if (row.group.provider === "Happ" || row.group.provider === "INCY") {
+      profileTarget = row
+      profileMode = "subscription"
+      return true
+    }
+    return false
   }
 
   function closeProfileBar() {
@@ -481,9 +488,17 @@ Panel {
   }
 
   function refreshHappSubscriptions() {
-    // Background job + immediate bubble (like the old Tools button); not
-    // --update-subs-force here — that blocks ~minutes with no feedback.
-    runArgs(["--tool", "refresh_all"])
+    runArgs(["--update-subs-force"])
+  }
+
+  function refreshIncySubscriptions() {
+    runArgs(["--update-incy-subs-force"])
+  }
+
+  function pingProvider(name) {
+    if (!name) return
+    runArgs(["--ping-now", "group", "provider:" + name])
+    pingSettle.restart()
   }
 
   // sudo asks in the terminal; install.sh restarts the shell when it's done

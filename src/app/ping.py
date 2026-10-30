@@ -31,6 +31,8 @@ def _ping_scope_targets(
         pname, name, sub_id = "Happ", None, str(group).split(":", 2)[1]
     elif group and str(group).startswith("incy:"):
         pname, name, sub_id = "INCY", None, str(group).split(":", 2)[1]
+    elif group and str(group).startswith("provider:"):
+        pname, name, sub_id = str(group).split(":", 1)[1], None, None
     else:
         pname, name, sub_id = group, None, None
     xray: list[tuple[str, dict]] = []

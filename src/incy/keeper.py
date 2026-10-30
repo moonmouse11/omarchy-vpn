@@ -5,15 +5,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import tempfile
 import time
 from pathlib import Path
 
 import fsutil
 import logutil
 from incy.config import TUN_IFACE, resolve_config
-from incy.paths import incy_xray
-from incy.xray import asset_dir, config_error
+from incy.xray import config_error
+from incy.xray_run import KEEPER_CFG, popen_xray
 
 KEEPER_STATE = Path.home() / ".local/state/vpn-manager/incy-keeper.json"
 XRAY_START_TIMEOUT = 25.0
@@ -61,7 +60,6 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
     state: dict = {"status": "connecting", "pid": os.getpid()}
     _write_state(state)
     proc: subprocess.Popen[bytes] | None = None
-    cfg_path: Path | None = None
     try:
         name = server_name or ""
         cfg = resolve_config(name, provider_id=provider_id, allow_fetch=False)
@@ -79,26 +77,19 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
             _write_own_state(state)
             return
 
-        env = {**os.environ}
-        if ad := asset_dir():
-            env["XRAY_LOCATION_ASSET"] = str(ad)
-        fd, cfg_path_str = tempfile.mkstemp(prefix="incy-xray-", suffix=".json")
-        os.close(fd)
-        cfg_path = Path(cfg_path_str)
-        cfg_path.write_text(json.dumps(cfg))
-        cfg_path.chmod(0o600)
-
-        proc = subprocess.Popen(
-            [str(incy_xray()), "run", "-config", str(cfg_path)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=env,
-            start_new_session=True,
-        )
+        try:
+            proc = popen_xray(cfg, KEEPER_CFG)
+        except OSError as e:
+            state.update(status="error", message=str(e))
+            _write_own_state(state)
+            return
         state["xray_pid"] = proc.pid
         deadline = time.time() + XRAY_START_TIMEOUT
         if not _wait_iface(deadline):
-            state.update(status="error", message=f"TUN {TUN_IFACE} did not come up")
+            state.update(
+                status="error",
+                message=f"TUN {TUN_IFACE} did not come up — re-run make install (incy-run helper)",
+            )
             _write_own_state(state)
             return
         state.update(
@@ -127,8 +118,6 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-        if cfg_path is not None:
-            cfg_path.unlink(missing_ok=True)
         state.update(status="exited")
         _write_own_state(state)
         logutil.log("incy keeper: exited")

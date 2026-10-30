@@ -161,6 +161,21 @@ def _guarded(monkeypatch):
     return calls
 
 
+def test_panel_connect_resolves_a_provider_hidden_from_the_server_list(monkeypatch):
+    """Hidden in Locations ≠ unregistered: connect still finds the provider."""
+    calls = _guarded(monkeypatch)
+    home = VPNConnection(name="home", provider="WireGuard", active=False)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("WireGuard", [home])])
+    monkeypatch.setattr(
+        vpn_manager.config,
+        "load_config",
+        lambda: config.Config(providers={"wireguard": False}),
+    )
+    assert vpn_manager.server_list()["groups"] == []
+    assert vpn_manager.panel_connect("WireGuard", "home").success
+    assert calls == [("up", "WireGuard", home)]
+
+
 def test_panel_connect_happ_carries_the_subscription(monkeypatch):
     calls = _guarded(monkeypatch)
     monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("Happ", [])])

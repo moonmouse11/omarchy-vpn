@@ -44,6 +44,25 @@ def test_amnezia_connections_include_awg_show_orphans(tmp_path, monkeypatch):
     assert conns[0].config_path is None
 
 
+def test_amnezia_skips_awg_show_when_kernel_lists_interfaces(tmp_path, monkeypatch):
+    def kernel(lt):
+        return ["home"] if lt == "amneziawg" else []
+
+    monkeypatch.setattr(wireguard, "_active_interfaces", kernel)
+    monkeypatch.setattr(
+        wireguard,
+        "_awg_interface_names",
+        lambda: (_ for _ in ()).throw(AssertionError("awg show must not run")),
+    )
+    monkeypatch.setattr(wireguard, "_net_iface_exists", lambda n: False)
+    awg = AmneziaWGProvider()
+    awg.config_dir = tmp_path / "cfg"
+    awg.config_dir.mkdir()
+    (awg.config_dir / "home.conf").write_text("[Interface]\n")
+    conns = awg.connections()
+    assert any(c.name == "home" and c.active for c in conns)
+
+
 def test_import_warns_when_dns_missing(tmp_path, monkeypatch):
     provider = _provider(tmp_path, monkeypatch)
     src = tmp_path / "nl.conf"

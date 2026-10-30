@@ -67,29 +67,13 @@ Column {
       fontFamily: list.host.fontFamily
     }
 
-    Text {
+    HappSubRefresh {
       id: happRefreshButton
       visible: list.showHappRefresh
+      host: list.host
       anchors.right: pingButton.left
       anchors.rightMargin: Style.space(12)
       anchors.verticalCenter: parent.verticalCenter
-      textFormat: Text.PlainText
-      text: ""  // nf-fa-refresh
-      color: happRefreshMouse.containsMouse ? list.host.foreground : list.host.dim
-      font.family: list.host.fontFamily
-      font.pixelSize: Style.font.caption
-
-      MouseArea {
-        id: happRefreshMouse
-        anchors.fill: parent
-        enabled: happRefreshButton.visible
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: {
-          list.host.refreshHappSubscriptions()
-          list.host.loadServers()
-        }
-      }
     }
 
     Text {
@@ -131,12 +115,6 @@ Column {
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
       onClicked: list.host.run("--ping-now")
-    }
-
-    PanelToolTip {
-      visible: happRefreshMouse.containsMouse
-      text: "Fetch every Happ subscription from its provider now"
-      fontFamily: list.host.fontFamily
     }
 
     PanelToolTip {

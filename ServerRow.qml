@@ -99,7 +99,7 @@ CursorSurface {
       elide: Text.ElideRight
       width: parent.width - rowGlyph.width - rightLabel.width
         - (groupPing.visible ? groupPing.width + parent.spacing : 0)
-        - (happRefresh.visible ? happRefresh.width + parent.spacing : 0)
+        - (happSubRefresh.visible ? happSubRefresh.width + parent.spacing : 0)
         - (importButton.visible ? importButton.width + parent.spacing : 0)
         - (starButton.visible ? starButton.width + parent.spacing : 0)
         - parent.spacing * 2
@@ -156,29 +156,11 @@ CursorSurface {
       }
     }
 
-    // Happ protocol row: fetch every subscription from its provider (not ping)
-    Text {
-      id: happRefresh
+    HappSubRefresh {
+      id: happSubRefresh
       visible: serverRow.isHappProvider
-      textFormat: Text.PlainText
-      text: ""  // nf-fa-refresh
-      color: happRefreshMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
-      font.family: serverRow.host.fontFamily
-      font.pixelSize: Style.font.caption
+      host: serverRow.host
       anchors.verticalCenter: parent.verticalCenter
-
-      MouseArea {
-        id: happRefreshMouse
-        anchors.fill: parent
-        anchors.margins: -Style.space(4)
-        enabled: happRefresh.visible
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: {
-          serverRow.host.refreshHappSubscriptions()
-          serverRow.host.loadServers()
-        }
-      }
     }
 
     // a protocol's "+ Import" (the window only)
@@ -224,12 +206,6 @@ CursorSurface {
         onClicked: serverRow.host.pingRow(serverRow.row)
       }
     }
-  }
-
-  PanelToolTip {
-    visible: happRefreshMouse.containsMouse
-    text: "Fetch every Happ subscription from its provider now"
-    fontFamily: serverRow.host.fontFamily
   }
 
   PanelToolTip {

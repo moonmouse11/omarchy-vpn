@@ -303,4 +303,7 @@ class AmneziaWGProvider(WireGuardProvider):
             from_conf = {
                 p.stem for p in self.config_dir.glob("*.conf") if _net_iface_exists(p.stem)
             }
+        # userspace awg-go: no amneziawg netlink — awg show is the only probe
+        if _active_interfaces(self.link_type):
+            return from_conf
         return from_conf | _awg_interface_names()

@@ -44,7 +44,7 @@ import logutil
 import notifyutil
 from providers.common.types import ActionResult, VPNConnection, VPNProvider
 
-HAPPD_SOCK = Path("/tmp/happd.sock")  # noqa: S108 — happd's own path; see _sock_is_trusted()
+HAPPD_SOCK = Path("/tmp/happd.sock")  # noqa: S108 — happd's path; NOSONAR S5443 — _sock_is_trusted() before connect
 GUI_CONFIG = Path.home() / ".config" / "Happ.conf"
 IFACE_PREFIX = "happ-"
 XRAY_BIN = Path("/opt/happ/bin/core/xray")

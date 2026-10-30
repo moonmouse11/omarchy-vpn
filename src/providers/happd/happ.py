@@ -36,10 +36,8 @@ import stat
 import struct
 import subprocess
 import sys
-import time
 from pathlib import Path
 
-import config
 import fsutil
 import happmeta
 import logutil
@@ -58,6 +56,12 @@ XRAY_TIMEOUT = 20  # seconds to wait for happd's start ack
 # a short file cache cuts that churn — happd logs show constant connect noise.
 PROCS_CACHE = Path.home() / ".cache/vpn-manager/happd-procs.json"
 PROCS_CACHE_TTL = 3.0  # seconds
+
+
+def _pub():
+    import providers.happ as m  # noqa: PLC0415 — tests patch providers.happ
+
+    return m
 
 
 def _run(cmd: list[str]) -> tuple[int, str]:
@@ -134,19 +138,20 @@ def _daemon_running_processes(fresh: bool = False) -> list[str]:
     cache (each --status tick is a fresh python process and would otherwise
     open a happd session per happd-backed provider). Pass fresh=True on
     action paths (connect/disconnect) to bypass the cache entirely."""
+    pub = _pub()
     if not fresh:
         try:
-            cached = json.loads(PROCS_CACHE.read_text())
+            cached = json.loads(pub.PROCS_CACHE.read_text())
             if (
                 isinstance(cached, dict)
                 and isinstance(cached.get("at"), (int, float))
                 and isinstance(cached.get("procs"), list)
-                and time.time() - cached.get("at", 0) < PROCS_CACHE_TTL
+                and pub.time.time() - cached.get("at", 0) < pub.PROCS_CACHE_TTL
             ):
                 return [str(p) for p in cached["procs"]]
         except OSError, json.JSONDecodeError:
             pass
-    resp = _daemon_request("list")
+    resp = pub._daemon_request("list")
     if not resp or resp.get("status") != "success":
         return []
     procs = [
@@ -156,7 +161,7 @@ def _daemon_running_processes(fresh: bool = False) -> list[str]:
     ]
     if not fresh:
         with contextlib.suppress(OSError):
-            fsutil.write_json_atomic(PROCS_CACHE, {"at": time.time(), "procs": procs})
+            fsutil.write_json_atomic(pub.PROCS_CACHE, {"at": pub.time.time(), "procs": procs})
     return procs
 
 
@@ -165,7 +170,7 @@ def _invalidate_procs_cache() -> None:
     tick's 3 s cache otherwise keeps reporting the old state (a stopped
     xray-core 'still running' named a phantom connection)."""
     with contextlib.suppress(OSError):
-        PROCS_CACHE.unlink(missing_ok=True)
+        _pub().PROCS_CACHE.unlink(missing_ok=True)
 
 
 KEYS_PROCESS_PREFIX = "xray-keys-"
@@ -177,14 +182,23 @@ def _happ_processes(fresh: bool = False) -> list[str]:
     button's probes run their xray through the same happd — those must not
     count as 'Happ connected' (phantom server in the menu) nor get stopped
     by a Happ disconnect."""
-    return [
-        p
-        for p in _daemon_running_processes(fresh=fresh)
-        if not p.startswith((KEYS_PROCESS_PREFIX, PING_PROCESS_PREFIX))
-    ]
+    pub = _pub()
+    remote = pub._happ_processes
+    if remote is not _happ_processes:
+        return remote(fresh=fresh)
+    procs_fn = pub._daemon_running_processes
+    if procs_fn is not _daemon_running_processes:
+        procs = procs_fn(fresh=fresh)
+    else:
+        procs = _daemon_running_processes(fresh=fresh)
+    return [p for p in procs if not p.startswith((KEYS_PROCESS_PREFIX, PING_PROCESS_PREFIX))]
 
 
 def _happ_interfaces() -> list[str]:
+    pub = _pub()
+    remote = pub._happ_interfaces
+    if remote is not _happ_interfaces:
+        return remote()
     code, out = _run(["ip", "-o", "link", "show"])
     if code != 0:
         return []
@@ -197,6 +211,10 @@ def _happ_interfaces() -> list[str]:
 
 
 def _gui_running() -> bool:
+    pub = _pub()
+    remote = pub._gui_running
+    if remote is not _gui_running:
+        return remote()
     for name in ("happ", "Happ"):
         code, _ = _run(["pgrep", "-x", name])
         if code == 0:
@@ -206,6 +224,10 @@ def _gui_running() -> bool:
 
 def _last_server_name() -> str | None:
     """Name of the last used server, as remembered by the Happ GUI."""
+    pub = _pub()
+    remote = pub._last_server_name
+    if remote is not _last_server_name:
+        return remote()
     try:
         for line in GUI_CONFIG.read_text(encoding="utf-8", errors="replace").splitlines():
             if line.startswith("lastServerName="):
@@ -241,12 +263,16 @@ def xray_config_error(cfg: dict, asset_dir: Path | None) -> str | None:
     config from stdin (keys never touch disk) and needs no root. A check
     that can't run at all (missing binary, hang) returns None: that is not
     a config error, and happd will report it on start."""
+    pub = _pub()
+    remote = pub.xray_config_error
+    if remote is not xray_config_error:
+        return remote(cfg, asset_dir)
     env = {**os.environ}
     if asset_dir:
         env["XRAY_LOCATION_ASSET"] = str(asset_dir)
     try:
-        result = subprocess.run(
-            [str(XRAY_BIN), "run", "-test", "-c", "stdin:"],
+        result = pub.subprocess.run(
+            [str(pub.XRAY_BIN), "run", "-test", "-c", "stdin:"],
             input=json.dumps(cfg),
             capture_output=True,
             text=True,
@@ -254,7 +280,7 @@ def xray_config_error(cfg: dict, asset_dir: Path | None) -> str | None:
             timeout=XRAY_TEST_TIMEOUT,
             check=False,
         )
-    except OSError, subprocess.TimeoutExpired:
+    except OSError, pub.subprocess.TimeoutExpired:
         return None
     if result.returncode == 0:
         return None
@@ -297,7 +323,7 @@ KEEPER_STATE = Path.home() / ".local/state/vpn-manager/happ-keeper.json"
 
 def _write_keeper_state(state: dict) -> None:
     with contextlib.suppress(OSError):
-        fsutil.write_json_atomic(KEEPER_STATE, state)
+        fsutil.write_json_atomic(_pub().KEEPER_STATE, state)
 
 
 def app_owns_connection() -> bool:
@@ -327,8 +353,12 @@ def app_connected() -> bool:
 
 
 def _read_keeper_state() -> dict | None:
+    pub = _pub()
+    remote = pub._read_keeper_state
+    if remote is not _read_keeper_state:
+        return remote()
     try:
-        data = json.loads(KEEPER_STATE.read_text())
+        data = json.loads(pub.KEEPER_STATE.read_text())
     except OSError, json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) else None
@@ -343,10 +373,11 @@ def _write_own_keeper_state(state: dict) -> None:
     recorded in the state; a file without a pid predates this scheme and is
     freely replaceable. (Read-check-write is not atomic; the window is a
     menu-action timescale race, acceptable here.)"""
-    current = _read_keeper_state()
+    pub = _pub()
+    current = pub._read_keeper_state()
     if current is not None and current.get("pid", state["pid"]) != state["pid"]:
         return
-    _write_keeper_state(state)
+    pub._write_keeper_state(state)
 
 
 def _open_session() -> socket.socket:
@@ -407,10 +438,11 @@ def _hold_session(
     ownership of the keeper state file is checked on every idle tick: a
     newer keeper (server switch) or a disconnect (state unlinked) ends this
     one whatever happd says."""
-    iface_exists = iface_exists or _iface_exists
+    pub = _pub()
+    iface_exists = iface_exists or pub._iface_exists
     while True:
         try:
-            frame = _recv_frame(sock)
+            frame = pub._recv_frame(sock)
         except TimeoutError:
             if not owns_state():
                 return "superseded (state owned by another keeper)", False
@@ -444,30 +476,31 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
     menu picked the server from) disambiguates same-named servers across
     subscriptions and is recorded in the state for connections().
     """
+    pub = _pub()
     logutil.log(f"keeper: starting ({server_name or 'last server'})")
     state: dict = {"status": "connecting", "pid": os.getpid()}
     # Unconditional claim: _headless_connect just unlinked KEEPER_STATE and
     # designated this process, so a stale keeper's error/"exited" writes must
     # not win the file in the gap between unlink and this first write —
     # otherwise every later state of ours gets dropped (guarded by pid).
-    _write_keeper_state(state)
+    pub._write_keeper_state(state)
     try:
         cfg = happmeta.resolve_config(
             server_name or (_last_server_name() or ""),
             allow_fetch=False,  # cache-only like the list it came from: a fetch blocks for minutes
             provider_id=provider_id,
-            tunnel_dns=config.load_config().dns_mode == "tunnel",
+            tunnel_dns=_pub().config.load_config().dns_mode == "tunnel",
         )
         if cfg is None:
             state.update(status="error", message="no config for this server")
-            _write_own_keeper_state(state)
+            pub._write_own_keeper_state(state)
             return
 
         iface = _tun_interface_name(cfg)
-        if reason := xray_config_error(cfg, _routing_asset_dir()):
+        if reason := pub.xray_config_error(cfg, pub._routing_asset_dir()):
             logutil.log(f"keeper: xray rejected the config: {reason}")
             state.update(status="error", message=f"xray rejected the config: {reason}")
-            _write_own_keeper_state(state)
+            pub._write_own_keeper_state(state)
             return
 
         # happd occasionally kills the managed xray without telling us (observed
@@ -480,26 +513,26 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
         exit_reason = "unknown"
         while True:
             attempts += 1
-            sock = _open_session()
+            sock = pub._open_session()
             try:
-                request_id = f"wm-{time.time_ns()}"
+                request_id = f"wm-{pub.time.time_ns()}"
                 params: dict = {
                     "action": "start",
                     "arguments": [],
-                    "executable": str(XRAY_BIN),
+                    "executable": str(pub.XRAY_BIN),
                     "process-id": "xray-core",
                     "request-id": request_id,
                     "stdin-data": json.dumps(cfg),
                 }
-                asset_dir = _routing_asset_dir()
+                asset_dir = pub._routing_asset_dir()
                 if asset_dir:
                     params["environment"] = {"XRAY_LOCATION_ASSET": str(asset_dir)}
-                _send_frame(sock, params)
+                pub._send_frame(sock, params)
 
-                deadline = time.time() + XRAY_TIMEOUT
-                while time.time() < deadline:
+                deadline = pub.time.time() + pub.XRAY_TIMEOUT
+                while pub.time.time() < deadline:
                     try:
-                        frame = _recv_frame(sock)
+                        frame = pub._recv_frame(sock)
                     except TimeoutError:
                         # slow happd: a socket timeout must consume the ack
                         # budget, not kill the keeper
@@ -508,15 +541,15 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
                         if frame.get("status") in ("started", "success"):
                             break
                         state.update(status="error", message=frame.get("error", str(frame)))
-                        _write_own_keeper_state(state)
+                        pub._write_own_keeper_state(state)
                         return
                 else:
                     state.update(status="error", message="no response from happd")
-                    _write_own_keeper_state(state)
+                    pub._write_own_keeper_state(state)
                     return
 
                 state.update(status="connected", server=cfg.get("remarks"), provider_id=provider_id)
-                _write_own_keeper_state(state)
+                pub._write_own_keeper_state(state)
                 logutil.log(
                     f"keeper: connected ({state['server']})"
                     + (f", re-arm {attempts}/{max_attempts}" if attempts > 1 else "")
@@ -524,23 +557,23 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
 
                 # Hold the session open; exit when the tunnel disappears.
                 sock.settimeout(15)
-                exit_reason, died = _hold_session(sock, iface, "xray-core", _owns_keeper_state)
+                exit_reason, died = pub._hold_session(sock, iface, "xray-core", _owns_keeper_state)
             finally:
                 sock.close()
             logutil.log(f"keeper: tunnel ended: {exit_reason}")
             if not died:
                 break
             if attempts >= max_attempts:
-                notify_failure(
+                pub.notify_failure(
                     "Happ — tunnel lost",
                     f"{state.get('server') or 'Happ'}: xray kept dying, gave up after "
                     f"{attempts} attempts — see vpn-manager.log / journalctl -u happd",
                 )
                 break
             logutil.log(f"keeper: xray died unexpectedly, re-arming in {backoff:.0f}s")
-            time.sleep(backoff)
+            pub.time.sleep(backoff)
             backoff = min(backoff * 3, 30)
-            current = _read_keeper_state()
+            current = pub._read_keeper_state()
             if current is None or current.get("pid") != os.getpid():
                 # a disconnect/new keeper removed or replaced the state file
                 # while we slept — this keeper no longer owns the session
@@ -550,14 +583,14 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
         logutil.log(f"keeper: session error: {e}")
         if state.get("status") == "connecting":
             state.update(status="error", message=str(e))
-            _write_own_keeper_state(state)
+            pub._write_own_keeper_state(state)
     except Exception as e:  # noqa: BLE001 - always record keeper failures
         logutil.log(f"keeper: unexpected error: {e}")
         state.update(status="error", message=str(e))
-        _write_own_keeper_state(state)
+        pub._write_own_keeper_state(state)
     finally:
         state.update(status="exited")
-        _write_own_keeper_state(state)
+        pub._write_own_keeper_state(state)
         logutil.log("keeper: exited")
 
 
@@ -670,43 +703,46 @@ class HappProvider(VPNProvider):
     def _stop_running(self) -> None:
         """Stop managed processes and wait for the tunnel to come down
         (used when switching servers)."""
+        pub = _pub()
         processes = _happ_processes(fresh=True)
         if not processes:
             return
         for process_id in processes:
-            _daemon_request("stop", **{"process-id": process_id})
-        _invalidate_procs_cache()
-        deadline = time.time() + 5
-        while time.time() < deadline:
+            pub._daemon_request("stop", **{"process-id": process_id})
+        pub._invalidate_procs_cache()
+        deadline = pub.time.time() + 5
+        while pub.time.time() < deadline:
             if not _happ_interfaces():
                 return
-            time.sleep(0.3)
+            pub.time.sleep(0.3)
 
     def _headless_connect(self, server_name: str, provider_id: str | None = None) -> ActionResult:
         """Spawn the keeper process and wait for its verdict.
 
         The keeper allows 20 s for happd's start ack before it reports an
         error, so poll a while longer (25 s) before giving up ourselves."""
-        KEEPER_STATE.unlink(missing_ok=True)
-        manager = Path(__file__).resolve().parent.parent / "vpn_manager.py"
+        pub = _pub()
+        pub.KEEPER_STATE.unlink(missing_ok=True)
+        manager = Path(__file__).resolve().parent.parent.parent / "vpn_manager.py"
         cmd = [sys.executable, str(manager), "--happ-keeper", server_name]
         if provider_id:
             cmd.append(provider_id)
-        keeper = subprocess.Popen(
+        keeper = pub.subprocess.Popen(
             cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=pub.subprocess.DEVNULL,
+            stderr=pub.subprocess.DEVNULL,
             start_new_session=True,
         )
-        deadline = time.time() + 25  # happd can be slow to ack
+        deadline = pub.time.time() + 25  # happd can be slow to ack
         try:
             return self._await_keeper(deadline, keeper.pid)
         finally:
-            _invalidate_procs_cache()
+            pub._invalidate_procs_cache()
 
     def _await_keeper(self, deadline: float, pid: int) -> ActionResult:
-        while time.time() < deadline:
-            state = _read_keeper_state()
+        pub = _pub()
+        while pub.time.time() < deadline:
+            state = pub._read_keeper_state()
             # only our keeper's verdict: the keeper a switch replaced can write
             # its "exited" into the just-unlinked file before ours claims it
             if state and state.get("pid") == pid:
@@ -716,22 +752,23 @@ class HappProvider(VPNProvider):
                     return ActionResult(False, state.get("message", "keeper error"))
                 if state.get("status") == "exited":
                     return ActionResult(False, "keeper exited before connecting — see log")
-            time.sleep(0.2)
+            pub.time.sleep(0.2)
         return ActionResult(False, "keeper timeout — see log")
 
     def disconnect(self, connection: VPNConnection) -> ActionResult:
         # Unlinking KEEPER_STATE (all branches) aborts a keeper that is
         # sleeping between re-arm attempts — do it FIRST so even a failed
         # stop cannot leave a sleeping keeper behind to resurrect.
-        KEEPER_STATE.unlink(missing_ok=True)
+        pub = _pub()
+        pub.KEEPER_STATE.unlink(missing_ok=True)
         processes = _happ_processes(fresh=True)
         if not processes:
             return ActionResult(success=False, message="Happ is not connected")
 
         stopped = []
-        _invalidate_procs_cache()
+        pub._invalidate_procs_cache()
         for process_id in processes:
-            resp = _daemon_request("stop", **{"process-id": process_id})
+            resp = pub._daemon_request("stop", **{"process-id": process_id})
             if resp and resp.get("status") in ("stopping", "success"):
                 stopped.append(process_id)
             else:

@@ -14,19 +14,28 @@ TIMEOUT = 6
 
 
 def _run(cmd: list[str]) -> tuple[int, str]:
-    from providers import openvpn as ovpn  # noqa: PLC0415 — tests patch openvpn.subprocess
+    from providers import openvpn as pub  # noqa: PLC0415 — tests patch openvpn.subprocess
 
+    remote = pub._run
+    if remote is not _run:
+        return remote(cmd)
     try:
-        result = ovpn.subprocess.run(
+        result = pub.subprocess.run(
             cmd, capture_output=True, text=True, timeout=TIMEOUT, check=False
         )
-    except ovpn.subprocess.TimeoutExpired:
+    except pub.subprocess.TimeoutExpired:
         return 1, f"timeout after {TIMEOUT}s: {' '.join(cmd)}"
     return result.returncode, (result.stdout + result.stderr).strip()
 
 
 OVPN_DIR = Path("/etc/openvpn/client")
 PID_DIR = Path("/run/openvpn")
+
+
+def _ovpn_dir() -> Path:
+    from providers import openvpn as pub  # noqa: PLC0415 — tests patch openvpn.OVPN_DIR
+
+    return pub.OVPN_DIR
 
 
 def _pid_file(profile: str) -> Path:
@@ -75,10 +84,11 @@ class OpenVPNProvider(VPNProvider):
     def connections(self) -> list[VPNConnection]:
         result: list[VPNConnection] = []
 
-        if not OVPN_DIR.exists():
+        ovpn_dir = _ovpn_dir()
+        if not ovpn_dir.exists():
             return result
 
-        for conf in sorted(OVPN_DIR.glob("*.conf")) + sorted(OVPN_DIR.glob("*.ovpn")):
+        for conf in sorted(ovpn_dir.glob("*.conf")) + sorted(ovpn_dir.glob("*.ovpn")):
             profile = conf.stem
             is_active = _is_running(profile)
             result.append(
@@ -127,7 +137,7 @@ class OpenVPNProvider(VPNProvider):
         if src.suffix not in (".conf", ".ovpn"):
             return ActionResult(success=False, message="File must have .conf or .ovpn extension")
 
-        if any((OVPN_DIR / f"{src.stem}{ext}").exists() for ext in (".conf", ".ovpn")):
+        if any((_ovpn_dir() / f"{src.stem}{ext}").exists() for ext in (".conf", ".ovpn")):
             return ActionResult(success=False, message=f"Config already exists: {src.stem}")
         try:
             text = src.read_text(errors="replace")
@@ -159,7 +169,9 @@ class OpenVPNProvider(VPNProvider):
     def delete_config(self, connection: VPNConnection) -> ActionResult:
         if connection.active:
             return ActionResult(False, f"Disconnect {connection.name} first")
-        if not any((OVPN_DIR / f"{connection.name}{ext}").exists() for ext in (".conf", ".ovpn")):
+        if not any(
+            (_ovpn_dir() / f"{connection.name}{ext}").exists() for ext in (".conf", ".ovpn")
+        ):
             return ActionResult(False, f"Config not found: {connection.name}")
         if self.autostart_enabled(connection.name):
             code, out = run_helper("autostart", "ovpn", connection.name, "off")

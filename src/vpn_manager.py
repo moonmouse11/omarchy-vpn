@@ -86,6 +86,7 @@ from app.status import (  # noqa: F401
 from app.switch import (  # noqa: F401
     CHECK_FLAGS,
     HANDOVER_WAIT,
+    OPENVPN_TUN_WAIT,
     PING_LOCK,
     PREEMPT_GRACE,
     PREEMPT_WAIT,
@@ -106,6 +107,8 @@ from app.switch import (  # noqa: F401
     _killswitch_targets,
     _killswitch_toggle,
     _killswitch_wanted,
+    _lock_holder,
+    _our_process,
     _preempt,
     _release_killswitch_if_unlocked,
     _signal_switch_tree,
@@ -139,7 +142,13 @@ from app.tools import (  # noqa: F401
     settings_menu,
 )
 from providers import ALL_PROVIDERS  # noqa: F401 — tests patch vpn_manager.ALL_PROVIDERS
-from providers.base import iface_rate, iface_traffic, sample_iface_traffic  # noqa: F401
+from providers.base import (  # noqa: F401
+    iface_rate,
+    iface_traffic,
+    run_helper,
+    sample_iface_traffic,
+    terminate_registered_subprocesses,
+)
 from providers.common.types import ActionResult, VPNConnection  # noqa: F401
 
 if __name__ == "__main__":

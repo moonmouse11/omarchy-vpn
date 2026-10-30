@@ -2,9 +2,7 @@
 
 import contextlib
 import fcntl
-import os
 import signal
-import time
 from pathlib import Path
 
 import config
@@ -15,8 +13,7 @@ import logutil
 import providers.happd.happ as happ_provider
 import settings_tui
 from app.helpers import notify
-from app.registry import active_connections
-from providers import ALL_PROVIDERS
+from app.registry import _provider_pool, active_connections
 from providers.base import (
     ActionResult,
     VPNConnection,
@@ -59,10 +56,19 @@ def _vm():
     return vm
 
 
+def _vm_fn(name: str, local):
+    """Use vpn_manager.<name> when tests monkeypatch it."""
+    remote = getattr(_vm(), name, None)
+    if remote is not None and remote is not local:
+        return remote
+    return local
+
+
 def _lock_holder(fd: int) -> tuple[int | None, str]:
     """(pid, action) written by the holder: "PID\naction"."""
-    os.lseek(fd, 0, os.SEEK_SET)
-    text = os.read(fd, 1024).decode(errors="replace").strip()
+    vm_os = _vm().os
+    vm_os.lseek(fd, 0, vm_os.SEEK_SET)
+    text = vm_os.read(fd, 1024).decode(errors="replace").strip()
     pid_text, _, action = text.partition("\n")
     if pid_text.isdigit():
         return int(pid_text), action.strip() or "another switch"
@@ -72,7 +78,7 @@ def _lock_holder(fd: int) -> tuple[int | None, str]:
 def _our_process(pid: int, flags: tuple[str, ...] | None = None) -> bool:
     """pid is this program (vpn_manager.py), optionally run with one of flags."""
     try:
-        argv = (PROC / str(pid) / "cmdline").read_bytes().split(b"\0")
+        argv = (_vm().PROC / str(pid) / "cmdline").read_bytes().split(b"\0")
     except OSError:
         return False
     args = [a.decode(errors="replace") for a in argv if a]
@@ -91,19 +97,20 @@ def _try_flock(fd: int) -> bool:
 
 
 def _wait_flock(fd: int, seconds: float) -> bool:
-    deadline = time.monotonic() + seconds
+    vm_time = _vm().time
+    deadline = vm_time.monotonic() + seconds
     while True:
         if _try_flock(fd):
             return True
-        if time.monotonic() >= deadline:
+        if vm_time.monotonic() >= deadline:
             return False
-        time.sleep(0.05)
+        vm_time.sleep(0.05)
 
 
 def _child_pids(ppid: int) -> list[int]:
     children: list[int] = []
     try:
-        entries = list(PROC.iterdir())
+        entries = list(_vm().PROC.iterdir())
     except OSError:
         return children
     for entry in entries:
@@ -124,6 +131,7 @@ def _child_pids(ppid: int) -> list[int]:
 
 def _signal_switch_tree(pid: int, sig: signal.Signals) -> None:
     """Holder plus its direct children (sudo, keeper) when SIGKILL skips Python handlers."""
+    child_pids = _vm_fn("_child_pids", _child_pids)
     stack = [pid]
     seen: set[int] = set()
     while stack:
@@ -133,7 +141,7 @@ def _signal_switch_tree(pid: int, sig: signal.Signals) -> None:
         seen.add(target)
         with contextlib.suppress(OSError, ProcessLookupError):
             _vm().os.kill(target, sig)
-        stack.extend(_child_pids(target))
+        stack.extend(child_pids(target))
 
 
 def _preempt(fd: int, pid: int | None) -> bool:
@@ -142,13 +150,19 @@ def _preempt(fd: int, pid: int | None) -> bool:
     holder stuck inside getaddrinfo only sees a Python signal handler once
     the C call returns. Never this process (a nested switch_lock) and never
     something that isn't ours."""
-    if pid is None or pid == os.getpid() or not _our_process(pid):
+    vm = _vm()
+    our_process = _vm_fn("_our_process", _our_process)
+    signal_tree = _vm_fn("_signal_switch_tree", _signal_switch_tree)
+    if pid is None or pid == vm.os.getpid() or not our_process(pid):
         return False
-    for sig, wait in ((signal.SIGTERM, PREEMPT_GRACE), (signal.SIGKILL, PREEMPT_WAIT)):
+    for sig, wait in (
+        (signal.SIGTERM, vm.PREEMPT_GRACE),
+        (signal.SIGKILL, vm.PREEMPT_WAIT),
+    ):
         if sig == signal.SIGTERM:
-            terminate_registered_subprocesses()
+            getattr(vm, "terminate_registered_subprocesses", terminate_registered_subprocesses)()
         try:
-            _signal_switch_tree(pid, sig)
+            signal_tree(pid, sig)
         except PermissionError:
             return False
         if _wait_flock(fd, wait):
@@ -164,15 +178,17 @@ def _abort_checks() -> None:
         pids = [int(p.name) for p in vm.PROC.iterdir() if p.name.isdigit()]
     except OSError:
         return
+    our_process = _vm_fn("_our_process", _our_process)
     for pid in pids:
-        if pid != me and _our_process(pid, CHECK_FLAGS):
+        if pid != me and our_process(pid, CHECK_FLAGS):
             with contextlib.suppress(OSError):
                 vm.os.kill(pid, signal.SIGTERM)
                 logutil.log(f"switch: aborted check pid {pid}")
 
 
 def _cancel_switch(signum, frame) -> None:
-    terminate_registered_subprocesses()
+    vm = _vm()
+    getattr(vm, "terminate_registered_subprocesses", terminate_registered_subprocesses)()
     raise SwitchCancelled
 
 
@@ -191,28 +207,34 @@ def switch_lock(action: str):
     file: the kernel drops it when the holder dies, so a crash (or the
     SIGKILL) can't leave a stale lock. Taking it also stops the checks of
     the connection being left (_abort_checks)."""
-    SWITCH_LOCK.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(SWITCH_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+    vm = _vm()
+    vm_os = vm.os
+    vm_time = vm.time
+    lock = vm.SWITCH_LOCK
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    fd = vm_os.open(lock, vm_os.O_RDWR | vm_os.O_CREAT, 0o600)
     try:
         seen, deadline = None, 0.0
+        lock_holder = _vm_fn("_lock_holder", _lock_holder)
+        preempt = _vm_fn("_preempt", _preempt)
         while not _try_flock(fd):
-            pid, holder = _lock_holder(fd)
-            if _preempt(fd, pid):
+            pid, holder = lock_holder(fd)
+            if preempt(fd, pid):
                 logutil.log(f"switch superseded: {holder} -> {action}")
                 break
-            if pid == os.getpid():
+            if pid == vm_os.getpid():
                 raise SwitchBusy(holder)  # a nested switch_lock: waiting would wait on itself
             # mid-handover: another click killed the holder the file still names
             # and hasn't written its own pid yet, or won the lock off the holder
             # we were stopping — wait for it, then supersede it
             if pid != seen:
-                seen, deadline = pid, time.monotonic() + HANDOVER_WAIT
-            elif time.monotonic() >= deadline:
+                seen, deadline = pid, vm_time.monotonic() + vm.HANDOVER_WAIT
+            elif vm_time.monotonic() >= deadline:
                 raise SwitchBusy(holder)
-            time.sleep(0.1)
-        os.ftruncate(fd, 0)
-        os.lseek(fd, 0, os.SEEK_SET)
-        os.write(fd, f"{os.getpid()}\n{action}".encode())
+            vm_time.sleep(0.1)
+        vm_os.ftruncate(fd, 0)
+        vm_os.lseek(fd, 0, vm_os.SEEK_SET)
+        vm_os.write(fd, f"{vm_os.getpid()}\n{action}".encode())
         _abort_checks()
         previous = signal.signal(signal.SIGTERM, _cancel_switch)
         try:
@@ -220,7 +242,7 @@ def switch_lock(action: str):
         finally:
             signal.signal(signal.SIGTERM, previous)
     finally:
-        os.close(fd)  # releases the flock
+        vm_os.close(fd)  # releases the flock
 
 
 # held by whoever measures pings now: a Ping-all run or the queue's worker
@@ -344,7 +366,7 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
         # inside the providers themselves (Happ/Keys stop their previous xray).
         others = [
             c
-            for c in active_connections(providers=list(ALL_PROVIDERS))
+            for c in active_connections(providers=list(_provider_pool()))
             if not (c.provider == provider.name and c.name == connection.name)
         ]
         if others:
@@ -357,7 +379,7 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
         if hole_open and result.success and provider.name == "OpenVPN":
             # `openvpn --daemon` returns before it resolves `remote`: keep the
             # DNS hole until its tun device exists (or the wait runs out)
-            _wait_for_new_tun(tuns_before, OPENVPN_TUN_WAIT)
+            _wait_for_new_tun(tuns_before, getattr(_vm(), "OPENVPN_TUN_WAIT", OPENVPN_TUN_WAIT))
     finally:
         if hole_open:
             closed = _close_dns_hole(provider, ips, ifaces, result.success, cfg)
@@ -369,7 +391,11 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
         if cfg.dns_autotest:
             from app.checks import request_dns_autotest  # noqa: PLC0415 — break import cycle
 
-            request_dns_autotest()
+            autotest = getattr(_vm(), "request_dns_autotest", None)
+            if autotest is not None and autotest is not request_dns_autotest:
+                autotest()
+            else:
+                request_dns_autotest()
         # don't re-probe: Happ reports success on happd's start ack, before
         # xray has created its TUN (and happd's process list may be the
         # cached pre-switch one) — a probe then sees nothing up and turned
@@ -399,12 +425,14 @@ def _tun_interfaces() -> set[str]:
 
 
 def _wait_for_new_tun(before: set[str], timeout: float) -> bool:
-    deadline = time.monotonic() + timeout
-    while not _tun_interfaces() - before:
-        if time.monotonic() >= deadline:
+    vm_time = _vm().time
+    tun_ifaces = _vm_fn("_tun_interfaces", _tun_interfaces)
+    deadline = vm_time.monotonic() + timeout
+    while not tun_ifaces() - before:
+        if vm_time.monotonic() >= deadline:
             logutil.log(f"openvpn: no tun device after {timeout:g} s, closing the DNS hole anyway")
             return False
-        time.sleep(0.5)
+        vm_time.sleep(0.5)
     return True
 
 
@@ -447,12 +475,18 @@ def _release_killswitch_if_unlocked(cfg=None) -> bool:
     (the default) keeps blocking until the user turns the kill switch off;
     the preference itself stays, so the next connect sets the rules again.
     True when the rules were dropped."""
+    remote = getattr(_vm(), "_release_killswitch_if_unlocked", None)
+    if remote is not None and remote is not _release_killswitch_if_unlocked:
+        try:
+            return remote(cfg)
+        except TypeError:
+            return remote()
     if (cfg or config.load_config()).killswitch_lockdown:
         return False
     # happd may still be stopping, and --status ticks cache its process
     # list for 3 s: a stale "Happ is up" kept the rules after a disconnect
     happ_provider._invalidate_procs_cache()
-    if active_connections(providers=list(ALL_PROVIDERS)) or not killswitch.is_enabled():
+    if active_connections(providers=list(_provider_pool())) or not killswitch.is_enabled():
         return False
     result = killswitch.disable()
     if not result.success:
@@ -464,8 +498,12 @@ def _sync_ipv6_guard() -> None:
     """IPv6 must be off while anything is tunneled (none of our providers
     route it, so it would otherwise leak straight past every tunnel) and
     back on once nothing is active."""
+    remote = getattr(_vm(), "_sync_ipv6_guard", None)
+    if remote is not None and remote is not _sync_ipv6_guard:
+        remote()
+        return
     guard = config.load_config().ipv6_guard  # ⚙ off: IPv6 stays (or comes back) on
-    if guard and active_connections(providers=list(ALL_PROVIDERS)):
+    if guard and active_connections(providers=list(_provider_pool())):
         _apply_ipv6_guard(ipv6guard.disable())
     else:
         _apply_ipv6_guard(ipv6guard.enable())
@@ -487,7 +525,8 @@ def sync_ipv6_boot() -> ActionResult:
     before the bar's first --status) — or no drop-ins with the guard off.
     Runs on an autostart change, a Settings save and `make install`."""
     state = "on" if config.load_config().ipv6_guard else "off"
-    code, out = run_helper("ipv6-boot", state)
+    helper = getattr(_vm(), "run_helper", run_helper)
+    code, out = helper("ipv6-boot", state)
     return ActionResult(code == 0, "" if code == 0 else f"IPv6 at boot: {out}")
 
 
@@ -513,9 +552,12 @@ def _disconnect_all(for_switch: bool = False) -> ActionResult:
     """for_switch: a connect is tearing the old tunnel down — leave IPv6 off;
     the connect's own result decides (else IPv6 came back on between the old
     tunnel going down and the new one coming up)."""
+    remote = getattr(_vm(), "_disconnect_all", None)
+    if remote is not None and remote is not _disconnect_all:
+        return remote(for_switch=for_switch)
     stopped, failed = [], []
     # act on everything, even providers hidden from the menu
-    for provider in ALL_PROVIDERS:
+    for provider in _provider_pool():
         for conn in provider.connections():
             if not conn.active:
                 continue
@@ -543,9 +585,12 @@ def _killswitch_all_targets(cached_only: bool = False) -> tuple[list[str], list[
     NetworkManager endpoints are not parsed (v1) — connecting one suspends
     the killswitch instead. One broken provider must not stop the others
     (pattern: _collect_ping_targets)."""
+    remote = getattr(_vm(), "_killswitch_all_targets", None)
+    if remote is not None and remote is not _killswitch_all_targets:
+        return remote(cached_only=cached_only)
     targets: list[tuple[str, str, int]] = []
     ifaces: list[str] = []
-    for provider in ALL_PROVIDERS:
+    for provider in _provider_pool():
         if provider.name == "NetworkManager":
             continue  # endpoints not parsed (v1) — connecting one suspends the killswitch
         try:
@@ -577,7 +622,7 @@ def _killswitch_toggle(on: bool) -> ActionResult:
     if not on:
         return killswitch.set_mode(False)
     if not config.load_config().killswitch_lockdown and not active_connections(
-        providers=list(ALL_PROVIDERS)
+        providers=list(_provider_pool())
     ):
         return killswitch.set_mode(True, apply=False)  # nothing to protect yet
     ips, ifaces = _killswitch_all_targets()

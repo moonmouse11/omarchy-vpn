@@ -13,11 +13,16 @@ if TYPE_CHECKING:
 
 from happ.constants import *  # noqa: F403
 from happ.subscriptions import (
-    fetch_subscription,
-    fetch_subscription_cached,
     is_stub_server,
     providers,
 )
+
+
+def _happmeta():
+    import happmeta as hm  # noqa: PLC0415 — tests patch happmeta fetch / paths
+
+    return hm
+
 
 # ── Config merge (subscription config -> runnable xray config) ────────────────
 
@@ -179,7 +184,7 @@ def _set_mark(outbound: dict) -> dict:
 
 def _configs() -> dict:
     try:
-        data = json.loads(XRAY_CONFIGS.read_text())
+        data = json.loads(_happmeta().XRAY_CONFIGS.read_text())
     except OSError, json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
@@ -197,7 +202,12 @@ def all_servers(allow_fetch: bool = True) -> list[dict]:
         url = prov.get("url")
         if not url:
             continue
-        cfgs = fetch_subscription(sub_id, url) if allow_fetch else fetch_subscription_cached(sub_id)
+        hm = _happmeta()
+        cfgs = (
+            hm.fetch_subscription(sub_id, url)
+            if allow_fetch
+            else hm.fetch_subscription_cached(sub_id)
+        )
         for cfg in cfgs:
             if is_stub_server(cfg):  # caches written before stubs were filtered
                 continue

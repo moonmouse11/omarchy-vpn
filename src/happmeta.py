@@ -7,6 +7,7 @@ Tests and legacy imports patch attributes on this module (`subprocess`,
 import socket
 import subprocess
 import urllib
+from pathlib import Path
 
 import lazyimports
 from happ import *
@@ -38,13 +39,27 @@ from happ.subscriptions import (
     _parse_providers,
     _subs_refresh_in_progress,
 )
-from ping import *
+
+# Tests patch these on happmeta; ping.cache reads them back via _happmeta().
+PING_CACHE = Path.home() / ".cache/vpn-manager/happ-ping.json"
+PING_MAX_AGE = 86400
+
 from ping.cache import (
-    PING_CACHE,
-    PING_MAX_AGE,
+    ping_at,
+    ping_key,
+    ping_mark,
+    ping_ms,
+    ping_status,
+    provider_ping_summary,
     read_pings,
 )
-from ping.cache import (
-    read_pings as _read_pings,
+from ping.cache import read_pings as _read_pings
+from ping.measure import (
+    ARPHRD_NONE,
+    PING_TIMEOUT,
+    ROUTE_TABLE,
+    SYS_NET,
+    measure_ping,
+    uplink_interface,
 )
-from ping.measure import ARPHRD_NONE, PING_TIMEOUT, ROUTE_TABLE, SYS_NET
+from ping.targets import happ_ping_targets as ping_targets

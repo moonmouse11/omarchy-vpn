@@ -33,12 +33,17 @@ def _happmeta():
 
 def _parse_providers() -> dict[str, dict]:
     """subscription id -> {"name": str, "url": str | None}."""
+    hm = _happmeta()
+    if hm._parse_providers is not _parse_providers:
+        return hm._parse_providers()
+    log_file = hm.LOG_FILE
+    routing_file = hm.ROUTING_FILE
     id_url: dict[str, str] = {}
     id_pos: dict[str, int] = {}  # last 'starting update from' position per id
     added_urls: list[tuple[int, str]] = []  # (position, url), log order
     url_name: dict[str, str] = {}
     try:
-        text = LOG_FILE.read_text(errors="replace")
+        text = log_file.read_text(errors="replace")
     except OSError:
         text = ""
     for m in re.finditer(r"Subscription #(-?\d+) starting update from: (\S+)", text):
@@ -115,7 +120,7 @@ def _parse_providers() -> dict[str, dict]:
 
     # Fallback names from routing.json (routing names per subscription)
     try:
-        routing = json.loads(ROUTING_FILE.read_text())
+        routing = json.loads(routing_file.read_text())
         for r in routing.get("routings", []):
             sub_id = str(r.get("subscriptionId", ""))
             if sub_id and sub_id not in providers and r.get("name"):
@@ -130,12 +135,17 @@ PROVIDERS_CACHE_VERSION = 2  # bump when _parse_providers learns new log shapes
 
 def providers() -> dict[str, dict]:
     """id -> {"name", "url"}, cached by the log's mtime."""
+    hm = _happmeta()
+    if hm.providers is not providers:
+        return hm.providers()
+    log_file = hm.LOG_FILE
+    providers_cache = hm.PROVIDERS_CACHE
     try:
-        mtime = LOG_FILE.stat().st_mtime
+        mtime = log_file.stat().st_mtime
     except OSError:
         mtime = 0
     try:
-        cache = json.loads(PROVIDERS_CACHE.read_text())
+        cache = json.loads(providers_cache.read_text())
         if cache.get("version") == PROVIDERS_CACHE_VERSION and cache.get("mtime") == mtime:
             return cache.get("providers", {})
     except OSError, json.JSONDecodeError:
@@ -144,7 +154,7 @@ def providers() -> dict[str, dict]:
     # subscription URLs carry access tokens — fsutil writes 0600
     with contextlib.suppress(OSError):
         fsutil.write_json_atomic(
-            PROVIDERS_CACHE,
+            providers_cache,
             {"version": PROVIDERS_CACHE_VERSION, "mtime": mtime, "providers": result},
         )
     return result
@@ -153,7 +163,7 @@ def providers() -> dict[str, dict]:
 def captured_providers() -> dict[str, str]:
     """server name -> subscription id (sidecar written by the capture tool)."""
     try:
-        data = json.loads(CAPTURED_PROVIDERS.read_text())
+        data = json.loads(_happmeta().CAPTURED_PROVIDERS.read_text())
     except OSError, json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
@@ -165,7 +175,7 @@ def captured_providers() -> dict[str, str]:
 def _captured_headers() -> dict[str, str] | None:
     """Request headers the user put in HEADERS_FILE (README: Happ setup)."""
     try:
-        data = json.loads(HEADERS_FILE.read_text())
+        data = json.loads(_happmeta().HEADERS_FILE.read_text())
     except OSError, json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) and data else None
@@ -176,10 +186,11 @@ def happ_version() -> str:
     """Installed Happ's version from the package owning its binary
     ("/usr/bin/happ is owned by happ-desktop-bin 1:4.5.2-1" -> "4.5.2"),
     whatever the AUR package is called. Only paid on a real fetch."""
-    subp = _happmeta().subprocess
+    hm = _happmeta()
+    subp = hm.subprocess
     try:
         out = subp.run(
-            ["pacman", "-Qo", HAPP_GUI_BIN],
+            ["pacman", "-Qo", hm.HAPP_GUI_BIN],
             capture_output=True,
             text=True,
             timeout=5,
@@ -188,13 +199,13 @@ def happ_version() -> str:
     except OSError, subp.SubprocessError:
         out = ""
     m = re.search(r" is owned by \S+ (?:\d+:)?([0-9][\w.+]*)-[\w.]+$", out.strip())
-    return m.group(1) if m else HAPP_VERSION_FALLBACK
+    return m.group(1) if m else hm.HAPP_VERSION_FALLBACK
 
 
 @functools.cache
 def happ_hwid() -> str | None:
     """Happ's X-HWID: the machine id as QSysInfo::machineUniqueId() reads it."""
-    for path in MACHINE_ID_FILES:
+    for path in _happmeta().MACHINE_ID_FILES:
         with contextlib.suppress(OSError):
             if machine_id := path.read_text().strip():
                 return machine_id
@@ -202,8 +213,9 @@ def happ_hwid() -> str | None:
 
 
 def default_headers() -> dict[str, str]:
-    headers = {"User-Agent": f"Happ/{happ_version()}"}
-    if hwid := happ_hwid():
+    hm = _happmeta()
+    headers = {"User-Agent": f"Happ/{hm.happ_version()}"}
+    if hwid := hm.happ_hwid():
         headers["X-HWID"] = hwid
     return headers
 
@@ -259,7 +271,7 @@ def _sub_cache_path(sub_id: str) -> Path:
     # validated on the way in — strip anything but word chars/hyphen so a
     # crafted id (e.g. containing "../") can't escape SUB_CACHE_DIR.
     safe_id = re.sub(r"[^\w-]", "_", sub_id)
-    return SUB_CACHE_DIR / f"subscription-{safe_id}.json"
+    return _happmeta().SUB_CACHE_DIR / f"subscription-{safe_id}.json"
 
 
 def fetch_subscription(sub_id: str, url: str, force: bool = False) -> list[dict]:
@@ -270,6 +282,9 @@ def fetch_subscription(sub_id: str, url: str, force: bool = False) -> list[dict]
     return (the Refresh All menu action); the default keeps the SUB_MAX_AGE
     gate the --status path relies on.
     """
+    hm = _happmeta()
+    if hm.fetch_subscription is not fetch_subscription:
+        return hm.fetch_subscription(sub_id, url, force)
     return _fetch_subscription(sub_id, url, force)[0]
 
 
@@ -313,6 +328,9 @@ def _fetch_subscription(sub_id: str, url: str, force: bool) -> tuple[list[dict],
     """fetch_subscription() plus why it didn't update: None when the servers
     are fresh (fetched now or within SUB_MAX_AGE), else a short reason —
     the network error, or the panel's own stub row (device limit)."""
+    hm = _happmeta()
+    if hm._fetch_subscription is not _fetch_subscription:
+        return hm._fetch_subscription(sub_id, url, force)
     cache_path = _sub_cache_path(sub_id)
     try:
         cached = json.loads(cache_path.read_text())
@@ -327,7 +345,7 @@ def _fetch_subscription(sub_id: str, url: str, force: bool) -> tuple[list[dict],
         not force
         and isinstance(cached, dict)
         and cached.get("url", url) == url
-        and time.time() - cached.get("at", 0) < SUB_MAX_AGE
+        and time.time() - cached.get("at", 0) < hm.SUB_MAX_AGE
     ):
         return fallback, None
 
@@ -483,14 +501,14 @@ def _sub_cache_fresh(sub_id: str, url: str) -> bool:
         return (
             isinstance(cached, dict)
             and cached.get("url", url) == url  # legacy records without url match
-            and time.time() - cached.get("at", 0) < SUB_MAX_AGE
+            and time.time() - cached.get("at", 0) < _happmeta().SUB_MAX_AGE
         )
     except AttributeError, TypeError:
         return False
 
 
 def _subs_refresh_path() -> Path:
-    return SUB_CACHE_DIR / "subs-refresh.json"
+    return _happmeta().SUB_CACHE_DIR / "subs-refresh.json"
 
 
 def _subs_refresh_in_progress() -> bool:
@@ -498,7 +516,7 @@ def _subs_refresh_in_progress() -> bool:
     Keeps the 3 s status tick from piling up --update-subs workers."""
     try:
         state = json.loads(_subs_refresh_path().read_text())
-        return time.time() - state.get("at", 0) < SUBS_REFRESH_RETRY
+        return time.time() - state.get("at", 0) < _happmeta().SUBS_REFRESH_RETRY
     except OSError, json.JSONDecodeError, AttributeError, TypeError:
         return False
 
@@ -526,7 +544,7 @@ def request_subscription_update() -> None:
             with contextlib.suppress(OSError):  # a spawn failure must never break --status
                 subp = _happmeta().subprocess
                 subp.Popen(
-                    [sys.executable, str(MANAGER), "--update-subs"],
+                    [sys.executable, str(_happmeta().MANAGER), "--update-subs"],
                     stdout=subp.DEVNULL,
                     stderr=subp.DEVNULL,
                     start_new_session=True,

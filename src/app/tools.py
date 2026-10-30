@@ -13,12 +13,21 @@ import settings_tui
 from app.checks import run_check
 from app.helpers import notify, refresh_bar
 from app.providers import provider_named as _provider_named
-from app.registry import active_connections
+from app.registry import _provider_pool, active_connections
 from app.status import _killswitch_unsupported
 from app.switch import _killswitch_toggle, _sync_ipv6_guard, sync_ipv6_boot
 from happ.constants import MANAGER
-from providers import ALL_PROVIDERS
 from providers.base import ActionResult
+
+
+def _patched(name: str, local):
+    import vpn_manager as vm  # noqa: PLC0415
+
+    remote = getattr(vm, name, None)
+    if remote is not None and remote is not local:
+        return remote
+    return local
+
 
 IMPORT_KINDS = {
     "WireGuard": "file",
@@ -56,9 +65,12 @@ def refresh_all_menu() -> ActionResult:
 
 
 def clear_caches_menu() -> ActionResult:
+    import vpn_manager as vm  # noqa: PLC0415 — tests patch vpn_manager.CACHE_DIR
+
+    cache_dir = vm.CACHE_DIR
     removed = 0
-    if CACHE_DIR.is_dir():
-        for f in CACHE_DIR.glob("*.json"):
+    if cache_dir.is_dir():
+        for f in cache_dir.glob("*.json"):
             if f.name.startswith("subscription-"):
                 continue
             with contextlib.suppress(OSError):
@@ -101,7 +113,7 @@ def settings_menu() -> ActionResult:
 
 
 def run_settings_window() -> None:
-    if settings_tui.main([p.name for p in ALL_PROVIDERS], _settings_tool_keys()):
+    if settings_tui.main([p.name for p in _provider_pool()], _settings_tool_keys()):
         _sync_ipv6_guard()
         boot = sync_ipv6_boot()
         notify("VPN", "Settings saved" + ("" if boot.success else f"\n{boot.message}"))
@@ -120,7 +132,7 @@ TOOLS = [
 
 def run_tool(key: str) -> ActionResult:
     if key == "killswitch":
-        if _killswitch_unsupported(active_connections(providers=list(ALL_PROVIDERS))):
+        if _killswitch_unsupported(active_connections(providers=list(_provider_pool()))):
             return ActionResult(
                 False, "The kill switch is suspended while a NetworkManager VPN is up"
             )
@@ -174,7 +186,7 @@ def run_profile_action(action: str, provider_name: str, name: str) -> ActionResu
             return ActionResult(False, f"{provider_name}: autostart not supported")
         result = provider.toggle_autostart(conn)
         if result.success:
-            boot = sync_ipv6_boot()
+            boot = _patched("sync_ipv6_boot", sync_ipv6_boot)()
             if not boot.success:
                 return ActionResult(True, f"{result.message} — {boot.message}")
         return result

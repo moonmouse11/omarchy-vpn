@@ -45,6 +45,11 @@ def _run(cmd: list[str]) -> tuple[int, str]:
 
 
 def _active_interfaces(link_type: str = "wireguard") -> list[str]:
+    from providers import wireguard as wg  # noqa: PLC0415 — tests patch wireguard._active_interfaces
+
+    remote = wg._active_interfaces
+    if remote is not _active_interfaces:
+        return remote(link_type)
     code, out = _run(["ip", "-o", "link", "show", "type", link_type])
     if code != 0 or not out:
         return []

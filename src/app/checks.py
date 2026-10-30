@@ -142,6 +142,12 @@ DNS_VERDICT_CACHE = Path.home() / ".cache/vpn-manager/dns-leak.json"
 DNS_VERDICT_MAX_AGE = 24 * 3600  # a verdict outlives neither a day nor a server switch
 
 
+def _dns_verdict_path() -> Path:
+    import vpn_manager as vm  # noqa: PLC0415 — tests patch vpn_manager.DNS_VERDICT_CACHE
+
+    return vm.DNS_VERDICT_CACHE
+
+
 def _save_dns_verdict(active: list[VPNConnection], verdict: str | None) -> None:
     """The last test's resolver verdict, for the panel's DNS badge — keyed
     to the connection it ran under; None (no data to judge) is kept too."""
@@ -152,12 +158,12 @@ def _save_dns_verdict(active: list[VPNConnection], verdict: str | None) -> None:
         "summary": verdict,
     }
     with contextlib.suppress(OSError):
-        fsutil.write_json_atomic(DNS_VERDICT_CACHE, record)
+        fsutil.write_json_atomic(_dns_verdict_path(), record)
 
 
 def _read_dns_verdict(connection: str) -> dict | None:
     try:
-        record = json.loads(DNS_VERDICT_CACHE.read_text())
+        record = json.loads(_dns_verdict_path().read_text())
     except OSError, ValueError:
         return None
     if not isinstance(record, dict) or record.get("connection") != connection:
@@ -217,6 +223,12 @@ class CheckFailed(Exception):
 
 def _emit(obj: dict) -> None:
     """One JSON line for the app window's check card (Widget.qml checkProc)."""
+    import vpn_manager as vm  # noqa: PLC0415 — tests patch vpn_manager._emit
+
+    remote = getattr(vm, "_emit", None)
+    if remote is not None and remote is not _emit:
+        remote(obj)
+        return
     print(json.dumps(obj, ensure_ascii=False), flush=True)
 
 

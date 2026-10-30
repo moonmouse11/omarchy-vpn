@@ -6,8 +6,6 @@ l2tp, pptp, openconnect, fortisslvpn and friends. Connect/disconnect go through
 control over their own connections).
 """
 
-import shutil
-import subprocess
 from pathlib import Path
 
 from providers.common.types import ActionResult, VPNConnection, VPNProvider
@@ -34,11 +32,21 @@ TIMEOUT = 6
 
 
 def _run(cmd: list[str]) -> tuple[int, str]:
+    from providers import networkmanager as nm  # noqa: PLC0415 — tests patch nm._run / nm.subprocess
+
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT, check=False)
-    except subprocess.TimeoutExpired:
+        result = nm.subprocess.run(
+            cmd, capture_output=True, text=True, timeout=TIMEOUT, check=False
+        )
+    except nm.subprocess.TimeoutExpired:
         return 1, f"timeout after {TIMEOUT}s: {' '.join(cmd)}"
     return result.returncode, (result.stdout + result.stderr).strip()
+
+
+def _nm_run(cmd: list[str]) -> tuple[int, str]:
+    from providers import networkmanager as nm  # noqa: PLC0415 — tests patch nm._run
+
+    return nm._run(cmd)
 
 
 def _terse_lines(output: str) -> list[list[str]]:
@@ -71,18 +79,22 @@ class NetworkManagerProvider(VPNProvider):
         return "NetworkManager"
 
     def _available(self) -> bool:
-        return shutil.which("nmcli") is not None
+        from providers import networkmanager as nm  # noqa: PLC0415
+
+        return nm.shutil.which("nmcli") is not None
 
     def connections(self) -> list[VPNConnection]:
         if not self._available():
             return []
 
-        code, out = _run(["nmcli", "-t", "-f", "NAME,UUID,TYPE", "connection", "show"])
+        code, out = _nm_run(["nmcli", "-t", "-f", "NAME,UUID,TYPE", "connection", "show"])
         if code != 0:
             return []
 
         active: dict[str, str] = {}
-        code, out_a = _run(["nmcli", "-t", "-f", "UUID,DEVICE", "connection", "show", "--active"])
+        code, out_a = _nm_run(
+            ["nmcli", "-t", "-f", "UUID,DEVICE", "connection", "show", "--active"]
+        )
         if code == 0:
             for fields in _terse_lines(out_a):
                 if len(fields) >= 2 and fields[0]:
@@ -110,7 +122,7 @@ class NetworkManagerProvider(VPNProvider):
     def connect(self, connection: VPNConnection) -> ActionResult:
         if not connection.uuid:
             return ActionResult(False, "Missing connection UUID")
-        code, out = _run(["nmcli", "connection", "up", "uuid", connection.uuid])
+        code, out = _nm_run(["nmcli", "connection", "up", "uuid", connection.uuid])
         if code != 0:
             return ActionResult(False, out.splitlines()[-1] if out else "nmcli failed")
         return ActionResult(True, f"Connected: {connection.name}")
@@ -118,7 +130,7 @@ class NetworkManagerProvider(VPNProvider):
     def disconnect(self, connection: VPNConnection) -> ActionResult:
         if not connection.uuid:
             return ActionResult(False, "Missing connection UUID")
-        code, out = _run(["nmcli", "connection", "down", "uuid", connection.uuid])
+        code, out = _nm_run(["nmcli", "connection", "down", "uuid", connection.uuid])
         if code != 0:
             return ActionResult(False, out.splitlines()[-1] if out else "nmcli failed")
         return ActionResult(True, f"Disconnected: {connection.name}")
@@ -127,7 +139,7 @@ class NetworkManagerProvider(VPNProvider):
         """Toggle NM 'autoconnect' flag."""
         if not connection.uuid:
             return ActionResult(False, "Missing connection UUID")
-        code, out = _run(
+        code, out = _nm_run(
             [
                 "nmcli",
                 "-g",
@@ -142,7 +154,7 @@ class NetworkManagerProvider(VPNProvider):
             return ActionResult(False, f"Cannot read autoconnect flag: {out}")
         enabled = out.strip() == "yes"
         new_value = "no" if enabled else "yes"
-        code, out = _run(
+        code, out = _nm_run(
             [
                 "nmcli",
                 "connection",
@@ -163,7 +175,7 @@ class NetworkManagerProvider(VPNProvider):
             return ActionResult(False, f"Disconnect {connection.name} first")
         if not connection.uuid:
             return ActionResult(False, "Missing connection UUID")
-        code, out = _run(["nmcli", "connection", "delete", "uuid", connection.uuid])
+        code, out = _nm_run(["nmcli", "connection", "delete", "uuid", connection.uuid])
         if code != 0:
             return ActionResult(False, out.splitlines()[-1] if out else "nmcli failed")
         return ActionResult(True, f"Deleted: {connection.name}")
@@ -185,7 +197,9 @@ class NetworkManagerProvider(VPNProvider):
         else:
             return ActionResult(False, "Unknown config format (need [Interface] or remote)")
 
-        code, out = _run(["nmcli", "connection", "import", "type", import_type, "file", str(src)])
+        code, out = _nm_run(
+            ["nmcli", "connection", "import", "type", import_type, "file", str(src)]
+        )
         if code != 0:
             return ActionResult(False, out.splitlines()[-1] if out else "nmcli import failed")
         return ActionResult(True, f"Imported ({import_type}): {src.name}")

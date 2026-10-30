@@ -8,9 +8,15 @@ import delayping
 import killswitch
 import logutil
 from app.helpers import refresh_bar
-from app.switch import PING_LOCK, _try_flock
-from providers import ALL_PROVIDERS
+from app.registry import _provider_pool
+from app.switch import _try_flock
 from providers.keys import KeysProvider
+
+
+def _ping_lock() -> Path:
+    import vpn_manager as vm  # noqa: PLC0415 — tests patch vpn_manager.PING_LOCK
+
+    return vm.PING_LOCK
 
 
 def _ping_scope_targets(
@@ -28,7 +34,7 @@ def _ping_scope_targets(
         pname, name, sub_id = group, None, None
     xray: list[tuple[str, dict]] = []
     direct: list[tuple[str, str, int]] = []
-    for provider in ALL_PROVIDERS:
+    for provider in _provider_pool():
         if pname and provider.name != pname:
             continue
         if provider.name == "Happ":
@@ -56,7 +62,7 @@ def _try_lock(path: Path) -> int | None:
 
 
 def _ping_worker_alive() -> bool:
-    fd = _try_lock(PING_LOCK)
+    fd = _try_lock(_ping_lock())
     if fd is None:
         return True
     os.close(fd)
@@ -66,7 +72,14 @@ def _ping_worker_alive() -> bool:
 PING_REFRESH_EVERY = 2.0  # s between panel reloads while results come in (~230 ms each)
 
 
-def _measure(scope: dict, kind: str) -> tuple[dict[str, dict], bool]:
+def _call_measure(scope: dict, kind: str) -> tuple[dict[str, dict], bool]:
+    import vpn_manager as vm  # noqa: PLC0415 — tests patch vpn_manager._measure
+
+    fn = getattr(vm, "_measure", _measure_body)
+    return fn(scope, kind)
+
+
+def _measure_body(scope: dict, kind: str) -> tuple[dict[str, dict], bool]:
     xray, direct = _ping_scope_targets(scope)
     direct_allowed = not direct or not killswitch.is_enabled()
     last = time.monotonic()
@@ -83,6 +96,9 @@ def _measure(scope: dict, kind: str) -> tuple[dict[str, dict], bool]:
     return results, direct_allowed
 
 
+_measure = _measure_body  # vpn_manager re-export; tests patch the module attribute
+
+
 def ping_now(scope: dict | None = None) -> tuple[str, str] | None:
     """--ping-now: the only way pings are measured (no background sweep —
     the user's call). Happ/Keys go through xray under happd (delayping),
@@ -97,7 +113,7 @@ def ping_now(scope: dict | None = None) -> tuple[str, str] | None:
     None for a quiet queued ping (the panel shows "…" on its rows)."""
     if not scope:
         with delayping.queue_locked():
-            fd = _try_lock(PING_LOCK)
+            fd = _try_lock(_ping_lock())
             if fd is None:
                 progress = delayping.read_progress() or {}
                 if progress.get("kind") == delayping.ALL:
@@ -107,7 +123,7 @@ def ping_now(scope: dict | None = None) -> tuple[str, str] | None:
             delayping.write_progress(0, 0, delayping.ALL)  # queued pings see it at once
         try:
             refresh_bar()  # the bar shows the progress ({activity}), rows "…"
-            results, direct_allowed = _measure({}, delayping.ALL)
+            results, direct_allowed = _call_measure({}, delayping.ALL)
         finally:
             os.close(fd)
         refresh_bar()  # an open panel reloads its list
@@ -124,7 +140,7 @@ def ping_now(scope: dict | None = None) -> tuple[str, str] | None:
         queue = delayping.read_queue()
         if scope not in queue:
             delayping.write_queue([*queue, scope])
-        fd = _try_lock(PING_LOCK)
+        fd = _try_lock(_ping_lock())
     refresh_bar()  # its rows show "…" while queued
     if fd is None:
         return None  # the running worker picks it up
@@ -136,7 +152,7 @@ def ping_now(scope: dict | None = None) -> tuple[str, str] | None:
                     break
                 current = queue[0]
             try:
-                _measure(current, delayping.QUEUED)
+                _call_measure(current, delayping.QUEUED)
             except Exception as e:  # noqa: BLE001 — one bad scope must not stall the queue
                 logutil.log(f"ping {current}: {e!r}")
             with delayping.queue_locked():

@@ -10,10 +10,28 @@ import quickconnect
 from app.checks import _name_flag_country
 from app.helpers import notify, refresh_bar
 from app.ping import _ping_worker_alive
-from app.registry import visible_providers
+from app.registry import _provider_pool, visible_providers
 from app.switch import guarded_connect, guarded_disconnect
-from providers import ALL_PROVIDERS
 from providers.base import ActionResult, VPNConnection
+
+
+def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
+    import vpn_manager as vm  # noqa: PLC0415 — tests patch vpn_manager.guarded_connect
+
+    remote = getattr(vm, "guarded_connect", None)
+    if remote is not None and remote is not guarded_connect:
+        return remote(provider, connection)
+    return guarded_connect(provider, connection)
+
+
+def _guarded_disconnect(provider, connection: VPNConnection) -> ActionResult:
+    import vpn_manager as vm  # noqa: PLC0415 — tests patch vpn_manager.guarded_disconnect
+
+    remote = getattr(vm, "guarded_disconnect", None)
+    if remote is not None and remote is not guarded_disconnect:
+        return remote(provider, connection)
+    return guarded_disconnect(provider, connection)
+
 
 # Duplicated from app.tools — keeps server_list() free of tools ↔ servers import cycle.
 _IMPORT_KINDS = {
@@ -192,7 +210,13 @@ def server_list() -> dict:
             }
         )
         if provider.name == "Happ":
-            _servers, happ_groups = happ_server_groups(provider)
+            import vpn_manager as vm  # noqa: PLC0415 — tests patch vpn_manager.happ_server_groups
+
+            groups_fn = getattr(vm, "happ_server_groups", happ_server_groups)
+            if groups_fn is happ_server_groups:
+                _servers, happ_groups = happ_server_groups(provider)
+            else:
+                _servers, happ_groups = groups_fn(provider)
             for pname, entries in happ_groups.items():
                 sub_id = entries[0].get("provider_id") or ""
                 groups.append(
@@ -278,7 +302,7 @@ def _quick_connect(groups: list[dict]) -> dict:
 
 
 def _provider_named(name: str):
-    return next((p for p in ALL_PROVIDERS if p.name == name), None)
+    return next((p for p in _provider_pool() if p.name == name), None)
 
 
 def panel_connect(provider_name: str, name: str, sub_id: str | None = None) -> ActionResult:
@@ -301,7 +325,7 @@ def panel_connect(provider_name: str, name: str, sub_id: str | None = None) -> A
         if found is None:
             return ActionResult(False, f"{provider_name}: {name} not found")
         conn = found
-    result = guarded_connect(provider, conn)
+    result = _guarded_connect(provider, conn)
     if result.success:  # QUICK CONNECT's recent, and the power switch's "last server"
         quickconnect.remember(provider.name, name, sub_id if provider.name == "Happ" else None)
     return result
@@ -320,10 +344,16 @@ def panel_disconnect(provider_name: str, name: str) -> ActionResult:
         conn = active[0]
     if conn is None:
         return ActionResult(False, f"{provider_name}: {name} is not connected")
-    return guarded_disconnect(provider, conn)
+    return _guarded_disconnect(provider, conn)
 
 
 def _report(result: ActionResult) -> None:
+    import vpn_manager as vm  # noqa: PLC0415 — tests patch vpn_manager._report
+
+    remote = getattr(vm, "_report", None)
+    if remote is not None and remote is not _report:
+        remote(result)
+        return
     if result.message:
         if result.success:
             notify("VPN", result.message)

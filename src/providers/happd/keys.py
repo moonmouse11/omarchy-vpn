@@ -23,9 +23,7 @@ import json
 import os
 import re
 import secrets
-import subprocess
 import sys
-import time
 import urllib.parse
 from pathlib import Path
 
@@ -34,25 +32,20 @@ import happmeta
 import logutil
 from providers.common.types import ActionResult, VPNConnection, VPNProvider
 
-from .happ import (
-    XRAY_BIN,
-    _daemon_request,
-    _daemon_running_processes,
-    _hold_session,
-    _invalidate_procs_cache,
-    _open_session,
-    _recv_frame,
-    _routing_asset_dir,
-    _send_frame,
-    notify_failure,
-    xray_config_error,
-)
+from . import happ as _happ_impl
 
 IFACES = {"ss": "keys-ss-tun0", "vless": "keys-vless-tun0"}  # ≤15 chars (kernel IFNAMSIZ)
 LABELS = {"ss": "Shadowsocks", "vless": "VLESS"}
 STORE = Path.home() / ".config/vpn-manager/keys.json"
 KEEPER_STATE_DIR = Path.home() / ".local/state/vpn-manager"
 XRAY_TIMEOUT = 20  # seconds to wait for happd's start ack
+XRAY_BIN = _happ_impl.XRAY_BIN
+
+
+def _pub():
+    import providers.keys as m  # noqa: PLC0415 — tests patch providers.keys
+
+    return m
 
 
 def _kind_meta(kind: str) -> tuple[str, str, Path]:
@@ -62,7 +55,7 @@ def _kind_meta(kind: str) -> tuple[str, str, Path]:
     return (
         f"xray-keys-{kind}",
         IFACES[kind],
-        KEEPER_STATE_DIR / f"keys-keeper-{kind}.json",
+        _pub().KEEPER_STATE_DIR / f"keys-keeper-{kind}.json",
     )
 
 
@@ -289,14 +282,14 @@ def parse_key(url: str) -> dict:
 
 def _load_servers() -> list[dict]:
     try:
-        data = json.loads(STORE.read_text())
+        data = json.loads(_pub().STORE.read_text())
     except OSError, json.JSONDecodeError:
         return []
     return [s for s in data if isinstance(s, dict) and s.get("host")]
 
 
 def _save_servers(servers: list[dict]) -> None:
-    fsutil.write_json_atomic(STORE, servers, ensure_ascii=False, indent=1)
+    fsutil.write_json_atomic(_pub().STORE, servers, ensure_ascii=False, indent=1)
 
 
 def _key_fields(server: dict) -> tuple:
@@ -453,6 +446,10 @@ def _write_keeper_state(state_path: Path, state: dict, own: bool = False) -> Non
 
 
 def _read_keeper_state(state_path: Path) -> dict | None:
+    pub = _pub()
+    remote = pub._read_keeper_state
+    if remote is not _read_keeper_state:
+        return remote(state_path)
     try:
         data = json.loads(state_path.read_text())
     except OSError, json.JSONDecodeError:
@@ -464,20 +461,21 @@ def run_keeper(kind: str, server_id: str) -> None:
     """Send the start frame for one key server and hold the session open
     (happd reaps managed processes when the starting client disconnects).
     Mirrors providers.happ.run_keeper."""
-    process_id, iface, state_path = _kind_meta(kind)
+    pub = _pub()
+    process_id, iface, state_path = pub._kind_meta(kind)
     logutil.log(f"keys keeper: starting ({kind} {server_id})")
     state: dict = {"status": "connecting", "pid": os.getpid(), "server": server_id}
     _write_keeper_state(state_path, state)  # unconditional first claim
     attempts = 0
     exit_reason = "unknown"
     try:
-        server = next((s for s in _load_servers() if s.get("uid") == server_id), None)
+        server = next((s for s in pub._load_servers() if s.get("uid") == server_id), None)
         if server is None:
             state.update(status="error", message="server not found in store")
             _write_keeper_state(state_path, state)
             return
-        cfg = _build_xray_config(server)
-        if reason := xray_config_error(cfg, _routing_asset_dir()):
+        cfg = pub._build_xray_config(server)
+        if reason := pub.xray_config_error(cfg, pub._routing_asset_dir()):
             logutil.log(f"keys keeper: xray rejected the config: {reason}")
             state.update(status="error", message=f"xray rejected the config: {reason}")
             _write_keeper_state(state_path, state, own=True)
@@ -491,9 +489,9 @@ def run_keeper(kind: str, server_id: str) -> None:
         backoff = 3.0
         while True:
             attempts += 1
-            sock = _open_session()
+            sock = pub._open_session()
             try:
-                request_id = f"wm-keys-{time.time_ns()}"
+                request_id = f"wm-keys-{pub.time.time_ns()}"
                 params: dict = {
                     "action": "start",
                     "arguments": [],
@@ -502,15 +500,15 @@ def run_keeper(kind: str, server_id: str) -> None:
                     "request-id": request_id,
                     "stdin-data": json.dumps(cfg),
                 }
-                asset_dir = _routing_asset_dir()
+                asset_dir = pub._routing_asset_dir()
                 if asset_dir:
                     params["environment"] = {"XRAY_LOCATION_ASSET": str(asset_dir)}
-                _send_frame(sock, params)
+                pub._send_frame(sock, params)
 
-                deadline = time.time() + XRAY_TIMEOUT
-                while time.time() < deadline:
+                deadline = pub.time.time() + XRAY_TIMEOUT
+                while pub.time.time() < deadline:
                     try:
-                        frame = _recv_frame(sock)
+                        frame = pub._recv_frame(sock)
                     except TimeoutError:
                         # slow happd: a socket timeout must consume the ack
                         # budget, not kill the keeper
@@ -534,14 +532,14 @@ def run_keeper(kind: str, server_id: str) -> None:
                 )
 
                 sock.settimeout(15)
-                exit_reason, died = _hold_session(
+                exit_reason, died = pub._hold_session(
                     sock,
                     iface,
                     process_id,
                     owns_state=lambda: (
                         (_read_keeper_state(state_path) or {}).get("pid") == os.getpid()
                     ),
-                    iface_exists=_iface_exists,
+                    iface_exists=pub._iface_exists,
                 )
             finally:
                 sock.close()
@@ -549,14 +547,14 @@ def run_keeper(kind: str, server_id: str) -> None:
             if not died:
                 break
             if attempts >= max_attempts:
-                notify_failure(
+                pub.notify_failure(
                     f"{LABELS[kind]} — tunnel lost",
                     f"{server['name']}: xray kept dying, gave up after {attempts} attempts "
                     "— see vpn-manager.log / journalctl -u happd",
                 )
                 break
             logutil.log(f"keys keeper: xray died unexpectedly, re-arming in {backoff:.0f}s")
-            time.sleep(backoff)
+            pub.time.sleep(backoff)
             backoff = min(backoff * 3, 30)
             current = _read_keeper_state(state_path)
             if current is None or current.get("pid") != os.getpid():
@@ -597,12 +595,16 @@ class KeysProvider(VPNProvider):
         return IFACES[self._kind]
 
     def connections(self) -> list[VPNConnection]:
-        process_id, iface, state_path = _kind_meta(self._kind)
-        servers = [s for s in _load_servers() if s.get("kind") == self._kind]
+        pub = _pub()
+        process_id, iface, state_path = pub._kind_meta(self._kind)
+        servers = [s for s in pub._load_servers() if s.get("kind") == self._kind]
         if not servers:
             return []
         active_name = None
-        if process_id in _daemon_running_processes() or Path(f"/sys/class/net/{iface}").exists():
+        if (
+            process_id in pub._daemon_running_processes()
+            or Path(f"/sys/class/net/{iface}").exists()
+        ):
             state = _read_keeper_state(state_path)
             if state and state.get("status") in ("connected", "connecting"):
                 active_name = state.get("server")
@@ -617,38 +619,42 @@ class KeysProvider(VPNProvider):
         ]
 
     def ping_targets(self) -> list[tuple[str, str, int]]:
+        pub = _pub()
         return [
             (s["name"], s["host"], s["port"])
-            for s in _load_servers()
+            for s in pub._load_servers()
             if s.get("kind") == self._kind
         ]
 
     def connect(self, connection: VPNConnection) -> ActionResult:
         _ensure_uids()
-        server = _find_server(connection.name)
+        pub = _pub()
+        server = pub._find_server(connection.name)
         if server is None or server.get("kind") != self._kind:
             return ActionResult(False, f"Unknown {self.name} server: {connection.name}")
         self._stop_running()  # one server per protocol at a time
         return self._headless_connect(server["uid"])
 
     def _headless_connect(self, server_id: str) -> ActionResult:
-        _, _, state_path = _kind_meta(self._kind)
+        pub = _pub()
+        _, _, state_path = pub._kind_meta(self._kind)
         state_path.unlink(missing_ok=True)
-        manager = Path(__file__).resolve().parent.parent / "vpn_manager.py"
-        keeper = subprocess.Popen(
+        manager = Path(__file__).resolve().parent.parent.parent / "vpn_manager.py"
+        keeper = pub.subprocess.Popen(
             [sys.executable, str(manager), "--keys-keeper", self._kind, server_id],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=pub.subprocess.DEVNULL,
+            stderr=pub.subprocess.DEVNULL,
             start_new_session=True,
         )
         try:
             # happd can be slow to ack
-            return self._await_keeper(state_path, time.time() + 25, keeper.pid)
+            return self._await_keeper(state_path, pub.time.time() + 25, keeper.pid)
         finally:
-            _invalidate_procs_cache()
+            pub._invalidate_procs_cache()
 
     def _await_keeper(self, state_path: Path, deadline: float, pid: int) -> ActionResult:
-        while time.time() < deadline:
+        pub = _pub()
+        while pub.time.time() < deadline:
             state = _read_keeper_state(state_path)
             if state and state.get("pid") == pid:  # not a replaced keeper's (see happ)
                 if state.get("status") == "connected":
@@ -657,31 +663,33 @@ class KeysProvider(VPNProvider):
                     return ActionResult(False, state.get("message", "keeper error"))
                 if state.get("status") == "exited":
                     return ActionResult(False, "keeper exited before connecting — see log")
-            time.sleep(0.2)
+            pub.time.sleep(0.2)
         return ActionResult(False, "keeper timeout — see log")
 
     def _stop_running(self) -> None:
-        process_id, iface, _ = _kind_meta(self._kind)
-        if process_id not in _daemon_running_processes(fresh=True):
+        pub = _pub()
+        process_id, iface, _ = pub._kind_meta(self._kind)
+        if process_id not in pub._daemon_running_processes(fresh=True):
             return
-        _daemon_request("stop", **{"process-id": process_id})
-        _invalidate_procs_cache()
-        deadline = time.time() + 5
-        while time.time() < deadline:
+        pub._daemon_request("stop", **{"process-id": process_id})
+        pub._invalidate_procs_cache()
+        deadline = pub.time.time() + 5
+        while pub.time.time() < deadline:
             if not Path(f"/sys/class/net/{iface}").exists():
                 return
-            time.sleep(0.3)
+            pub.time.sleep(0.3)
 
     def disconnect(self, connection: VPNConnection) -> ActionResult:
         # Unlinking the keeper state file (all branches) aborts a keeper
         # that is sleeping between re-arm attempts — do it FIRST so even a
         # failed stop cannot leave a sleeping keeper behind to resurrect.
-        process_id, _, state_path = _kind_meta(self._kind)
+        pub = _pub()
+        process_id, _, state_path = pub._kind_meta(self._kind)
         state_path.unlink(missing_ok=True)
-        if process_id not in _daemon_running_processes(fresh=True):
+        if process_id not in pub._daemon_running_processes(fresh=True):
             return ActionResult(success=False, message=f"{self.name} is not connected")
-        resp = _daemon_request("stop", **{"process-id": process_id})
-        _invalidate_procs_cache()
+        resp = pub._daemon_request("stop", **{"process-id": process_id})
+        pub._invalidate_procs_cache()
         if not resp or resp.get("status") not in ("stopping", "success"):
             error = resp.get("error", "no response") if resp else "happd unreachable"
             return ActionResult(success=False, message=f"Failed to stop: {error}")

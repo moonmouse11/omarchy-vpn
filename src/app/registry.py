@@ -25,5 +25,14 @@ def visible_providers() -> list:
 
 def active_connections(providers=None) -> list[VPNConnection]:
     """What is tunneled right now — every provider by default, hidden ones too."""
+    import sys  # noqa: PLC0415
+
+    vm = sys.modules.get("vpn_manager")
+    if vm is not None:
+        remote = getattr(vm, "active_connections", None)
+        if remote is not None and remote is not active_connections:
+            if providers is not None:
+                return remote(providers=providers)
+            return remote()
     pool = providers if providers is not None else _provider_pool()
     return [conn for provider in pool for conn in provider.connections() if conn.active]

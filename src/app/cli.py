@@ -35,6 +35,17 @@ from providers.base import (
 from providers.happ import run_keeper as run_happ_keeper
 from providers.keys import run_keeper as run_keys_keeper
 
+
+def _patched(name: str, local):
+    """Route CLI actions through vpn_manager when tests monkeypatch it."""
+    import vpn_manager as vm  # noqa: PLC0415
+
+    remote = getattr(vm, name, None)
+    if remote is not None and remote is not local:
+        return remote
+    return local
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -162,15 +173,15 @@ def main() -> None:
     elif args.connect is not None:
         if len(args.connect) not in (2, 3):
             parser.error("--connect takes PROVIDER NAME [SUBSCRIPTION_ID]")
-        _report(panel_connect(*args.connect))
+        _report(_patched("panel_connect", panel_connect)(*args.connect))
     elif args.disconnect is not None:
-        _report(panel_disconnect(*args.disconnect))
+        _report(_patched("panel_disconnect", panel_disconnect)(*args.disconnect))
     elif args.disconnect_all:
-        result = disconnect_all()
+        result = _patched("disconnect_all", disconnect_all)()
         notify("VPN", result.message, urgent=not result.success)
         refresh_bar()
     elif args.tool:
-        _report(run_tool(args.tool))
+        _report(_patched("run_tool", run_tool)(args.tool))
     elif args.ipv6_boot_sync:
         boot = sync_ipv6_boot()
         print(boot.message or "IPv6 at boot: in sync")
@@ -198,7 +209,7 @@ def main() -> None:
     elif args.check is not None:
         if args.check[0] not in CHECK_TITLES or len(args.check) > 2:
             parser.error("--check takes dns|ip|speed [TARGET]")
-        _report(run_check(*args.check))
+        _report(_patched("run_check", run_check)(*args.check))
     elif args.dns_autotest:
         run_dns_autotest()
     elif args.update_ip:
@@ -222,7 +233,7 @@ def main() -> None:
         # a manual refresh (menu or Refresh All) runs in the background:
         # report every provider — a silent failure looked like success
         failed = happmeta.update_subscriptions(force=True)
-        notify(*subscription_report(failed))
+        notify(*_patched("subscription_report", subscription_report)(failed))
     elif args.happ_keeper is not None:
         run_happ_keeper(*args.happ_keeper[:2])
     elif args.keys_keeper is not None:

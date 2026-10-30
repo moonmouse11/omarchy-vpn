@@ -1,9 +1,13 @@
 import contextlib
-import os
 import signal
 import subprocess
-import time
-from pathlib import Path
+
+
+def _base():
+    from providers import base  # noqa: PLC0415 — tests patch base.subprocess / base.os
+
+    return base
+
 
 # The one root entry point for WireGuard/AmneziaWG/OpenVPN (scripts/omarchy-vpn-helper,
 # installed by install.sh): profile names only, never paths — the old sudoers rule
@@ -26,14 +30,15 @@ def terminate_registered_subprocesses() -> None:
     _helper_slot[0] = None
     if proc is None or proc.poll() is not None:
         return
+    base = _base()
     with contextlib.suppress(OSError, ProcessLookupError):
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        base.os.killpg(base.os.getpgid(proc.pid), signal.SIGTERM)
     try:
         proc.wait(timeout=2)
-    except subprocess.TimeoutExpired:
+    except base.subprocess.TimeoutExpired:
         with contextlib.suppress(OSError, ProcessLookupError):
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        with contextlib.suppress(subprocess.TimeoutExpired):
+            base.os.killpg(base.os.getpgid(proc.pid), signal.SIGKILL)
+        with contextlib.suppress(base.subprocess.TimeoutExpired):
             proc.wait(timeout=1)
 
 
@@ -42,12 +47,14 @@ def run_helper(*args: str, stdin: str | None = None, timeout: float = 60) -> tup
 
     Polls instead of subprocess.run so SIGTERM from a superseding switch can
     run terminate_registered_subprocesses() and drop a stuck sudo/awg-quick."""
+    base = _base()
+    subp = base.subprocess
     try:
-        proc = subprocess.Popen(
+        proc = subp.Popen(
             ["sudo", "-n", HELPER, *args],
-            stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stdin=subp.PIPE if stdin is not None else subp.DEVNULL,
+            stdout=subp.PIPE,
+            stderr=subp.STDOUT,
             text=True,
             errors="replace",
             start_new_session=True,
@@ -59,18 +66,18 @@ def run_helper(*args: str, stdin: str | None = None, timeout: float = 60) -> tup
         if stdin is not None and proc.stdin:
             proc.stdin.write(stdin)
             proc.stdin.close()
-        deadline = time.monotonic() + timeout
+        deadline = base.time.monotonic() + timeout
         while proc.poll() is None:
-            if time.monotonic() >= deadline:
-                terminate_registered_subprocesses()
+            if base.time.monotonic() >= deadline:
+                base.terminate_registered_subprocesses()
                 return 1, "timeout"
-            time.sleep(0.05)
+            base.time.sleep(0.05)
         if proc.stdout is None:
             return proc.returncode or 0, ""
         out = proc.stdout.read()
         return proc.returncode or 0, out.strip()
     except OSError as e:
-        terminate_registered_subprocesses()
+        base.terminate_registered_subprocesses()
         return 1, str(e)
     finally:
         _helper_slot[0] = None
@@ -81,7 +88,8 @@ def read_config_text(path) -> str | None:
     `endpoints` (configs are root:0600) — only the Endpoint/remote lines and
     section headers, never the keys, which is all the ping and the kill
     switch whitelist read. None when neither works."""
-    p = Path(path)
+    base = _base()
+    p = base.Path(path)
     try:
         return p.read_text(errors="replace")
     except OSError:
@@ -89,5 +97,5 @@ def read_config_text(path) -> str | None:
     kind = HELPER_KINDS.get(str(p.parent))
     if kind is None:
         return None
-    code, out = run_helper("endpoints", kind, p.stem, timeout=10)
+    code, out = base.run_helper("endpoints", kind, p.stem, timeout=10)
     return out if code == 0 else None

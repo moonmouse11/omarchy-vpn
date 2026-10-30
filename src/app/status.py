@@ -1,7 +1,6 @@
 """Bar widget JSON (--status) and panel hero state."""
 
 import fcntl
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,10 +17,10 @@ from app.checks import _exit_fits, _name_flag_country, _read_dns_verdict
 from app.registry import active_connections
 from app.switch import (
     KILLSWITCH_PROVIDERS,
-    SWITCH_LOCK,
     _enforce_ipv6_guard,
     _lock_holder,
     _our_process,
+    _vm,
 )
 from providers.base import VPNConnection
 
@@ -169,10 +168,13 @@ def _split_arrows(text: str) -> tuple[str, str]:
 
 def _switch_in_progress() -> str | None:
     """Action line from whoever holds SWITCH_LOCK, or None when idle."""
-    if not SWITCH_LOCK.is_file():
+    vm = _vm()
+    lock = vm.SWITCH_LOCK
+    vm_os = vm.os
+    if not lock.is_file():
         return None
     try:
-        fd = os.open(SWITCH_LOCK, os.O_RDONLY)
+        fd = vm_os.open(lock, vm_os.O_RDONLY)
     except OSError:
         return None
     try:
@@ -180,12 +182,14 @@ def _switch_in_progress() -> str | None:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return None
         except BlockingIOError:
-            pid, action = _lock_holder(fd)
-            if pid and not _our_process(pid):
+            lock_holder = getattr(vm, "_lock_holder", _lock_holder)
+            our_process = getattr(vm, "_our_process", _our_process)
+            pid, action = lock_holder(fd)
+            if pid and not our_process(pid):
                 return None
             return action or None
     finally:
-        os.close(fd)
+        vm_os.close(fd)
 
 
 def connecting_text() -> str:

@@ -1,7 +1,10 @@
 """Shim — implementation in providers.happd.happ (patchable attrs for tests)."""
 
+import subprocess
 import time
 
+import config
+from providers.common.types import VPNConnection
 from providers.happd.happ import (
     GUI_CONFIG,
     HAPPD_SOCK,
@@ -52,6 +55,7 @@ __all__ = [
     "XRAY_BIN",
     "XRAY_TIMEOUT",
     "HappProvider",
+    "VPNConnection",
     "_daemon_request",
     "_daemon_running_processes",
     "_gui_running",
@@ -71,8 +75,10 @@ __all__ = [
     "_write_own_keeper_state",
     "app_connected",
     "app_owns_connection",
+    "config",
     "notify_failure",
     "run_keeper",
+    "subprocess",
     "time",
     "xray_config_error",
 ]

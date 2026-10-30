@@ -1,9 +1,13 @@
 import json
-import subprocess
-import time
 from pathlib import Path
 
 import fsutil
+
+
+def _base():
+    from providers import base  # noqa: PLC0415 — tests patch base.subprocess / base.time
+
+    return base
 
 
 def human_bytes(n: float) -> str:
@@ -30,7 +34,10 @@ RATE_CACHE = Path.home() / ".cache/vpn-manager/iface-rate.json"
 
 
 def _iface_counters(iface: str) -> tuple[int, int] | None:
-    result = subprocess.run(
+    remote = getattr(_base(), "_iface_counters", None)
+    if remote is not None and remote is not _iface_counters:
+        return remote(iface)
+    result = _base().subprocess.run(
         ["ip", "-s", "link", "show", "dev", iface],
         capture_output=True,
         text=True,
@@ -58,14 +65,15 @@ def sample_iface_traffic(iface: str) -> None:
         return
     rx, tx = counters
     try:
+        rate_cache = _base().RATE_CACHE
         try:
-            cache = json.loads(RATE_CACHE.read_text())
+            cache = json.loads(rate_cache.read_text())
         except OSError, json.JSONDecodeError:
             cache = {}
         if not isinstance(cache, dict):
             cache = {}
-        cache[iface] = {"rx": rx, "tx": tx, "at": time.time()}
-        fsutil.write_json_atomic(RATE_CACHE, cache)
+        cache[iface] = {"rx": rx, "tx": tx, "at": _base().time.time()}
+        fsutil.write_json_atomic(rate_cache, cache)
     except OSError:
         pass
 
@@ -83,13 +91,13 @@ def iface_rate(iface: str | None) -> str | None:
     if counters is None:
         return None
     try:
-        cache = json.loads(RATE_CACHE.read_text())
+        cache = json.loads(_base().RATE_CACHE.read_text())
     except OSError, json.JSONDecodeError:
         return None
     prev = cache.get(iface) if isinstance(cache, dict) else None
     if not isinstance(prev, dict):
         return None
-    dt = time.time() - prev.get("at", 0)
+    dt = _base().time.time() - prev.get("at", 0)
     rx_delta = counters[0] - prev.get("rx", 0)
     tx_delta = counters[1] - prev.get("tx", 0)
     if dt <= 0 or rx_delta < 0 or tx_delta < 0:

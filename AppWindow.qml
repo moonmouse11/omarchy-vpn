@@ -84,7 +84,10 @@ FloatingWindow {
       var k = String(t).toLowerCase()
       if (k === "t") win.host.togglePower()
       else if (k === "d") win.host.runDnsTest()
-      else if (k === "r") { win.host.refresh(); win.host.loadServers() }
+      else if (k === "r" || k === "к") {
+        win.host.refresh()
+        win.host.loadServers()
+      }
       else if (k === "p" && win.host.serverCursor >= 0) win.host.pingRow(win.host.serverRows[win.host.serverCursor])
       else if (k === "/") locations.filterField.forceActiveFocus()
       else if (k === "s") win.host.toggleFavourite(win.cursorRow())

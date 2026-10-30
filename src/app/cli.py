@@ -234,6 +234,7 @@ def main() -> None:
         # report every provider — a silent failure looked like success
         failed = happmeta.update_subscriptions(force=True)
         notify(*_patched("subscription_report", subscription_report)(failed))
+        _patched("refresh_bar", refresh_bar)()
     elif args.happ_keeper is not None:
         run_happ_keeper(*args.happ_keeper[:2])
     elif args.keys_keeper is not None:

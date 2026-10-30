@@ -597,15 +597,16 @@ def _killswitch_all_targets(cached_only: bool = False) -> tuple[list[str], list[
         except Exception as e:  # noqa: BLE001 — one broken provider must not stop the rest
             logutil.log(f"killswitch targets: {provider.name} skipped: {e!r}")
             continue
-        targets += pt
+        targets += [(t[0], t[1], t[2]) for t in pt]
         if provider.name in ("WireGuard", "AmneziaWG"):
             # wg-quick/awg-quick name the interface after the profile, and
             # the kernel caps interface names at 15 chars (IFNAMSIZ=16 with
             # NUL) — longer names can never exist as wg/awg interfaces (such
             # profiles are unused or driven by NetworkManager, which has
             # no such limit) and nft rejects the whole ruleset for them.
-            ifaces += [n for n, _, _ in pt if len(n) <= 15]
-            for n, _, _ in pt:
+            ifaces += [t[0] for t in pt if len(t[0]) <= 15]
+            for t in pt:
+                n = t[0]
                 if len(n) > 15:
                     logutil.log(f"killswitch: iface name too long, skipped: {n}")
         elif provider.name == "OpenVPN":

@@ -1,5 +1,5 @@
 from providers import wireguard
-from providers.wireguard import WireGuardProvider
+from providers.wireguard import AmneziaWGProvider, WireGuardProvider
 
 
 def _provider(tmp_path, monkeypatch, run_result=(0, "")):
@@ -8,6 +8,83 @@ def _provider(tmp_path, monkeypatch, run_result=(0, "")):
     provider.config_dir.mkdir()
     monkeypatch.setattr(wireguard, "run_helper", lambda *a, **kw: run_result)
     return provider
+
+
+def test_runtime_endpoint_parses_wg_show(monkeypatch):
+    def fake_run(cmd):
+        if cmd[:3] == ["wg", "show", "tun0"]:
+            return 0, "peerkey\t45.140.17.3:4098\n"
+        return 1, ""
+
+    monkeypatch.setattr(wireguard, "_run", fake_run)
+    monkeypatch.setattr(wireguard.shutil, "which", lambda b: "/usr/bin/wg" if b == "wg" else None)
+    assert wireguard._runtime_endpoint("tun0", awg=False) == ("45.140.17.3", 4098)
+
+
+def test_orphan_ping_target_uses_runtime_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(wireguard, "_active_interfaces", lambda *_: ["gone"])
+    monkeypatch.setattr(
+        wireguard,
+        "_runtime_endpoint",
+        lambda iface, awg: ("203.0.113.9", 51820) if iface == "gone" and awg else None,
+    )
+    awg = AmneziaWGProvider()
+    awg.config_dir = tmp_path / "missing"
+    awg.other_config_dirs = ()
+    assert awg.ping_targets() == [("gone", "203.0.113.9", 51820, True)]
+
+
+def test_awg_interface_names_empty_without_awg_binary(monkeypatch):
+    monkeypatch.setattr(wireguard.shutil, "which", lambda b: None if b == "awg" else "/bin/sh")
+    assert wireguard._awg_interface_names() == set()
+
+
+def test_awg_interface_names_parses_awg_show(monkeypatch):
+    monkeypatch.setattr(wireguard.shutil, "which", lambda b: "/usr/bin/awg" if b == "awg" else None)
+    monkeypatch.setattr(
+        wireguard,
+        "_run",
+        lambda cmd: (0, "tunnel-a\ntunnel-b\n\n") if cmd[:2] == ["awg", "show"] else (1, ""),
+    )
+    assert wireguard._awg_interface_names() == {"tunnel-a", "tunnel-b"}
+
+
+def test_awg_interface_names_empty_on_awg_failure(monkeypatch):
+    monkeypatch.setattr(wireguard.shutil, "which", lambda b: "/usr/bin/awg" if b == "awg" else None)
+    monkeypatch.setattr(wireguard, "_run", lambda cmd: (1, "failed"))
+    assert wireguard._awg_interface_names() == set()
+
+
+def test_amnezia_connections_include_awg_show_orphans(tmp_path, monkeypatch):
+    monkeypatch.setattr(wireguard, "_active_interfaces", lambda *_: [])
+    monkeypatch.setattr(wireguard, "_awg_interface_names", lambda: {"gone"})
+    awg = AmneziaWGProvider()
+    awg.config_dir = tmp_path / "missing"
+    awg.other_config_dirs = ()
+    conns = awg.connections()
+    assert len(conns) == 1
+    assert conns[0].name == "gone"
+    assert conns[0].active
+    assert conns[0].config_path is None
+
+
+def test_amnezia_skips_awg_show_when_kernel_lists_interfaces(tmp_path, monkeypatch):
+    def kernel(lt):
+        return ["home"] if lt == "amneziawg" else []
+
+    monkeypatch.setattr(wireguard, "_active_interfaces", kernel)
+    monkeypatch.setattr(
+        wireguard,
+        "_awg_interface_names",
+        lambda: (_ for _ in ()).throw(AssertionError("awg show must not run")),
+    )
+    monkeypatch.setattr(wireguard, "_net_iface_exists", lambda n: False)
+    awg = AmneziaWGProvider()
+    awg.config_dir = tmp_path / "cfg"
+    awg.config_dir.mkdir()
+    (awg.config_dir / "home.conf").write_text("[Interface]\n")
+    conns = awg.connections()
+    assert any(c.name == "home" and c.active for c in conns)
 
 
 def test_import_warns_when_dns_missing(tmp_path, monkeypatch):

@@ -59,6 +59,9 @@ from ping.measure import (
     PING_TIMEOUT,
     ROUTE_TABLE,
     SYS_NET,
+    _measure_icmp,
+    _measure_tcp,
+    _parse_ping_rtt,
     measure_ping,
     uplink_interface,
 )

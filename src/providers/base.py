@@ -21,7 +21,7 @@ from providers.common.iface import (
     iface_traffic,
     sample_iface_traffic,
 )
-from providers.common.types import ActionResult, VPNConnection, VPNProvider
+from providers.common.types import ActionResult, PingTarget, VPNConnection, VPNProvider
 
 __all__ = [
     "HELPER",
@@ -29,6 +29,7 @@ __all__ = [
     "RATE_CACHE",
     "ActionResult",
     "Path",
+    "PingTarget",
     "VPNConnection",
     "VPNProvider",
     "_helper_slot",

@@ -2,7 +2,7 @@ import subprocess
 from pathlib import Path
 
 from providers.common.helper import read_config_text
-from providers.common.types import ActionResult, VPNConnection, VPNProvider
+from providers.common.types import ActionResult, PingTarget, VPNConnection, VPNProvider
 
 
 def run_helper(*args, **kwargs):
@@ -39,6 +39,11 @@ def _quick_connect_error(output: str) -> str:
 
 
 def _run(cmd: list[str]) -> tuple[int, str]:
+    from providers import wireguard as wg  # noqa: PLC0415 — tests patch wireguard._run
+
+    remote = wg._run
+    if remote is not _run:
+        return remote(cmd)
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     output = (result.stdout + result.stderr).strip()
     return result.returncode, output
@@ -62,7 +67,27 @@ def _active_interfaces(link_type: str = "wireguard") -> list[str]:
 
 
 def _net_iface_exists(name: str) -> bool:
+    from providers import wireguard as wg  # noqa: PLC0415 — tests patch wireguard._net_iface_exists
+
+    remote = wg._net_iface_exists
+    if remote is not _net_iface_exists:
+        return remote(name)
     return Path(f"/sys/class/net/{name}").exists()
+
+
+def _awg_interface_names() -> set[str]:
+    """Userspace awg-go may not show up under `ip link show type amneziawg`."""
+    from providers import wireguard as wg  # noqa: PLC0415 — tests patch wireguard.shutil
+
+    remote = wg._awg_interface_names
+    if remote is not _awg_interface_names:
+        return remote()
+    if wg.shutil.which("awg") is None:
+        return set()
+    code, out = _run(["awg", "show", "interfaces"])
+    if code != 0:
+        return set()
+    return {ln.strip() for ln in out.splitlines() if ln.strip()}
 
 
 def _split_host_port(value: str, default_port: int) -> tuple[str, int] | None:
@@ -123,6 +148,32 @@ def _has_dns_directive(path: Path) -> bool:
     return False
 
 
+def _runtime_endpoint(iface: str, *, awg: bool) -> tuple[str, int] | None:
+    """Live [Peer] endpoint from `wg show` / `awg show` when the profile file is gone."""
+    from providers import wireguard as wg  # noqa: PLC0415 — tests patch wireguard.shutil
+
+    remote = wg._runtime_endpoint
+    if remote is not _runtime_endpoint:
+        return remote(iface, awg=awg)
+    cmd = ["awg" if awg else "wg", "show", iface, "endpoints"]
+    if wg.shutil.which(cmd[0]) is None:
+        return None
+    code, out = _run(cmd)
+    if code != 0:
+        return None
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        ep = parts[1].strip()
+        if not ep or ep == "(none)":
+            continue
+        parsed = _split_host_port(ep, 51820)
+        if parsed:
+            return parsed
+    return None
+
+
 def wg_endpoint(conf_path) -> tuple[str, int] | None:
     """(host, port) of a config's [Peer] Endpoint, None when absent/garbled."""
     text = read_config_text(conf_path)
@@ -171,21 +222,19 @@ class WireGuardProvider(VPNProvider):
         active = set(_active_interfaces(self.link_type)) | self._extra_active()
         result: list[VPNConnection] = []
 
-        if not self.config_dir.exists():
-            return result
-
-        for conf in sorted(self.config_dir.glob("*.conf")):
-            profile = conf.stem
-            is_active = profile in active
-            result.append(
-                VPNConnection(
-                    name=profile,
-                    provider=self.name,
-                    active=is_active,
-                    interface=profile if is_active else None,
-                    config_path=str(conf),
+        if self.config_dir.exists():
+            for conf in sorted(self.config_dir.glob("*.conf")):
+                profile = conf.stem
+                is_active = profile in active
+                result.append(
+                    VPNConnection(
+                        name=profile,
+                        provider=self.name,
+                        active=is_active,
+                        interface=profile if is_active else None,
+                        config_path=str(conf),
+                    )
                 )
-            )
 
         # Include active interfaces that have no config file of ours (edge
         # case) — except ones claimed by another provider's config dir:
@@ -202,14 +251,18 @@ class WireGuardProvider(VPNProvider):
 
         return result
 
-    def ping_targets(self) -> list[tuple[str, str, int]]:
-        targets = []
+    def ping_targets(self) -> list[PingTarget]:
+        """(name, host, port[, icmp_only]). WG endpoints are UDP-only — ping uses ICMP."""
+        awg = self.quick_bin == "awg-quick"
+        targets: list[PingTarget] = []
         for conn in self.connections():
-            if not conn.config_path:
-                continue
-            ep = wg_endpoint(conn.config_path)
+            ep = None
+            if conn.config_path:
+                ep = wg_endpoint(conn.config_path)
+            elif conn.active:
+                ep = _runtime_endpoint(conn.interface or conn.name, awg=awg)
             if ep:
-                targets.append((conn.name, ep[0], ep[1]))
+                targets.append((conn.name, ep[0], ep[1], True))
         return targets
 
     def connect(self, connection: VPNConnection) -> ActionResult:
@@ -307,7 +360,13 @@ class AmneziaWGProvider(WireGuardProvider):
     def _extra_active(self) -> set[str]:
         """Userspace awg-go builds don't register under the kernel link
         type (no amneziawg netlink family) — fall back to checking whether
-        each configured profile's interface node exists at all."""
-        if not self.config_dir.exists():
-            return set()
-        return {p.stem for p in self.config_dir.glob("*.conf") if _net_iface_exists(p.stem)}
+        each configured profile's interface node exists at all, and anything
+        `awg show interfaces` still reports (orphan after a deleted profile)."""
+        from_conf = set()
+        if self.config_dir.exists():
+            from_conf = {
+                p.stem for p in self.config_dir.glob("*.conf") if _net_iface_exists(p.stem)
+            }
+        if _active_interfaces(self.link_type):
+            return from_conf
+        return from_conf | _awg_interface_names()

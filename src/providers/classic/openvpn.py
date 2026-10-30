@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from providers.common.helper import read_config_text
-from providers.common.types import ActionResult, VPNConnection, VPNProvider
+from providers.common.types import ActionResult, PingTarget, VPNConnection, VPNProvider
 
 
 def run_helper(*args, **kwargs):
@@ -103,8 +103,8 @@ class OpenVPNProvider(VPNProvider):
 
         return result
 
-    def ping_targets(self) -> list[tuple[str, str, int]]:
-        targets = []
+    def ping_targets(self) -> list[PingTarget]:
+        targets: list[PingTarget] = []
         for conn in self.connections():
             if not conn.config_path:
                 continue

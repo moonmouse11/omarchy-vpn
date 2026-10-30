@@ -275,7 +275,11 @@ def _window_tools(active: list[VPNConnection], cfg) -> list[str]:
     itself can't be), the kill switch only where it works."""
     from app.tools import TOOLS  # noqa: PLC0415 — avoid import cycle with tools → status
 
-    keys = [k for k, _label, _fn in TOOLS if k == "settings" or cfg.tool_visible(k)]
+    keys = [
+        k
+        for k, _label, _fn in TOOLS
+        if k == "settings" or (k != "refresh_all" and cfg.tool_visible(k))
+    ]
     if cfg.tool_visible("killswitch") and not _killswitch_unsupported(active):
         keys.append("killswitch")
     return keys

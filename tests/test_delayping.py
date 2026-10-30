@@ -213,7 +213,7 @@ def test_run_measures_every_server_and_merges_into_the_cache(sweep, monkeypatch)
         return None if cfg["n"] == 2 else 100.0 * cfg["n"]
 
     monkeypatch.setattr(delayping, "probe", fake_probe)
-    monkeypatch.setattr(happmeta, "measure_ping", lambda host, port: 12.0)
+    monkeypatch.setattr(happmeta, "measure_ping", lambda host, port, **kw: 12.0)
     xray = [("DE", {"n": 1}), ("NL", {"n": 2}), ("PL", {"n": 3})]
     results = delayping.run(xray, [("home", "203.0.113.5", 51820)], direct_allowed=True)
     assert {k: v["ms"] for k, v in results.items()} == {
@@ -231,7 +231,7 @@ def test_run_measures_every_server_and_merges_into_the_cache(sweep, monkeypatch)
 
 
 def test_run_marks_direct_targets_skipped_when_not_allowed(sweep, monkeypatch):
-    monkeypatch.setattr(happmeta, "measure_ping", lambda h, p: pytest.fail("dropped anyway"))
+    monkeypatch.setattr(happmeta, "measure_ping", lambda h, p, **kw: pytest.fail("dropped anyway"))
     results = delayping.run([], [("home", "203.0.113.5", 51820)], direct_allowed=False)
     assert results["home"]["skipped"] is True
     assert happmeta.ping_status("home") == ("skipped", None)

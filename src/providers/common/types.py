@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+type PingTarget = tuple[str, str, int] | tuple[str, str, int, bool]
+
 
 @dataclass
 class VPNConnection:
@@ -53,8 +55,8 @@ class VPNProvider(ABC):
         """Import a config file and register it as a new connection"""
         ...
 
-    def ping_targets(self) -> list[tuple[str, str, int]]:
-        """(connection name, host, port) for availability/ping measurement."""
+    def ping_targets(self) -> list[PingTarget]:
+        """(connection name, host, port[, icmp_only]) for ping measurement."""
         return []
 
     def toggle_autostart(self, connection: VPNConnection) -> ActionResult:

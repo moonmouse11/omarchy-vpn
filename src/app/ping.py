@@ -10,6 +10,7 @@ import logutil
 from app.helpers import refresh_bar
 from app.registry import _provider_pool
 from app.switch import _try_flock
+from providers.base import PingTarget
 from providers.keys import KeysProvider
 
 
@@ -21,7 +22,7 @@ def _ping_lock() -> Path:
 
 def _ping_scope_targets(
     scope: dict,
-) -> tuple[list[tuple[str, dict]], list[tuple[str, str, int]]]:
+) -> tuple[list[tuple[str, dict]], list[PingTarget]]:
     """(xray targets, direct targets) for a ping scope: {} = every server,
     {"group": <panel group id>}, {"server": [provider, name, subscription id]}.
     Happ/Keys go through xray (delayping); the rest keep the direct TCP connect."""
@@ -33,7 +34,7 @@ def _ping_scope_targets(
     else:
         pname, name, sub_id = group, None, None
     xray: list[tuple[str, dict]] = []
-    direct: list[tuple[str, str, int]] = []
+    direct: list[PingTarget] = []
     for provider in _provider_pool():
         if pname and provider.name != pname:
             continue

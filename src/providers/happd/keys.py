@@ -30,7 +30,7 @@ from pathlib import Path
 import fsutil
 import happmeta
 import logutil
-from providers.common.types import ActionResult, VPNConnection, VPNProvider
+from providers.common.types import ActionResult, PingTarget, VPNConnection, VPNProvider
 
 from . import happ as _happ_impl
 
@@ -618,7 +618,7 @@ class KeysProvider(VPNProvider):
             for s in servers
         ]
 
-    def ping_targets(self) -> list[tuple[str, str, int]]:
+    def ping_targets(self) -> list[PingTarget]:
         pub = _pub()
         return [
             (s["name"], s["host"], s["port"])

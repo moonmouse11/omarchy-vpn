@@ -19,6 +19,7 @@ Column {
   // tabs/sidebar with one protocol picked: its "+ Import" sits by Ping
   readonly property var pickedProvider: inWindow && host.rowsLayout !== "tree" && host.providerFilter !== ""
     ? host.providerInfo(host.providerFilter) : null
+  readonly property bool showHappRefresh: list.host.providerFilter === "Happ"
 
   spacing: Style.space(12)
 
@@ -66,10 +67,19 @@ Column {
       fontFamily: list.host.fontFamily
     }
 
+    HappSubRefresh {
+      id: happRefreshButton
+      visible: list.showHappRefresh
+      host: list.host
+      anchors.right: pingButton.left
+      anchors.rightMargin: Style.space(12)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
     Text {
       id: headerImport
       visible: !!list.pickedProvider && !!list.pickedProvider.importer
-      anchors.right: pingButton.left
+      anchors.right: (happRefreshButton.visible ? happRefreshButton.left : pingButton.left)
       anchors.rightMargin: Style.space(12)
       anchors.verticalCenter: parent.verticalCenter
       textFormat: Text.PlainText
@@ -93,7 +103,7 @@ Column {
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
       textFormat: Text.PlainText
-      text: " Ping"  // nf-fa-refresh
+      text: ""  // nf-fa-refresh
       color: pingMouse.containsMouse ? list.host.foreground : list.host.dim
       font.family: list.host.fontFamily
       font.pixelSize: Style.font.caption

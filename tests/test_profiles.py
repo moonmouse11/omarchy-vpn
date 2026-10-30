@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import config
 import vpn_manager
 from providers.base import ActionResult, VPNConnection
 
@@ -52,6 +53,17 @@ def _chooser(monkeypatch, rc, out="", err=""):
 
     monkeypatch.setattr(vpn_manager.subprocess, "run", run)
     return calls
+
+
+def test_import_resolves_a_provider_hidden_from_the_server_list(wg, monkeypatch):
+    """Settings can hide a protocol from Locations; import/profile still use it."""
+    monkeypatch.setattr(
+        vpn_manager.config,
+        "load_config",
+        lambda: config.Config(providers={"wireguard": False}),
+    )
+    assert vpn_manager.run_import("WireGuard", "/tmp/home.conf").success
+    assert wg.imported == ["/tmp/home.conf"]
 
 
 def test_import_without_a_path_asks_the_file_chooser(wg, monkeypatch):

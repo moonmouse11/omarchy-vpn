@@ -1,7 +1,8 @@
 """Lookup helpers shared by tools and servers."""
 
-from app.registry import visible_providers
+from app.registry import _provider_pool
 
 
 def provider_named(name: str):
-    return next((p for p in visible_providers() if p.name == name), None)
+    """Every registered provider — including ones hidden from the server list."""
+    return next((p for p in _provider_pool() if p.name == name), None)

@@ -10,7 +10,8 @@ import quickconnect
 from app.checks import _name_flag_country
 from app.helpers import notify, refresh_bar
 from app.ping import _ping_worker_alive
-from app.registry import _provider_pool, visible_providers
+from app.providers import provider_named as _provider_named
+from app.registry import visible_providers
 from app.switch import guarded_connect, guarded_disconnect
 from providers.base import ActionResult, VPNConnection
 
@@ -299,10 +300,6 @@ def _quick_connect(groups: list[dict]) -> dict:
         "recent": [c for c in recent if (c["provider"], c["name"], c["sub_id"]) not in starred],
         "last": recent[0] if recent else None,
     }
-
-
-def _provider_named(name: str):
-    return next((p for p in _provider_pool() if p.name == name), None)
 
 
 def panel_connect(provider_name: str, name: str, sub_id: str | None = None) -> ActionResult:

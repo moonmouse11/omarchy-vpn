@@ -11,7 +11,6 @@ import ipv6guard
 import killswitch
 import logutil
 import providers.happd.happ as happ_provider
-import settings_tui
 from app.helpers import notify
 from app.registry import _provider_pool, active_connections
 from providers.base import (
@@ -627,6 +626,3 @@ def _killswitch_toggle(on: bool) -> ActionResult:
         return killswitch.set_mode(True, apply=False)  # nothing to protect yet
     ips, ifaces = _killswitch_all_targets()
     return killswitch.set_mode(True, extra_ips=ips, ifaces=ifaces)
-
-
-KILLSWITCH_ICON = settings_tui.KILLSWITCH_ICON

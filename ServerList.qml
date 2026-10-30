@@ -19,14 +19,6 @@ Column {
   // tabs/sidebar with one protocol picked: its "+ Import" sits by Ping
   readonly property var pickedProvider: inWindow && host.rowsLayout !== "tree" && host.providerFilter !== ""
     ? host.providerInfo(host.providerFilter) : null
-  readonly property bool treeLayout: list.host.rowsLayout === "tree"
-  readonly property bool showHappRefresh: treeLayout
-    ? list.host.providerInfo("Happ") !== null
-    : list.host.providerFilter === "Happ"
-  readonly property bool showIncyRefresh: treeLayout
-    ? list.host.providerInfo("INCY") !== null
-    : list.host.providerFilter === "INCY"
-  readonly property bool headerRefreshVisible: showHappRefresh || showIncyRefresh
 
   spacing: Style.space(12)
 
@@ -74,29 +66,10 @@ Column {
       fontFamily: list.host.fontFamily
     }
 
-    Row {
-      id: headerRefreshRow
-      spacing: Style.space(12)
-      anchors.right: pingButton.left
-      anchors.rightMargin: Style.space(12)
-      anchors.verticalCenter: parent.verticalCenter
-
-      HappSubRefresh {
-        visible: list.showIncyRefresh
-        host: list.host
-        provider: "INCY"
-      }
-      HappSubRefresh {
-        visible: list.showHappRefresh
-        host: list.host
-        provider: "Happ"
-      }
-    }
-
     Text {
       id: headerImport
       visible: !!list.pickedProvider && !!list.pickedProvider.importer
-      anchors.right: list.headerRefreshVisible ? headerRefreshRow.left : pingButton.left
+      anchors.right: pingButton.left
       anchors.rightMargin: Style.space(12)
       anchors.verticalCenter: parent.verticalCenter
       textFormat: Text.PlainText

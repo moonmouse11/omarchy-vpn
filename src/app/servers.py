@@ -347,17 +347,11 @@ def panel_connect(provider_name: str, name: str, sub_id: str | None = None) -> A
         )
     elif provider.name == "INCY" and sub_id:
         found = next(
-            (
-                c
-                for c in provider.connections()
-                if c.name == name and c.subscription_id == sub_id
-            ),
+            (c for c in provider.connections() if c.name == name and c.subscription_id == sub_id),
             None,
         )
         if found is None:
-            return ActionResult(
-                False, f"{provider_name}: {name} not found in that subscription"
-            )
+            return ActionResult(False, f"{provider_name}: {name} not found in that subscription")
         conn = found
     else:
         found = next((c for c in provider.connections() if c.name == name), None)

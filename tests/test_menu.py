@@ -1132,9 +1132,12 @@ def test_manual_subscription_refresh_always_reports(monkeypatch):
     monkeypatch.setattr(vpn_manager.happmeta, "update_subscriptions", lambda force: {})
     monkeypatch.setattr(vpn_manager, "subscription_report", lambda failed: ("T", "B"))
     sent = []
+    refreshed = []
     monkeypatch.setattr(vpn_manager, "notify", lambda title, msg, **kw: sent.append((title, msg)))
+    monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: refreshed.append(True))
     vpn_manager.main()
     assert sent == [("T", "B")]
+    assert refreshed == [True]
 
 
 def _ks_env(monkeypatch, tmp_path, *, lockdown=True, enabled=True):

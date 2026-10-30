@@ -129,6 +129,21 @@ def test_orphan_active_iface_excluded_if_claimed_by_other_provider(tmp_path, mon
     assert conns[0].name == "foo" and conns[0].active
 
 
+def test_orphan_listed_when_config_dir_missing(tmp_path, monkeypatch):
+    from providers import wireguard
+    from providers.wireguard import WireGuardProvider
+
+    monkeypatch.setattr(wireguard, "_active_interfaces", lambda *_: ["orphan"])
+    wg = WireGuardProvider()
+    wg.config_dir = tmp_path / "missing"
+    wg.other_config_dirs = ()
+    conns = wg.connections()
+    assert len(conns) == 1
+    assert conns[0].name == "orphan"
+    assert conns[0].active
+    assert conns[0].config_path is None
+
+
 def test_amneziawg_uses_awg_quick(monkeypatch):
     from providers.wireguard import AmneziaWGProvider
 

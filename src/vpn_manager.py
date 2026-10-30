@@ -1796,7 +1796,7 @@ def _server_row(entry: dict) -> dict:
         ping = f"{ms:.0f} ms"
     if ms is not None and state == "stale":
         ping = "~" + ping  # an old number; an old timeout is just dimmed
-    return {
+    row = {
         "name": entry["name"],
         "active": bool(entry["active"]),
         "protocol": entry.get("protocol", ""),
@@ -1807,6 +1807,9 @@ def _server_row(entry: dict) -> dict:
         # the flag's country code, so the filter finds "Польша" by "pl"
         "country": (_name_flag_country(entry["name"]) or "").lower(),
     }
+    if entry.get("orphan"):
+        row["orphan"] = True
+    return row
 
 
 class PingState(NamedTuple):
@@ -1931,7 +1934,14 @@ def server_list() -> dict:
                 logutil.log(f"server list: {provider.name} skipped: {e!r}")
                 conns = []
             if conns:
-                entries = [{"name": c.name, "active": c.active} for c in conns]
+                entries = [
+                    {
+                        "name": c.name,
+                        "active": c.active,
+                        "orphan": c.active and not c.config_path,
+                    }
+                    for c in conns
+                ]
                 groups.append(
                     _server_group(
                         provider.name, provider.name, provider.name, entries, pinging=pinging
@@ -2313,6 +2323,7 @@ def main():
         # report every provider — a silent failure looked like success
         failed = happmeta.update_subscriptions(force=True)
         notify(*subscription_report(failed))
+        refresh_bar()
     elif args.happ_keeper is not None:
         run_happ_keeper(*args.happ_keeper[:2])
     elif args.keys_keeper is not None:

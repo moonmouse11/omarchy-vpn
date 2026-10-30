@@ -134,6 +134,15 @@ Panel {
   // Two short lines under the hero: one long line got cut off at the
   // panel's width once the session totals joined the speed.
   readonly property string exitLine: panelData.exit_ip ? "Exit " + panelData.exit_ip : ""
+  // Plain address for copy (fields.exit_ip); panel exit_ip includes the flag emoji.
+  readonly property string exitIpCopy: {
+    var ip = String((panelData.fields || {}).exit_ip || "")
+    if (ip !== "") return ip
+    var shown = String(panelData.exit_ip || "").trim()
+    if (shown === "") return ""
+    var m = shown.match(/^(\S+)/)
+    return m ? m[1] : ""
+  }
   readonly property string trafficLine: {
     var parts = []
     if (panelData.rate) parts.push(panelData.rate)
@@ -323,6 +332,12 @@ Panel {
     Quickshell.execDetached(["python3", root.backend].concat(args))
   }
 
+  function copyToClipboard(value) {
+    var text = String(value || "")
+    if (text === "") return
+    Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(text) + " | wl-copy"])
+  }
+
   // A group's or a server's ping (click on its ping, its group button, `p`).
   function pingRow(row) {
     if (!row || row.kind === "provider") return
@@ -463,6 +478,12 @@ Panel {
 
   function run(flag) {
     Quickshell.execDetached(["python3", root.backend, flag])
+  }
+
+  function refreshHappSubscriptions() {
+    var keys = panelData.tools
+    if (keys instanceof Array && keys.indexOf("refresh_all") === -1) return
+    runArgs(["--tool", "refresh_all"])
   }
 
   // sudo asks in the terminal; install.sh restarts the shell when it's done
@@ -818,7 +839,11 @@ Panel {
         if (k === "t") root.togglePower()
         else if (k === "m") root.openWindow()
         else if (k === "d") root.runDnsTest()
-        else if (k === "r") { root.refresh(); root.loadServers() }
+        else if (k === "r") {
+          root.refreshHappSubscriptions()
+          root.refresh()
+          root.loadServers()
+        }
         else if (k === "f") root.cycleLabelFormat()
         else if (k === "p" && root.serverCursor >= 0) root.pingRow(root.serverRows[root.serverCursor])
         else if (k === "s" && root.serverCursor >= 0) root.toggleFavourite(root.serverRows[root.serverCursor])
@@ -930,7 +955,7 @@ Panel {
           visible: root.panelData.key_hints !== false
           textFormat: Text.PlainText
           width: parent.width
-          text: "j/k move · enter connect · p ping · s star · / filter · t toggle · m window · d DNS · f label · r refresh"
+          text: "j/k move · enter connect · p ping · s star · / filter · t toggle · m window · d DNS · f label · r refresh subs"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

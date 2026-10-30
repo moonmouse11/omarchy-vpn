@@ -265,8 +265,15 @@ cmd_up() {
 
 cmd_down() {
     if [[ $1 != ovpn ]]; then
-        run "$1-quick" down "$2"
-        return
+        if run "$1-quick" down "$2"; then
+            return 0
+        fi
+        # profile config may be gone while the link is still up
+        if ip link show dev "$2" &>/dev/null; then
+            run ip link delete dev "$2"
+            return 0
+        fi
+        return 1
     fi
     local pid_file=$PID_DIR/client-$2.pid pid comm
     [[ -f $pid_file ]] || die "not running: $2"

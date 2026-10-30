@@ -42,6 +42,16 @@ def _active_interfaces(link_type: str = "wireguard") -> list[str]:
     return interfaces
 
 
+def _awg_interface_names() -> set[str]:
+    """Userspace awg-go may not show up under `ip link show type amneziawg`."""
+    if shutil.which("awg") is None:
+        return set()
+    code, out = _run(["awg", "show", "interfaces"])
+    if code != 0:
+        return set()
+    return {ln.strip() for ln in out.splitlines() if ln.strip()}
+
+
 def _net_iface_exists(name: str) -> bool:
     return Path(f"/sys/class/net/{name}").exists()
 
@@ -152,21 +162,19 @@ class WireGuardProvider(VPNProvider):
         active = set(_active_interfaces(self.link_type)) | self._extra_active()
         result: list[VPNConnection] = []
 
-        if not self.config_dir.exists():
-            return result
-
-        for conf in sorted(self.config_dir.glob("*.conf")):
-            profile = conf.stem
-            is_active = profile in active
-            result.append(
-                VPNConnection(
-                    name=profile,
-                    provider=self.name,
-                    active=is_active,
-                    interface=profile if is_active else None,
-                    config_path=str(conf),
+        if self.config_dir.exists():
+            for conf in sorted(self.config_dir.glob("*.conf")):
+                profile = conf.stem
+                is_active = profile in active
+                result.append(
+                    VPNConnection(
+                        name=profile,
+                        provider=self.name,
+                        active=is_active,
+                        interface=profile if is_active else None,
+                        config_path=str(conf),
+                    )
                 )
-            )
 
         # Include active interfaces that have no config file of ours (edge
         # case) — except ones claimed by another provider's config dir:
@@ -288,7 +296,11 @@ class AmneziaWGProvider(WireGuardProvider):
     def _extra_active(self) -> set[str]:
         """Userspace awg-go builds don't register under the kernel link
         type (no amneziawg netlink family) — fall back to checking whether
-        each configured profile's interface node exists at all."""
-        if not self.config_dir.exists():
-            return set()
-        return {p.stem for p in self.config_dir.glob("*.conf") if _net_iface_exists(p.stem)}
+        each configured profile's interface node exists at all, and anything
+        `awg show interfaces` still reports (orphan after a deleted profile)."""
+        from_conf = set()
+        if self.config_dir.exists():
+            from_conf = {
+                p.stem for p in self.config_dir.glob("*.conf") if _net_iface_exists(p.stem)
+            }
+        return from_conf | _awg_interface_names()

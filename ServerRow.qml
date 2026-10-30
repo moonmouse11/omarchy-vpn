@@ -27,6 +27,7 @@ CursorSurface {
     if (isProvider) return row.provider.name
     if (isGroup) return row.group.title
     if (isAuto) return "Auto — best ping · " + server.name
+    if (server && server.orphan) return server.name + " · no profile"
     return server.name
   }
   readonly property bool pinging: host.rowPinging(row)

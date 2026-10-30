@@ -50,6 +50,11 @@ def test_ping_status_fresh_stale_none(env):
     assert happmeta.ping_status("nope") == ("none", None)
 
 
+def test_server_row_marks_orphan_profiles(env):
+    row = vpn_manager._server_row({"name": "orphan", "active": True, "orphan": True})
+    assert row["orphan"] is True
+
+
 @pytest.mark.parametrize(
     ("entry", "ping", "stale"),
     [

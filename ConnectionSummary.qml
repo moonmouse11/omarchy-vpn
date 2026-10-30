@@ -52,14 +52,35 @@ Column {
     }
   }
 
-  Text {
-    textFormat: Text.PlainText
-    visible: text !== ""
+  Item {
     width: parent.width
-    text: summary.host.exitLine
-    color: summary.host.dim
-    font.family: summary.host.fontFamily
-    font.pixelSize: Style.font.bodySmall
+    implicitHeight: exitText.implicitHeight
+    visible: exitText.text !== ""
+
+    Text {
+      id: exitText
+      textFormat: Text.PlainText
+      width: parent.width
+      text: summary.host.exitLine
+      color: exitMouse.enabled && exitMouse.containsMouse ? summary.host.foreground : summary.host.dim
+      font.family: summary.host.fontFamily
+      font.pixelSize: Style.font.bodySmall
+    }
+
+    MouseArea {
+      id: exitMouse
+      anchors.fill: parent
+      enabled: summary.host.exitIpCopy !== ""
+      hoverEnabled: enabled
+      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onClicked: summary.host.copyToClipboard(summary.host.exitIpCopy)
+    }
+
+    PanelToolTip {
+      visible: exitMouse.enabled && exitMouse.containsMouse
+      text: "Copy " + summary.host.exitIpCopy
+      fontFamily: summary.host.fontFamily
+    }
   }
 
   Text {

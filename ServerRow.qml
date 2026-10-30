@@ -161,7 +161,7 @@ CursorSurface {
       id: happRefresh
       visible: serverRow.isHappProvider
       textFormat: Text.PlainText
-      text: " Refresh subs"  // nf-fa-refresh
+      text: ""  // nf-fa-refresh
       color: happRefreshMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
       font.family: serverRow.host.fontFamily
       font.pixelSize: Style.font.caption

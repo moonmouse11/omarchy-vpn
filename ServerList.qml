@@ -74,7 +74,7 @@ Column {
       anchors.rightMargin: Style.space(12)
       anchors.verticalCenter: parent.verticalCenter
       textFormat: Text.PlainText
-      text: " Refresh subs"  // nf-fa-refresh
+      text: ""  // nf-fa-refresh
       color: happRefreshMouse.containsMouse ? list.host.foreground : list.host.dim
       font.family: list.host.fontFamily
       font.pixelSize: Style.font.caption
@@ -119,7 +119,7 @@ Column {
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
       textFormat: Text.PlainText
-      text: " Ping"  // nf-fa-refresh
+      text: ""  // nf-fa-refresh
       color: pingMouse.containsMouse ? list.host.foreground : list.host.dim
       font.family: list.host.fontFamily
       font.pixelSize: Style.font.caption

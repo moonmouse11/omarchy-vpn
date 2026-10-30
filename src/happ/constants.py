@@ -21,7 +21,6 @@ MACHINE_ID_FILES = (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id"))
 
 SUB_MAX_AGE = 3600  # seconds
 SUBS_REFRESH_RETRY = 60  # seconds, avoid spawning a worker per status tick when the tunnel is down
-MANAGER = Path(__file__).resolve().parent.parent / "vpn_manager.py"
 
 # Local inbounds the GUI adds to every subscription config (from a capture).
 DEFAULT_INBOUNDS = [

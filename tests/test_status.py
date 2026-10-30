@@ -2,7 +2,7 @@ import pytest
 
 import config
 import vpn_manager
-from happ.constants import MANAGER
+from app.spawn import MANAGER
 from providers.base import ActionResult, VPNConnection
 
 

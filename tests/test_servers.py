@@ -245,6 +245,20 @@ def test_panel_connect_other_provider_uses_its_connection(monkeypatch):
     assert not vpn_manager.panel_connect("Nope", "home").success
 
 
+def test_panel_connect_resolves_a_provider_hidden_from_the_server_list(monkeypatch):
+    """Settings can hide a protocol from Locations; connect still uses it."""
+    calls = _guarded(monkeypatch)
+    home = VPNConnection(name="home", provider="WireGuard", active=False, config_path="/x")
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("WireGuard", [home])])
+    monkeypatch.setattr(
+        vpn_manager.config,
+        "load_config",
+        lambda: config.Config(providers={"wireguard": False}),
+    )
+    assert vpn_manager.panel_connect("WireGuard", "home").success
+    assert calls == [("up", "WireGuard", home)]
+
+
 def test_panel_disconnect_matches_by_name_or_any_happ(monkeypatch):
     calls = _guarded(monkeypatch)
     happ_conn = VPNConnection(name="Germany", provider="Happ", active=True)  # GUI name, no emoji

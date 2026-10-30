@@ -10,6 +10,7 @@ import urllib
 from pathlib import Path
 
 import lazyimports
+from app.spawn import MANAGER
 from happ import *
 from happ.constants import (
     CAPTURED_PROVIDERS,
@@ -24,7 +25,6 @@ from happ.constants import (
     LOCAL_ROUTING_RULES,
     LOG_FILE,
     MACHINE_ID_FILES,
-    MANAGER,
     NON_PROXY_PROTOCOLS,
     PROVIDERS_CACHE,
     ROUTING_FILE,

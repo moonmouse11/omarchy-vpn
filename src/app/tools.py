@@ -14,9 +14,9 @@ from app.checks import run_check
 from app.helpers import notify, refresh_bar, spawn_manager
 from app.provider_lookup import provider_named as _provider_named
 from app.registry import _provider_pool, active_connections
+from app.spawn import MANAGER
 from app.status import _killswitch_unsupported
 from app.switch import _killswitch_toggle, _sync_ipv6_guard, sync_ipv6_boot
-from happ.constants import MANAGER
 from providers.base import ActionResult
 
 

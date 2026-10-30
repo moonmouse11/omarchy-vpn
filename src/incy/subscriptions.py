@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -42,7 +43,10 @@ def subscription_name(sub_id: str) -> str:
     try:
         conn = sqlite3.connect(f"file:{INCY_DB}?mode=ro", uri=True, timeout=1.0)
         row = conn.execute(
-            "SELECT COALESCE(NULLIF(customName, ''), name) FROM subscriptions WHERE id = ?",
+            """
+            SELECT COALESCE(NULLIF(profileName, ''), NULLIF(customName, ''), name)
+            FROM subscriptions WHERE id = ?
+            """,
             (sub_id,),
         ).fetchone()
         conn.close()
@@ -109,5 +113,5 @@ def all_catalog_entries(*, allow_fetch: bool = True) -> list[dict]:
             servers = _servers_from_cache(sub_id)
         for cfg in servers:
             if str(cfg.get("remarks") or ""):
-                out.append(catalog_entry(sub_id, cfg))
+                out.append(catalog_entry(sub_id, cfg))  # noqa: PERF401 — small lists
     return out

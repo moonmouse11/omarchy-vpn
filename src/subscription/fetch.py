@@ -6,29 +6,29 @@ import base64
 import contextlib
 import json
 import time
+import urllib
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError
 
 import fsutil
+import lazyimports  # noqa: F401 — lazy urllib.request
 from happ.constants import SUB_MAX_AGE
 from happ.subscriptions import is_stub_server
 
 
 def download_subscription(url: str, headers: dict[str, str]) -> tuple[object, dict | None]:
     """(parsed JSON body, panel info) — retried once on network failure."""
-    import lazyimports  # noqa: PLC0415 — urllib must stay lazy on import
-
-    ureq = lazyimports.urllib.request
-    req = ureq.Request(url, headers=headers)
+    if not url.startswith(("https://", "http://")):
+        raise ValueError("not an http(s) url")
+    req = urllib.request.Request(url, headers=headers)  # noqa: S310 — scheme checked above
     timeout = 15
     attempts = 2
     for attempt in range(attempts):
         try:
-            with ureq.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
                 data = json.loads(resp.read().decode())
                 return data, _parse_sub_info(resp)
-        except ureq.HTTPError as e:
+        except urllib.error.HTTPError as e:
             if e.code < 500 or attempt + 1 == attempts:
                 raise
         except OSError:
@@ -62,7 +62,7 @@ def _parse_sub_info(resp) -> dict | None:
 
 
 def _fetch_error_reason(e: Exception) -> str:
-    if isinstance(e, HTTPError):
+    if isinstance(e, urllib.error.HTTPError):
         return f"HTTP {e.code}"
     reason = getattr(e, "reason", None)
     if isinstance(reason, Exception):

@@ -15,9 +15,6 @@ from pathlib import Path
 from incy.config import TUN_IFACE
 from providers.common.types import ActionResult, VPNConnection, VPNProvider
 
-INCY_BIN = Path("/opt/incy/bin/incy")
-INCY_XRAY = Path("/opt/incy/lib/app/resources/bin/xray")
-INCY_DB = Path.home() / ".local/share/incy/incy.db"
 INCY_CONFIG = Path.home() / ".config/incy"
 INCY_SOCK = Path.home() / ".cache/incy/incy.sock"
 IFACE_PREFIX = "incy-"
@@ -30,7 +27,7 @@ def _pub():
 
 
 def incy_installed() -> bool:
-    return INCY_BIN.is_file() and INCY_XRAY.is_file()
+    return _pub().incy_installed()
 
 
 def _read_keeper_state() -> dict | None:
@@ -42,7 +39,8 @@ def _read_keeper_state() -> dict | None:
 
 
 def _incy_xray_running() -> bool:
-    needle = str(INCY_XRAY)
+    xray = _pub().incy_xray()
+    needle = str(xray) if xray.is_file() else "resources/bin/xray"
     try:
         proc = subprocess.run(
             ["pgrep", "-af", "xray"],
@@ -61,16 +59,15 @@ def app_connected() -> bool:
     if not _incy_xray_running():
         return False
     state = _read_keeper_state()
-    if state and state.get("status") == "connected" and state.get("pid"):
-        return False
-    return True
+    return not (state and state.get("status") == "connected" and state.get("pid"))
 
 
 def _load_connections() -> list[VPNConnection]:
-    if not INCY_DB.is_file():
+    db = _pub().INCY_DB
+    if not db.is_file():
         return []
     try:
-        conn = sqlite3.connect(f"file:{INCY_DB}?mode=ro", uri=True, timeout=1.0)
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
     except sqlite3.Error:
         return []
     try:
@@ -79,7 +76,8 @@ def _load_connections() -> list[VPNConnection]:
             SELECT s.name,
                    s.subscriptionId,
                    s.isActive,
-                   COALESCE(NULLIF(sub.customName, ''), sub.name) AS sub_name
+                   COALESCE(NULLIF(sub.profileName, ''), NULLIF(sub.customName, ''),
+                             sub.name) AS sub_name
             FROM servers s
             LEFT JOIN subscriptions sub ON sub.id = s.subscriptionId
             WHERE sub.isEnabled IS NULL OR sub.isEnabled = 1
@@ -102,9 +100,14 @@ def _load_connections() -> list[VPNConnection]:
             if is_active:
                 active_name, active_sub = name, sub_id
                 break
+    else:
+        for name, sub_id, is_active, _sub_name in rows:
+            if is_active:
+                active_name, active_sub = name, sub_id
+                break
 
     conns: list[VPNConnection] = []
-    for name, sub_id, is_active, sub_name in rows:
+    for name, sub_id, _is_active, sub_name in rows:
         active = False
         if active_name:
             same_sub = not active_sub or sub_id == active_sub
@@ -124,6 +127,7 @@ def _load_connections() -> list[VPNConnection]:
 
 
 def incy_server_groups(provider: VPNProvider) -> tuple[list[dict], dict[str, list[dict]]]:
+    """Group by VPN vendor (profileName), like Happ's subscription provider_name."""
     groups: dict[str, list[dict]] = {}
     for c in provider.connections():
         title = c.subscription_name or "INCY"
@@ -146,11 +150,11 @@ class IncyProvider(VPNProvider):
         return _load_connections()
 
     def connect(self, connection: VPNConnection) -> ActionResult:
-        pub = _pub()
         if not incy_installed():
             return ActionResult(
                 False,
-                "INCY is not installed (pacman: incy-bin or incy-linux-x64.pkg.tar.zst from GitHub)",
+                "INCY xray not found — install incy-bin (AUR), the GitHub .pkg.tar.zst, "
+                "or set OMARCHY_VPN_INCY_ROOT to your INCY install",
             )
         if app_connected():
             return ActionResult(

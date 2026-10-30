@@ -235,7 +235,7 @@ Panel {
       rows.push({ kind: "provider", provider: prov, key: key, open: open, count: count, depth: 0 })
       if (!open) continue
       // a subscription is a level of its own; WireGuard's one group is the protocol itself
-      var nested = prov.name === "Happ"
+      var nested = prov.name === "Happ" || prov.name === "INCY"
       for (var n = 0; n < mine.length; n++) {
         var mg = mine[n].group
         pushGroup(rows, mg, mine[n].servers,

@@ -22,24 +22,27 @@ def _ping_lock() -> Path:
 
 def _ping_scope_targets(
     scope: dict,
-) -> tuple[list[tuple[str, dict]], list[PingTarget]]:
-    """(xray targets, direct targets) for a ping scope: {} = every server,
-    {"group": <panel group id>}, {"server": [provider, name, subscription id]}.
-    Happ/Keys go through xray (delayping); the rest keep the direct TCP connect."""
+) -> tuple[list[tuple[str, dict]], list[tuple[str, dict]], list[PingTarget]]:
+    """(happd xray targets, INCY xray targets, direct targets) for a ping scope."""
     group, server = scope.get("group"), scope.get("server")
     if server:
         pname, name, sub_id = [*server, "", "", ""][:3]
     elif group and str(group).startswith("happ:"):
         pname, name, sub_id = "Happ", None, str(group).split(":", 2)[1]
+    elif group and str(group).startswith("incy:"):
+        pname, name, sub_id = "INCY", None, str(group).split(":", 2)[1]
     else:
         pname, name, sub_id = group, None, None
     xray: list[tuple[str, dict]] = []
+    incy: list[tuple[str, dict]] = []
     direct: list[PingTarget] = []
     for provider in _provider_pool():
         if pname and provider.name != pname:
             continue
         if provider.name == "Happ":
             xray += delayping.happ_targets(sub_id if (group or server) else None, name)
+        elif provider.name == "INCY":
+            incy += delayping.incy_targets(sub_id if (group or server) else None, name)
         elif isinstance(provider, KeysProvider):
             xray += delayping.key_targets(provider._kind, name)
         else:
@@ -49,7 +52,7 @@ def _ping_scope_targets(
                 logutil.log(f"ping targets: {provider.name} skipped: {e!r}")
                 continue
             direct += [t for t in targets if name is None or t[0] == name]
-    return xray, direct
+    return xray, incy, direct
 
 
 def _try_lock(path: Path) -> int | None:
@@ -81,7 +84,7 @@ def _call_measure(scope: dict, kind: str) -> tuple[dict[str, dict], bool]:
 
 
 def _measure_body(scope: dict, kind: str) -> tuple[dict[str, dict], bool]:
-    xray, direct = _ping_scope_targets(scope)
+    xray, incy, direct = _ping_scope_targets(scope)
     direct_allowed = not direct or not killswitch.is_enabled()
     last = time.monotonic()
 
@@ -93,7 +96,9 @@ def _measure_body(scope: dict, kind: str) -> tuple[dict[str, dict], bool]:
             last = time.monotonic()
             refresh_bar()
 
-    results = delayping.run(xray, direct, direct_allowed, kind=kind, on_progress=on_progress)
+    results = delayping.run(
+        xray, direct, direct_allowed, kind=kind, on_progress=on_progress, xray_incy=incy
+    )
     return results, direct_allowed
 
 

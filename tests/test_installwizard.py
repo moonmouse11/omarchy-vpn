@@ -23,6 +23,7 @@ def bare(tmp_path, monkeypatch):
     monkeypatch.setattr(installwizard, "RESOLV_CONF", tmp_path / "resolv.conf")
     monkeypatch.setattr(installwizard, "_run", lambda cmd, ok_codes=(0,): "")
     monkeypatch.setattr(installwizard.shutil, "which", lambda b: None)
+    monkeypatch.setitem(installwizard._PROBES, "INCY", lambda: "")
     return tmp_path
 
 

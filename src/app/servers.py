@@ -243,7 +243,7 @@ def server_list() -> dict:
             if len(groups) == first and not happmeta.has_headers():
                 groups.append(_server_group("happ:no-headers", "Happ", HAPP_NO_HEADERS_TITLE, []))
         elif provider.name == "INCY":
-            from providers.incy import incy_server_groups
+            from providers.incy import incy_server_groups  # noqa: PLC0415 — optional provider
 
             _servers, incy_groups = incy_server_groups(provider)
             for pname, entries in incy_groups.items():

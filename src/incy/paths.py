@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shutil
 from functools import lru_cache
 from pathlib import Path
@@ -20,7 +19,7 @@ def _root_from_exec(raw: str) -> Path | None:
         return None
     # Desktop Entry: Exec=/…/opt/incy/bin/incy %u
     exe = line.split()[0] if line.split() else line
-    if exe.endswith("/bin/incy") or exe.endswith("\\bin\\incy"):
+    if exe.endswith(("/bin/incy", "\\bin\\incy")):
         return Path(exe).resolve().parent.parent
     return None
 

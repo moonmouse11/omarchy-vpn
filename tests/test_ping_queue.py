@@ -46,7 +46,7 @@ def pings(monkeypatch):
     monkeypatch.setattr(vpn_manager.killswitch, "is_enabled", lambda: False)
     monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
 
-    def fake_run(xray, direct, allowed, kind="all", on_progress=None):
+    def fake_run(xray, direct, allowed, kind="all", on_progress=None, **kwargs):
         runs.append(([k for k, _ in xray], [d[0] for d in direct], allowed, kind))
         return {k: {"ms": 100.0} for k, _ in xray} | {d[0]: {"ms": None} for d in direct}
 
@@ -79,8 +79,9 @@ def _hold_ping_lock():
     ],
 )
 def test_a_scope_measures_exactly_its_servers(pings, scope, xray, direct):
-    x, d = vpn_manager._ping_scope_targets(scope)
-    assert ([k for k, _ in x], [t[0] for t in d]) == (xray, direct)
+    x, incy, d = vpn_manager._ping_scope_targets(scope)
+    keys = [k for k, _ in x] + [k for k, _ in incy]
+    assert (keys, [t[0] for t in d]) == (xray, direct)
 
 
 @pytest.mark.parametrize(
@@ -290,7 +291,7 @@ def test_the_panel_reloads_at_most_every_two_seconds_while_results_come_in(pings
     refreshes = []
     monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: refreshes.append(1))
 
-    def fake_run(xray, direct, allowed, kind="all", on_progress=None):
+    def fake_run(xray, direct, allowed, kind="all", on_progress=None, **kwargs):
         for done, t in enumerate([0.5, 1.0, 2.5, 3.0, 4.6], start=1):
             now[0] = t
             on_progress(done, 6)

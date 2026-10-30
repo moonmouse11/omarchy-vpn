@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -13,7 +12,8 @@ from pathlib import Path
 import fsutil
 import logutil
 from incy.config import TUN_IFACE, resolve_config
-from incy.xray import INCY_XRAY, asset_dir, config_error
+from incy.paths import incy_xray
+from incy.xray import asset_dir, config_error
 
 KEEPER_STATE = Path.home() / ".local/state/vpn-manager/incy-keeper.json"
 XRAY_START_TIMEOUT = 25.0
@@ -57,7 +57,6 @@ def _wait_iface(deadline: float) -> bool:
 
 
 def run_keeper(server_name: str | None = None, provider_id: str | None = None) -> None:
-    pub = _pub()
     logutil.log(f"incy keeper: starting ({server_name or '?'})")
     state: dict = {"status": "connecting", "pid": os.getpid()}
     _write_state(state)
@@ -69,7 +68,10 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
         if cfg is None and provider_id:
             cfg = resolve_config(name, provider_id=provider_id, allow_fetch=True)
         if cfg is None:
-            state.update(status="error", message="no config for this server — refresh subscription cache")
+            state.update(
+                status="error",
+                message="no config for this server — refresh subscription cache",
+            )
             _write_own_state(state)
             return
         if reason := config_error(cfg):
@@ -84,10 +86,10 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
         os.close(fd)
         cfg_path = Path(cfg_path_str)
         cfg_path.write_text(json.dumps(cfg))
-        os.chmod(cfg_path, 0o600)
+        cfg_path.chmod(0o600)
 
         proc = subprocess.Popen(
-            [str(INCY_XRAY), "run", "-config", str(cfg_path)],
+            [str(incy_xray()), "run", "-config", str(cfg_path)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,

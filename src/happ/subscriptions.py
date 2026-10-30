@@ -10,7 +10,6 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import fsutil
 from app.spawn import spawn_manager
@@ -490,6 +489,8 @@ def update_subscriptions(force: bool = False) -> dict[str, str]:
             # one failing provider must not stop the others
             error = _fetch_subscription(sub_id, url, force)[1]
         except (OSError, AttributeError, ValueError) as e:
+            from subscription.fetch import _fetch_error_reason  # noqa: PLC0415
+
             error = _fetch_error_reason(e)
         if error:
             failed[prov.get("name") or sub_id] = error

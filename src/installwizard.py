@@ -10,6 +10,7 @@ import contextlib
 import getpass
 import json
 import shutil
+import sqlite3
 import subprocess
 import sys
 from abc import ABC, abstractmethod
@@ -33,7 +34,6 @@ XRAY_USERS = ("Happ", "VLESS", "Shadowsocks")  # keys run on Happ's xray
 
 AWG_DIR = AMNEZIA_DIR
 HAPPD = Path("/opt/happ/bin/happd")  # what the plugin talks to, not just the app
-INCY_BIN = Path("/opt/incy/bin/incy")
 SUB_CACHE_DIR = happmeta.SUB_CACHE_DIR
 KEYS_FILE = STORE
 RESOLV_CONF = Path("/etc/resolv.conf")
@@ -96,14 +96,12 @@ def _happ() -> str:
 
 
 def _incy() -> str:
-    if not INCY_BIN.is_file():
-        return ""
+    from incy.paths import incy_installed  # noqa: PLC0415 — detect after import
+
     db = Path.home() / ".local/share/incy/incy.db"
     if not db.is_file():
-        return "installed"
+        return "installed" if incy_installed() else ""
     try:
-        import sqlite3
-
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
         try:
             (n,) = conn.execute("SELECT COUNT(*) FROM subscriptions").fetchone()
@@ -202,6 +200,14 @@ def hints(cfg: Config, det: Detection, switched: bool = False) -> list[str]:
         lines.append(
             "Happ isn't installed (AUR: happ-desktop-bin) — Happ and VLESS/Shadowsocks keys need it"
         )
+    if cfg.provider_visible("INCY"):
+        from incy.paths import incy_installed  # noqa: PLC0415
+
+        if not incy_installed():
+            lines.append(
+                "INCY xray not found — install incy-bin (AUR) or the GitHub .pkg.tar.zst; "
+                "or set OMARCHY_VPN_INCY_ROOT to your INCY install directory"
+            )
     if resolved_mismatch(cfg, det) and not switched:
         lines.append(
             "DNS: /etc/resolv.conf isn't systemd-resolved's stub — "

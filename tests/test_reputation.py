@@ -1,6 +1,7 @@
 import json
 import time
 
+import app.spawn as spawn_mod
 import config
 import reputation
 from ipsources.base import IPFinding
@@ -26,7 +27,7 @@ def test_request_update_throttles(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise AssertionError("must not spawn while cache is fresh")
 
-    monkeypatch.setattr(reputation.subprocess, "Popen", boom)
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", boom)
     reputation.request_update()  # no raise
 
 
@@ -36,7 +37,7 @@ def test_request_update_spawns_when_stale(tmp_path, monkeypatch):
     p.write_text(json.dumps({"updated_at": time.time() - reputation.MAX_AGE - 1}))
 
     calls = []
-    monkeypatch.setattr(reputation.subprocess, "Popen", lambda cmd, **k: calls.append(cmd))
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", lambda cmd, **k: calls.append(cmd))
     reputation.request_update()
     assert calls and "--update-reputation" in calls[0]
 

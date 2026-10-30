@@ -2,6 +2,7 @@ import pytest
 
 import config
 import vpn_manager
+from app.spawn import MANAGER
 from providers.base import ActionResult, VPNConnection
 
 
@@ -24,6 +25,35 @@ def patch_env(
     monkeypatch.setattr(vpn_manager, "sample_iface_traffic", lambda iface: None)
     monkeypatch.setattr(vpn_manager, "request_ip_update", lambda name: None)
     monkeypatch.setattr(vpn_manager.ipinfo, "status_line", lambda conn, age: "Exit: 9.9.9.9")
+
+
+def _expect_manager_spawn(monkeypatch, fn, *expected_flags: str) -> None:
+    calls = []
+
+    def popen(cmd, **kw):
+        calls.append((cmd, kw))
+
+    monkeypatch.setattr(vpn_manager.subprocess, "Popen", popen)
+    fn()
+    assert len(calls) == 1
+    cmd, kw = calls[0]
+    assert cmd == [vpn_manager.sys.executable, str(MANAGER), *expected_flags]
+    assert kw["start_new_session"] is True
+    assert kw["stdout"] is vpn_manager.subprocess.DEVNULL
+    assert kw["stderr"] is vpn_manager.subprocess.DEVNULL
+
+
+def test_request_ip_update_spawns_vpn_manager(monkeypatch):
+    _expect_manager_spawn(
+        monkeypatch,
+        lambda: vpn_manager.request_ip_update("nl"),
+        "--update-ip",
+        "nl",
+    )
+
+
+def test_request_dns_autotest_spawns_vpn_manager(monkeypatch):
+    _expect_manager_spawn(monkeypatch, vpn_manager.request_dns_autotest, "--dns-autotest")
 
 
 def test_disconnected(monkeypatch):

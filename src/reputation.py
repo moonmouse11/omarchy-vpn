@@ -19,8 +19,6 @@ so a paid source's monthly quota is never at risk from routine menu use.
 import contextlib
 import json
 import socket
-import subprocess
-import sys
 import threading
 import time
 import urllib
@@ -30,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 import fsutil
 import ipsources
 import lazyimports  # noqa: F401 — registers urllib.request & co. to load on first use
+from app.spawn import spawn_manager
 from ipsources.base import IPFinding, fetch_json
 
 if TYPE_CHECKING:  # loaded lazily at run time, see lazyimports.py
@@ -40,8 +39,6 @@ MAX_AGE = 24 * 3600  # a day — registration data doesn't change hour to hour
 LOOKUP_TIMEOUT = 8  # seconds, thread-guarded (urlopen's timeout excludes DNS)
 IPWHO_API = "https://ipwho.is/"  # used only by _detect_own_ip()'s primary check
 IPAPI_PACE = 1.5  # seconds between sweep hosts, keeps well under ip-api.com's 45/min cap
-
-MANAGER = Path(__file__).resolve().parent / "vpn_manager.py"
 
 
 def _reason_tags(entry: dict) -> list[str]:
@@ -189,12 +186,7 @@ def request_update() -> None:
     cache = _read()
     if time.time() - cache.get("updated_at", 0) < MAX_AGE:
         return
-    subprocess.Popen(
-        [sys.executable, str(MANAGER), "--update-reputation"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    spawn_manager("--update-reputation")
 
 
 def write_reputations(targets: list[tuple[str, str, int]]) -> None:

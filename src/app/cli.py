@@ -12,6 +12,7 @@ import quickconnect
 import reputation
 from app.checks import CHECK_TITLES, run_check, run_dns_autotest
 from app.helpers import _collect_ping_targets, notify, refresh_bar
+from app.patchables import patched as _patched
 from app.ping import _ping_scope_from_args, ping_now
 from app.servers import (
     _report,
@@ -34,17 +35,6 @@ from providers.base import (
 )
 from providers.happ import run_keeper as run_happ_keeper
 from providers.keys import run_keeper as run_keys_keeper
-
-
-def _patched(name: str, local):
-    """Route CLI actions through vpn_manager when tests monkeypatch it."""
-    import vpn_manager as vm  # noqa: PLC0415
-
-    remote = getattr(vm, name, None)
-    if remote is not None and remote is not local:
-        return remote
-    return local
-
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -201,11 +191,11 @@ def main() -> None:
     elif args.import_ is not None:
         if len(args.import_) not in (1, 2):
             parser.error("--import takes PROVIDER [PATH|-]")
-        _report(run_import(*args.import_))
+        _report(_patched("run_import", run_import)(*args.import_))
     elif args.profile is not None:
         if args.profile[0] not in ("autostart", "delete"):
             parser.error("--profile takes autostart|delete PROVIDER NAME")
-        _report(run_profile_action(*args.profile))
+        _report(_patched("run_profile_action", run_profile_action)(*args.profile))
     elif args.check is not None:
         if args.check[0] not in CHECK_TITLES or len(args.check) > 2:
             parser.error("--check takes dns|ip|speed [TARGET]")

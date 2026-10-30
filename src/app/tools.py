@@ -12,22 +12,13 @@ import quickconnect
 import settings_tui
 from app.checks import run_check
 from app.helpers import notify, refresh_bar, spawn_manager
+from app.patchables import patched as _patched
 from app.provider_lookup import provider_named as _provider_named
 from app.registry import _provider_pool, active_connections
 from app.spawn import MANAGER
 from app.status import _killswitch_unsupported
 from app.switch import _killswitch_toggle, _sync_ipv6_guard, sync_ipv6_boot
 from providers.base import ActionResult
-
-
-def _patched(name: str, local):
-    import vpn_manager as vm  # noqa: PLC0415
-
-    remote = getattr(vm, name, None)
-    if remote is not None and remote is not local:
-        return remote
-    return local
-
 
 IMPORT_KINDS = {
     "WireGuard": "file",

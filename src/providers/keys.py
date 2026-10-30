@@ -33,7 +33,7 @@ import fsutil
 import happmeta
 import logutil
 
-from .base import ActionResult, VPNConnection, VPNProvider
+from .base import ActionResult, PingTarget, VPNConnection, VPNProvider
 from .happ import (
     XRAY_BIN,
     _daemon_request,
@@ -616,7 +616,7 @@ class KeysProvider(VPNProvider):
             for s in servers
         ]
 
-    def ping_targets(self) -> list[tuple[str, str, int]]:
+    def ping_targets(self) -> list[PingTarget]:
         return [
             (s["name"], s["host"], s["port"])
             for s in _load_servers()

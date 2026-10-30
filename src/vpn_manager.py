@@ -40,6 +40,7 @@ import speedtest
 from providers import ALL_PROVIDERS
 from providers.base import (
     ActionResult,
+    PingTarget,
     VPNConnection,
     iface_rate,
     iface_traffic,
@@ -297,7 +298,12 @@ def _killswitch_unsupported(active: list[VPNConnection]) -> bool:
 def _window_tools(active: list[VPNConnection], cfg) -> list[str]:
     """The app window's Tools buttons: what ⚙ Settings didn't hide (Settings
     itself can't be), the kill switch only where it works."""
-    keys = [k for k, _label, _fn in TOOLS if k == "settings" or cfg.tool_visible(k)]
+    # refresh_all: Happ ⟳ / --tool refresh_all only — not a Tools button or `r`
+    keys = [
+        k
+        for k, _label, _fn in TOOLS
+        if k == "settings" or (k != "refresh_all" and cfg.tool_visible(k))
+    ]
     if cfg.tool_visible("killswitch") and not _killswitch_unsupported(active):
         keys.append("killswitch")
     return keys
@@ -918,15 +924,16 @@ def _killswitch_all_targets(cached_only: bool = False) -> tuple[list[str], list[
         except Exception as e:  # noqa: BLE001 — one broken provider must not stop the rest
             logutil.log(f"killswitch targets: {provider.name} skipped: {e!r}")
             continue
-        targets += pt
+        targets += [(t[0], t[1], t[2]) for t in pt]
         if provider.name in ("WireGuard", "AmneziaWG"):
             # wg-quick/awg-quick name the interface after the profile, and
             # the kernel caps interface names at 15 chars (IFNAMSIZ=16 with
             # NUL) — longer names can never exist as wg/awg interfaces (such
             # profiles are unused or driven by NetworkManager, which has
             # no such limit) and nft rejects the whole ruleset for them.
-            ifaces += [n for n, _, _ in pt if len(n) <= 15]
-            for n, _, _ in pt:
+            ifaces += [t[0] for t in pt if len(t[0]) <= 15]
+            for t in pt:
+                n = t[0]
                 if len(n) > 15:
                     logutil.log(f"killswitch: iface name too long, skipped: {n}")
         elif provider.name == "OpenVPN":
@@ -1483,7 +1490,7 @@ def run_profile_action(action: str, provider_name: str, name: str) -> ActionResu
 
 def _ping_scope_targets(
     scope: dict,
-) -> tuple[list[tuple[str, dict]], list[tuple[str, str, int]]]:
+) -> tuple[list[tuple[str, dict]], list[PingTarget]]:
     """(xray targets, direct targets) for a ping scope: {} = every server,
     {"group": <panel group id>}, {"server": [provider, name, subscription id]}.
     Happ/Keys go through xray (delayping); the rest keep the direct TCP connect."""
@@ -1495,7 +1502,7 @@ def _ping_scope_targets(
     else:
         pname, name, sub_id = group, None, None
     xray: list[tuple[str, dict]] = []
-    direct: list[tuple[str, str, int]] = []
+    direct: list[PingTarget] = []
     for provider in ALL_PROVIDERS:
         if pname and provider.name != pname:
             continue
@@ -1509,7 +1516,7 @@ def _ping_scope_targets(
             except Exception as e:  # noqa: BLE001 — one broken provider must not stop the rest
                 logutil.log(f"ping targets: {provider.name} skipped: {e!r}")
                 continue
-            direct += [t for t in targets if name is None or t[0] == name]
+            direct += [t for t in targets if name is None or t[0] == name]  # 3- or 4-tuple
     return xray, direct
 
 
@@ -1796,7 +1803,7 @@ def _server_row(entry: dict) -> dict:
         ping = f"{ms:.0f} ms"
     if ms is not None and state == "stale":
         ping = "~" + ping  # an old number; an old timeout is just dimmed
-    return {
+    row = {
         "name": entry["name"],
         "active": bool(entry["active"]),
         "protocol": entry.get("protocol", ""),
@@ -1807,6 +1814,9 @@ def _server_row(entry: dict) -> dict:
         # the flag's country code, so the filter finds "Польша" by "pl"
         "country": (_name_flag_country(entry["name"]) or "").lower(),
     }
+    if entry.get("orphan"):
+        row["orphan"] = True
+    return row
 
 
 class PingState(NamedTuple):
@@ -1931,7 +1941,18 @@ def server_list() -> dict:
                 logutil.log(f"server list: {provider.name} skipped: {e!r}")
                 conns = []
             if conns:
-                entries = [{"name": c.name, "active": c.active} for c in conns]
+                entries = [
+                    {
+                        "name": c.name,
+                        "active": c.active,
+                        "orphan": (
+                            c.active
+                            and not c.config_path
+                            and c.provider in ("WireGuard", "AmneziaWG")
+                        ),
+                    }
+                    for c in conns
+                ]
                 groups.append(
                     _server_group(
                         provider.name, provider.name, provider.name, entries, pinging=pinging
@@ -2100,7 +2121,7 @@ def _collect_ping_targets() -> list[tuple[str, str, int]]:
     targets = happmeta.ping_targets()
     for provider in ALL_PROVIDERS:
         try:
-            targets += provider.ping_targets()
+            targets += [(t[0], t[1], t[2]) for t in provider.ping_targets()]
         except Exception as e:  # noqa: BLE001 — one broken provider must not stop the rest
             logutil.log(f"ping targets: {provider.name} skipped: {e!r}")
             continue
@@ -2313,6 +2334,7 @@ def main():
         # report every provider — a silent failure looked like success
         failed = happmeta.update_subscriptions(force=True)
         notify(*subscription_report(failed))
+        refresh_bar()
     elif args.happ_keeper is not None:
         run_happ_keeper(*args.happ_keeper[:2])
     elif args.keys_keeper is not None:

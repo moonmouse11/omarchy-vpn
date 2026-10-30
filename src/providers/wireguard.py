@@ -2,7 +2,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .base import ActionResult, VPNConnection, VPNProvider, read_config_text, run_helper
+from .base import ActionResult, PingTarget, VPNConnection, VPNProvider, read_config_text, run_helper
 
 AWG_INSTALL_HINT = (
     "awg-quick not found — install from AUR: amneziawg-tools "
@@ -40,6 +40,16 @@ def _active_interfaces(link_type: str = "wireguard") -> list[str]:
         if len(parts) >= 2:
             interfaces.append(parts[1].strip())
     return interfaces
+
+
+def _awg_interface_names() -> set[str]:
+    """Userspace awg-go may not show up under `ip link show type amneziawg`."""
+    if shutil.which("awg") is None:
+        return set()
+    code, out = _run(["awg", "show", "interfaces"])
+    if code != 0:
+        return set()
+    return {ln.strip() for ln in out.splitlines() if ln.strip()}
 
 
 def _net_iface_exists(name: str) -> bool:
@@ -104,6 +114,27 @@ def _has_dns_directive(path: Path) -> bool:
     return False
 
 
+def _runtime_endpoint(iface: str, *, awg: bool) -> tuple[str, int] | None:
+    """Live [Peer] endpoint from `wg show` / `awg show` when the profile file is gone."""
+    cmd = ["awg" if awg else "wg", "show", iface, "endpoints"]
+    if shutil.which(cmd[0]) is None:
+        return None
+    code, out = _run(cmd)
+    if code != 0:
+        return None
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        ep = parts[1].strip()
+        if not ep or ep == "(none)":
+            continue
+        parsed = _split_host_port(ep, 51820)
+        if parsed:
+            return parsed
+    return None
+
+
 def wg_endpoint(conf_path) -> tuple[str, int] | None:
     """(host, port) of a config's [Peer] Endpoint, None when absent/garbled."""
     text = read_config_text(conf_path)
@@ -152,21 +183,19 @@ class WireGuardProvider(VPNProvider):
         active = set(_active_interfaces(self.link_type)) | self._extra_active()
         result: list[VPNConnection] = []
 
-        if not self.config_dir.exists():
-            return result
-
-        for conf in sorted(self.config_dir.glob("*.conf")):
-            profile = conf.stem
-            is_active = profile in active
-            result.append(
-                VPNConnection(
-                    name=profile,
-                    provider=self.name,
-                    active=is_active,
-                    interface=profile if is_active else None,
-                    config_path=str(conf),
+        if self.config_dir.exists():
+            for conf in sorted(self.config_dir.glob("*.conf")):
+                profile = conf.stem
+                is_active = profile in active
+                result.append(
+                    VPNConnection(
+                        name=profile,
+                        provider=self.name,
+                        active=is_active,
+                        interface=profile if is_active else None,
+                        config_path=str(conf),
+                    )
                 )
-            )
 
         # Include active interfaces that have no config file of ours (edge
         # case) — except ones claimed by another provider's config dir:
@@ -183,14 +212,18 @@ class WireGuardProvider(VPNProvider):
 
         return result
 
-    def ping_targets(self) -> list[tuple[str, str, int]]:
-        targets = []
+    def ping_targets(self) -> list[PingTarget]:
+        """(name, host, port[, icmp_only]). WG endpoints are UDP-only — ping uses ICMP."""
+        awg = self.quick_bin == "awg-quick"
+        targets: list[PingTarget] = []
         for conn in self.connections():
-            if not conn.config_path:
-                continue
-            ep = wg_endpoint(conn.config_path)
+            ep = None
+            if conn.config_path:
+                ep = wg_endpoint(conn.config_path)
+            elif conn.active:
+                ep = _runtime_endpoint(conn.interface or conn.name, awg=awg)
             if ep:
-                targets.append((conn.name, ep[0], ep[1]))
+                targets.append((conn.name, ep[0], ep[1], True))
         return targets
 
     def connect(self, connection: VPNConnection) -> ActionResult:
@@ -288,7 +321,14 @@ class AmneziaWGProvider(WireGuardProvider):
     def _extra_active(self) -> set[str]:
         """Userspace awg-go builds don't register under the kernel link
         type (no amneziawg netlink family) — fall back to checking whether
-        each configured profile's interface node exists at all."""
-        if not self.config_dir.exists():
-            return set()
-        return {p.stem for p in self.config_dir.glob("*.conf") if _net_iface_exists(p.stem)}
+        each configured profile's interface node exists at all, and anything
+        `awg show interfaces` still reports (orphan after a deleted profile)."""
+        from_conf = set()
+        if self.config_dir.exists():
+            from_conf = {
+                p.stem for p in self.config_dir.glob("*.conf") if _net_iface_exists(p.stem)
+            }
+        # userspace awg-go: no amneziawg netlink — awg show is the only probe
+        if _active_interfaces(self.link_type):
+            return from_conf
+        return from_conf | _awg_interface_names()

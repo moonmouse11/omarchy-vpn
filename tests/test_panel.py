@@ -65,6 +65,8 @@ def test_untested_dns_is_unverified_not_protected(env):
     assert panel["meta"] == "Provider B: 🇩🇪 Germany 1"  # the pill names the provider
     assert panel["detail"] == "Happ"
     assert panel["exit_ip"] == "198.51.100.27 🇩🇪"
+    # ConnectionSummary copies fields.exit_ip (plain), not the decorated exit_ip line
+    assert panel["fields"]["exit_ip"] == "198.51.100.27"
     assert panel["rate"] == "↓ 3 KiB/s ↑ 4 KiB/s"
     assert panel["total"] == "↓ 1 MiB  ↑ 2 MiB"
     assert _badges(panel) == {
@@ -428,10 +430,18 @@ def test_window_tools_follow_settings_and_the_kill_switch_support(env):
     cfg = vpn_manager.config.Config(tools_visible={"speed_test": False, "settings": False})
     tools = vpn_manager.panel_state([], cfg)["tools"]
     assert "speed_test" not in tools
+    assert "refresh_all" not in tools
     assert "settings" in tools
     assert "killswitch" in tools
     nm = VPNConnection(name="office", provider="NetworkManager", active=True)
     assert "killswitch" not in vpn_manager.panel_state([nm], cfg)["tools"]
+
+
+def test_window_tools_hides_refresh_all_even_when_settings_keep_it_visible(env):
+    cfg = vpn_manager.config.Config(tools_visible={"refresh_all": True, "clear_caches": True})
+    tools = vpn_manager.panel_state([], cfg)["tools"]
+    assert "refresh_all" not in tools
+    assert "clear_caches" in tools
 
 
 @pytest.mark.parametrize("guard", [True, False])

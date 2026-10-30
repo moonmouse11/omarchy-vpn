@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-from .base import ActionResult, VPNConnection, VPNProvider, read_config_text, run_helper
+from .base import ActionResult, PingTarget, VPNConnection, VPNProvider, read_config_text, run_helper
 
 TIMEOUT = 6
 
@@ -82,8 +82,8 @@ class OpenVPNProvider(VPNProvider):
 
         return result
 
-    def ping_targets(self) -> list[tuple[str, str, int]]:
-        targets = []
+    def ping_targets(self) -> list[PingTarget]:
+        targets: list[PingTarget] = []
         for conn in self.connections():
             if not conn.config_path:
                 continue

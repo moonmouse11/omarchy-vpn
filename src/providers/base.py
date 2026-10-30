@@ -10,6 +10,8 @@ from pathlib import Path
 
 import fsutil
 
+type PingTarget = tuple[str, str, int] | tuple[str, str, int, bool]
+
 # The one root entry point for WireGuard/AmneziaWG/OpenVPN (scripts/omarchy-vpn-helper,
 # installed by install.sh): profile names only, never paths — the old sudoers rule
 # (`wg-quick *`, `cp * /etc/wireguard/*`, `cat …`, `kill`) was root for any process.
@@ -242,10 +244,10 @@ class VPNProvider(ABC):
         """Import a config file and register it as a new connection"""
         ...
 
-    def ping_targets(self) -> list[tuple[str, str, int]]:
-        """(connection name, host, port) for availability/ping measurement.
-        Providers with a measurable endpoint (WireGuard, OpenVPN) override
-        this; the shared ping cache and ✓/✗ labels are name-keyed."""
+    def ping_targets(self) -> list[PingTarget]:
+        """(connection name, host, port[, icmp_only]) for ping measurement.
+        WireGuard/AmneziaWG pass icmp_only=True (UDP endpoints). The shared
+        ping cache and ✓/✗ labels are name-keyed."""
         return []
 
     def toggle_autostart(self, connection: VPNConnection) -> ActionResult:

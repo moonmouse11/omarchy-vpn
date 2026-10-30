@@ -32,6 +32,7 @@ import fsutil
 import happmeta
 import lazyimports  # noqa: F401 — registers urllib.request/concurrent.futures lazily
 from providers import happ, keys
+from providers.base import PingTarget
 
 if TYPE_CHECKING:  # loaded lazily at run time, see lazyimports.py
     import concurrent.futures
@@ -316,7 +317,7 @@ def _merge_into_cache(results: dict[str, dict]) -> None:
 
 def run(
     xray: list[tuple[str, dict]],
-    direct: list[tuple[str, str, int]],
+    direct: list[PingTarget],
     direct_allowed: bool,
     kind: str = ALL,
     on_progress: Callable[[int, int], None] | None = None,
@@ -364,12 +365,14 @@ def run(
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(slots)) as pool:
             for future in [pool.submit(one, name, cfg) for name, cfg in xray]:
                 future.result()
-        for name, host, port in direct:
+        for item in direct:
+            name, host, port = item[0], item[1], item[2]
+            icmp_only = len(item) > 3 and bool(item[3])
             if not direct_allowed:
                 finished(name, {"ms": None, "at": time.time(), SKIPPED: True})
                 continue
             try:
-                ms = happmeta.measure_ping(host, port)
+                ms = happmeta.measure_ping(host, port, icmp_only=icmp_only)
             except OSError, OverflowError, ValueError, TypeError:
                 ms = None
             finished(name, {"ms": ms, "at": time.time()})

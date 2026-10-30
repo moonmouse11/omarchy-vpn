@@ -2,25 +2,16 @@
 
 import contextlib
 import subprocess
-import sys
 
 import happmeta
 import logutil
 import notifyutil
 from app.registry import PLUGIN_ID, _provider_pool
-from happ.constants import MANAGER
+from app.spawn import spawn_manager
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-
-def spawn_manager(*flags: str) -> None:
-    """Detached background vpn_manager.py (DNS autotest, exit IP, subs refresh)."""
-    subprocess.Popen(
-        [sys.executable, str(MANAGER), *flags],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+__all__ = ["_collect_ping_targets", "notify", "refresh_bar", "spawn_manager"]
 
 
 def _collect_ping_targets() -> list[tuple[str, str, int]]:

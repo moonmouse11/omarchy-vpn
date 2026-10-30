@@ -10,9 +10,9 @@ import tempfile
 
 import pytest
 
+import app.spawn as spawn_mod
 import ipv6guard
 import logutil
-import reputation
 
 
 def pytest_runtest_setup(item):
@@ -55,7 +55,7 @@ def _no_real_reputation_subprocess(monkeypatch):
         def wait(self, timeout=None):
             return 0
 
-    monkeypatch.setattr(reputation.subprocess, "Popen", lambda *a, **k: _FakePopen())
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", lambda *a, **k: _FakePopen())
 
 
 @pytest.fixture(autouse=True)

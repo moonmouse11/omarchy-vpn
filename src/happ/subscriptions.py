@@ -7,13 +7,13 @@ import hashlib
 import ipaddress
 import json
 import re
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import fsutil
+from app.spawn import spawn_manager
 from lazyimports import statistics  # noqa: F401 — registers urllib.request & co. lazily
 
 if TYPE_CHECKING:
@@ -542,13 +542,7 @@ def request_subscription_update() -> None:
     for sub_id, prov in providers().items():
         if prov.get("url") and not _sub_cache_fresh(sub_id, prov["url"]):
             with contextlib.suppress(OSError):  # a spawn failure must never break --status
-                subp = _happmeta().subprocess
-                subp.Popen(
-                    [sys.executable, str(_happmeta().MANAGER), "--update-subs"],
-                    stdout=subp.DEVNULL,
-                    stderr=subp.DEVNULL,
-                    start_new_session=True,
-                )
+                spawn_manager("--update-subs")
             return
 
 

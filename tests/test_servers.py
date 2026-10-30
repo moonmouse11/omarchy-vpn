@@ -68,6 +68,13 @@ def test_server_list_sets_orphan_on_active_profiles_without_config(env, monkeypa
     assert group["servers"][0]["orphan"] is True
 
 
+def test_server_list_orphan_false_for_active_key_without_config_path(env, monkeypatch):
+    key = VPNConnection(name="Home", provider="VLESS", active=True, config_path=None)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("VLESS", [key])])
+    group = next(g for g in vpn_manager.server_list()["groups"] if g["provider"] == "VLESS")
+    assert "orphan" not in group["servers"][0]
+
+
 def test_server_list_orphan_false_for_offline_profile(env, monkeypatch):
     home = VPNConnection(
         name="home",

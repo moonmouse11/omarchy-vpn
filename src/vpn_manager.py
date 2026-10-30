@@ -297,7 +297,7 @@ def _killswitch_unsupported(active: list[VPNConnection]) -> bool:
 def _window_tools(active: list[VPNConnection], cfg) -> list[str]:
     """The app window's Tools buttons: what ⚙ Settings didn't hide (Settings
     itself can't be), the kill switch only where it works."""
-    # refresh_all: hotkey `r` only (--update-subs-force), not a Tools button
+    # refresh_all: Happ ⟳ / --tool refresh_all only — not a Tools button or `r`
     keys = [
         k
         for k, _label, _fn in TOOLS
@@ -1943,7 +1943,11 @@ def server_list() -> dict:
                     {
                         "name": c.name,
                         "active": c.active,
-                        "orphan": c.active and not c.config_path,
+                        "orphan": (
+                            c.active
+                            and not c.config_path
+                            and c.provider in ("WireGuard", "AmneziaWG")
+                        ),
                     }
                     for c in conns
                 ]

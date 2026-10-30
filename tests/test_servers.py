@@ -75,6 +75,29 @@ def test_server_list_orphan_false_for_active_key_without_config_path(env, monkey
     assert "orphan" not in group["servers"][0]
 
 
+def test_server_list_orphan_true_for_amneziawg_without_config(env, monkeypatch):
+    ghost = VPNConnection(name="gone", provider="AmneziaWG", active=True, config_path=None)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("AmneziaWG", [ghost])])
+    group = next(g for g in vpn_manager.server_list()["groups"] if g["provider"] == "AmneziaWG")
+    assert group["servers"][0]["orphan"] is True
+
+
+def test_server_list_orphan_false_for_active_networkmanager(env, monkeypatch):
+    office = VPNConnection(name="office", provider="NetworkManager", active=True, config_path=None)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("NetworkManager", [office])])
+    group = next(
+        g for g in vpn_manager.server_list()["groups"] if g["provider"] == "NetworkManager"
+    )
+    assert "orphan" not in group["servers"][0]
+
+
+def test_server_list_orphan_false_when_tunnel_not_active(env, monkeypatch):
+    ghost = VPNConnection(name="ghost", provider="WireGuard", active=False, config_path=None)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("WireGuard", [ghost])])
+    group = next(g for g in vpn_manager.server_list()["groups"] if g["provider"] == "WireGuard")
+    assert "orphan" not in group["servers"][0]
+
+
 def test_server_list_orphan_false_for_offline_profile(env, monkeypatch):
     home = VPNConnection(
         name="home",

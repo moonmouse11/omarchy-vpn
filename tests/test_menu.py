@@ -824,6 +824,15 @@ def test_refresh_all_menu_spawns_subs_unconditionally(monkeypatch):
     assert "--update-subs-force" in flags
 
 
+def test_run_tool_refresh_all_still_works_after_tools_button_removed(monkeypatch):
+    """Happ ⟳ calls --tool refresh_all even though refresh_all is not in panel tools."""
+    calls = []
+    monkeypatch.setattr(vpn_manager.subprocess, "Popen", lambda cmd, **k: calls.append(cmd) or None)
+    result = vpn_manager.run_tool("refresh_all")
+    assert result.success
+    assert [c[2] for c in calls] == ["--update-subs-force"]
+
+
 def test_clear_caches_menu_removes_only_json_files(tmp_path, monkeypatch):
     cache_dir = tmp_path / "vpn-manager"
     cache_dir.mkdir()

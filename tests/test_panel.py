@@ -65,6 +65,8 @@ def test_untested_dns_is_unverified_not_protected(env):
     assert panel["meta"] == "Provider B: 🇩🇪 Germany 1"  # the pill names the provider
     assert panel["detail"] == "Happ"
     assert panel["exit_ip"] == "198.51.100.27 🇩🇪"
+    # ConnectionSummary copies fields.exit_ip (plain), not the decorated exit_ip line
+    assert panel["fields"]["exit_ip"] == "198.51.100.27"
     assert panel["rate"] == "↓ 3 KiB/s ↑ 4 KiB/s"
     assert panel["total"] == "↓ 1 MiB  ↑ 2 MiB"
     assert _badges(panel) == {

@@ -227,6 +227,35 @@ def test_down_deletes_interface_when_quick_fails(tmp_path, monkeypatch):
     assert "ip link delete dev orphan" in result.stdout
 
 
+def test_down_fails_when_quick_fails_and_interface_gone(tmp_path, monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+    bind = tmp_path / "bin"
+    bind.mkdir()
+    (bind / "wg-quick").write_text("#!/bin/sh\nexit 1\n")
+    (bind / "ip").write_text("#!/bin/sh\nexit 1\n")
+    for script in bind.iterdir():
+        script.chmod(0o755)
+    env = {
+        "PATH": f"{bind}:/usr/bin:/bin",
+        "WG_DIR": str(tmp_path / "wg"),
+        "AWG_DIR": str(tmp_path / "awg"),
+        "OVPN_DIR": str(tmp_path / "ovpn"),
+        "PID_DIR": str(tmp_path / "run"),
+        "PROC_DIR": str(tmp_path / "proc"),
+        "SYSTEMD_DIR": str(tmp_path / "systemd"),
+    }
+    for d in ("wg", "awg", "ovpn", "run", "proc", "systemd"):
+        (tmp_path / d).mkdir()
+    result = _REAL_RUN(
+        ["bash", str(HELPER), "down", "wg", "missing"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode != 0
+
+
 def test_wg_up_refuses_ipv6_only_allowedips(tree):
     v6only = (
         "[Interface]\nPrivateKey = x\n\n[Peer]\n"

@@ -1,5 +1,5 @@
 from providers import wireguard
-from providers.wireguard import WireGuardProvider
+from providers.wireguard import AmneziaWGProvider, WireGuardProvider
 
 
 def _provider(tmp_path, monkeypatch, run_result=(0, "")):
@@ -8,6 +8,40 @@ def _provider(tmp_path, monkeypatch, run_result=(0, "")):
     provider.config_dir.mkdir()
     monkeypatch.setattr(wireguard, "run_helper", lambda *a, **kw: run_result)
     return provider
+
+
+def test_awg_interface_names_empty_without_awg_binary(monkeypatch):
+    monkeypatch.setattr(wireguard.shutil, "which", lambda b: None if b == "awg" else "/bin/sh")
+    assert wireguard._awg_interface_names() == set()
+
+
+def test_awg_interface_names_parses_awg_show(monkeypatch):
+    monkeypatch.setattr(wireguard.shutil, "which", lambda b: "/usr/bin/awg" if b == "awg" else None)
+    monkeypatch.setattr(
+        wireguard,
+        "_run",
+        lambda cmd: (0, "tunnel-a\ntunnel-b\n\n") if cmd[:2] == ["awg", "show"] else (1, ""),
+    )
+    assert wireguard._awg_interface_names() == {"tunnel-a", "tunnel-b"}
+
+
+def test_awg_interface_names_empty_on_awg_failure(monkeypatch):
+    monkeypatch.setattr(wireguard.shutil, "which", lambda b: "/usr/bin/awg" if b == "awg" else None)
+    monkeypatch.setattr(wireguard, "_run", lambda cmd: (1, "failed"))
+    assert wireguard._awg_interface_names() == set()
+
+
+def test_amnezia_connections_include_awg_show_orphans(tmp_path, monkeypatch):
+    monkeypatch.setattr(wireguard, "_active_interfaces", lambda *_: [])
+    monkeypatch.setattr(wireguard, "_awg_interface_names", lambda: {"gone"})
+    awg = AmneziaWGProvider()
+    awg.config_dir = tmp_path / "missing"
+    awg.other_config_dirs = ()
+    conns = awg.connections()
+    assert len(conns) == 1
+    assert conns[0].name == "gone"
+    assert conns[0].active
+    assert conns[0].config_path is None
 
 
 def test_import_warns_when_dns_missing(tmp_path, monkeypatch):

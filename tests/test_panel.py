@@ -430,6 +430,13 @@ def test_window_tools_follow_settings_and_the_kill_switch_support(env):
     assert "speed_test" not in tools
     assert "refresh_all" not in tools
     assert "settings" in tools
+
+
+def test_window_tools_hides_refresh_all_even_when_settings_keep_it_visible(env):
+    cfg = vpn_manager.config.Config(tools_visible={"refresh_all": True, "clear_caches": True})
+    tools = vpn_manager.panel_state([], cfg)["tools"]
+    assert "refresh_all" not in tools
+    assert "clear_caches" in tools
     assert "killswitch" in tools
     nm = VPNConnection(name="office", provider="NetworkManager", active=True)
     assert "killswitch" not in vpn_manager.panel_state([nm], cfg)["tools"]

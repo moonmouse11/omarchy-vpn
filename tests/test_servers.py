@@ -55,6 +55,31 @@ def test_server_row_marks_orphan_profiles(env):
     assert row["orphan"] is True
 
 
+def test_server_row_omits_orphan_when_not_flagged(env):
+    row = vpn_manager._server_row({"name": "home", "active": True})
+    assert "orphan" not in row
+
+
+def test_server_list_sets_orphan_on_active_profiles_without_config(env, monkeypatch):
+    ghost = VPNConnection(name="ghost", provider="WireGuard", active=True, config_path=None)
+    wg = FakeProvider("WireGuard", [ghost])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [wg])
+    group = next(g for g in vpn_manager.server_list()["groups"] if g["provider"] == "WireGuard")
+    assert group["servers"][0]["orphan"] is True
+
+
+def test_server_list_orphan_false_for_offline_profile(env, monkeypatch):
+    home = VPNConnection(
+        name="home",
+        provider="WireGuard",
+        active=False,
+        config_path="/etc/wireguard/home.conf",
+    )
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("WireGuard", [home])])
+    group = next(g for g in vpn_manager.server_list()["groups"] if g["provider"] == "WireGuard")
+    assert "orphan" not in group["servers"][0]
+
+
 @pytest.mark.parametrize(
     ("entry", "ping", "stale"),
     [

@@ -428,6 +428,7 @@ def test_window_tools_follow_settings_and_the_kill_switch_support(env):
     cfg = vpn_manager.config.Config(tools_visible={"speed_test": False, "settings": False})
     tools = vpn_manager.panel_state([], cfg)["tools"]
     assert "speed_test" not in tools
+    assert "refresh_all" not in tools
     assert "settings" in tools
     assert "killswitch" in tools
     nm = VPNConnection(name="office", provider="NetworkManager", active=True)

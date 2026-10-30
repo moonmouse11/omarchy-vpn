@@ -14,7 +14,6 @@ Flow {
     { key: "dns_leak_test", label: "DNS leak test", check: "dns" },
     { key: "ip_info", label: "IP info", check: "ip" },
     { key: "speed_test", label: "Speed test", check: "speed" },
-    { key: "refresh_all", label: "Refresh subscriptions" },
     { key: "clear_caches", label: "Clear caches" },
     { key: "killswitch", label: "Kill switch on/off" },
     { key: "settings", label: "Settings" }

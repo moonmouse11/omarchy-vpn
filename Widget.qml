@@ -481,8 +481,8 @@ Panel {
   }
 
   function refreshHappSubscriptions() {
-    var keys = panelData.tools
-    if (keys instanceof Array && keys.indexOf("refresh_all") === -1) return
+    // Background job + immediate bubble (like the old Tools button); not
+    // --update-subs-force here — that blocks ~minutes with no feedback.
     runArgs(["--tool", "refresh_all"])
   }
 
@@ -839,7 +839,7 @@ Panel {
         if (k === "t") root.togglePower()
         else if (k === "m") root.openWindow()
         else if (k === "d") root.runDnsTest()
-        else if (k === "r") {
+        else if (k === "r" || k === "к") {  // к: the r key on a Russian layout
           root.refreshHappSubscriptions()
           root.refresh()
           root.loadServers()

@@ -84,7 +84,7 @@ FloatingWindow {
       var k = String(t).toLowerCase()
       if (k === "t") win.host.togglePower()
       else if (k === "d") win.host.runDnsTest()
-      else if (k === "r") {
+      else if (k === "r" || k === "к") {
         win.host.refreshHappSubscriptions()
         win.host.refresh()
         win.host.loadServers()

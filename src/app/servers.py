@@ -242,6 +242,17 @@ def server_list() -> dict:
             # nothing at all with default headers: a panel may want Happ's own
             if len(groups) == first and not happmeta.has_headers():
                 groups.append(_server_group("happ:no-headers", "Happ", HAPP_NO_HEADERS_TITLE, []))
+        elif provider.name == "INCY":
+            from providers.incy import incy_server_groups
+
+            _servers, incy_groups = incy_server_groups(provider)
+            for pname, entries in incy_groups.items():
+                sub_id = entries[0].get("provider_id") or "" if entries else ""
+                groups.append(
+                    _server_group(
+                        f"incy:{sub_id}:{pname}", "INCY", pname, entries, sub_id, pinging=pinging
+                    )
+                )
         else:
             try:
                 conns = provider.connections()

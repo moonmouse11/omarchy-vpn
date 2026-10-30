@@ -11,6 +11,7 @@ import ipv6guard
 import killswitch
 import logutil
 import providers.happd.happ as happ_provider
+import providers.incy as incy_provider
 from app.helpers import notify
 from app.registry import _provider_pool, active_connections
 from providers.base import (
@@ -267,6 +268,8 @@ def guarded_connect(provider, connection: VPNConnection) -> ActionResult:
     # before the lock: a refused click must not supersede a switch or abort the app tunnel's checks
     if happ_provider.app_connected():  # the user's rule: the plugin or the app, never a fight
         return ActionResult(False, HAPP_APP_CONNECTED)
+    if incy_provider.app_connected():
+        return ActionResult(False, INCY_APP_CONNECTED)
     try:
         with switch_lock(action):
             return _guarded_connect(provider, connection)
@@ -276,7 +279,7 @@ def guarded_connect(provider, connection: VPNConnection) -> ActionResult:
         return _cancelled(action)
 
 
-KILLSWITCH_PROVIDERS = ("WireGuard", "AmneziaWG", "OpenVPN", "VLESS", "Shadowsocks")
+KILLSWITCH_PROVIDERS = ("WireGuard", "AmneziaWG", "OpenVPN", "VLESS", "Shadowsocks", "INCY")
 
 
 def _killswitch_wanted(provider, enabled: bool) -> bool:
@@ -411,6 +414,10 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
 HAPP_APP_CONNECTED = (
     "The Happ app holds the connection — disconnect it first "
     "(in the Happ app, or the panel's switch)"
+)
+INCY_APP_CONNECTED = (
+    "The INCY app holds the connection — disconnect it in INCY first "
+    "(same one-tunnel rule as Happ)"
 )
 SYS_NET = Path("/sys/class/net")
 OPENVPN_TUN_WAIT = 20.0  # s the connect-time DNS hole stays open for OpenVPN

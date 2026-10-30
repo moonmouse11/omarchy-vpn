@@ -33,6 +33,7 @@ XRAY_USERS = ("Happ", "VLESS", "Shadowsocks")  # keys run on Happ's xray
 
 AWG_DIR = AMNEZIA_DIR
 HAPPD = Path("/opt/happ/bin/happd")  # what the plugin talks to, not just the app
+INCY_BIN = Path("/opt/incy/bin/incy")
 SUB_CACHE_DIR = happmeta.SUB_CACHE_DIR
 KEYS_FILE = STORE
 RESOLV_CONF = Path("/etc/resolv.conf")
@@ -94,6 +95,25 @@ def _happ() -> str:
     return _count(n, "subscription") if n else "installed"
 
 
+def _incy() -> str:
+    if not INCY_BIN.is_file():
+        return ""
+    db = Path.home() / ".local/share/incy/incy.db"
+    if not db.is_file():
+        return "installed"
+    try:
+        import sqlite3
+
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
+        try:
+            (n,) = conn.execute("SELECT COUNT(*) FROM subscriptions").fetchone()
+        finally:
+            conn.close()
+    except OSError, sqlite3.Error:
+        return "installed"
+    return _count(int(n), "subscription") if n else "installed"
+
+
 def _keys(kind: str) -> str:
     try:
         records = json.loads(KEYS_FILE.read_text())
@@ -118,6 +138,7 @@ _PROBES: dict[str, Callable[[], str]] = {
     "OpenVPN": _openvpn,
     "NetworkManager": _networkmanager,
     "Happ": _happ,
+    "INCY": _incy,
 }
 
 

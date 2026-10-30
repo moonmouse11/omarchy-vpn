@@ -290,102 +290,27 @@ def fetch_subscription(sub_id: str, url: str, force: bool = False) -> list[dict]
     return _fetch_subscription(sub_id, url, force)[0]
 
 
-SUB_FETCH_TIMEOUT = 15  # seconds per attempt
-SUB_FETCH_ATTEMPTS = 2  # OK's panel sometimes hangs, then answers in 0.4 s
-
-
 def _download_subscription(url: str) -> tuple[object, dict | None]:
-    """(parsed JSON, panel info) — retried once on a network failure; a 4xx
-    or a non-JSON answer is the panel's final word and isn't."""
-    ureq = _happmeta().urllib.request
-    req = ureq.Request(url, headers=_headers())
-    for attempt in range(SUB_FETCH_ATTEMPTS):
-        try:
-            with ureq.urlopen(req, timeout=SUB_FETCH_TIMEOUT) as resp:
-                data = json.loads(resp.read().decode())
-                return data, _parse_sub_info(resp)  # headers only readable while open
-        except ureq.HTTPError as e:
-            if e.code < 500 or attempt + 1 == SUB_FETCH_ATTEMPTS:
-                raise
-        except OSError:
-            if attempt + 1 == SUB_FETCH_ATTEMPTS:
-                raise
-    raise AssertionError("unreachable")  # pragma: no cover
+    from subscription.fetch import download_subscription  # noqa: PLC0415
 
-
-def _fetch_error_reason(e: Exception) -> str:
-    if isinstance(e, _happmeta().urllib.request.HTTPError):
-        return f"HTTP {e.code}"
-    reason = getattr(e, "reason", None)  # URLError wrapping the socket error
-    if isinstance(reason, Exception):
-        e = reason
-    if isinstance(e, TimeoutError):
-        return "timed out"
-    if isinstance(e, ValueError):
-        return "not a Happ subscription answer"
-    return str(e) or type(e).__name__
+    return download_subscription(url, _headers())
 
 
 def _fetch_subscription(sub_id: str, url: str, force: bool) -> tuple[list[dict], str | None]:
     """fetch_subscription() plus why it didn't update: None when the servers
-    are fresh (fetched now or within SUB_MAX_AGE), else a short reason —
-    the network error, or the panel's own stub row (device limit)."""
+    are fresh (fetched now or within SUB_MAX_AGE), else a short reason."""
+    from subscription.fetch import fetch_subscription_to_cache  # noqa: PLC0415
+
     hm = _happmeta()
     if hm._fetch_subscription is not _fetch_subscription:
         return hm._fetch_subscription(sub_id, url, force)
-    cache_path = _sub_cache_path(sub_id)
-    try:
-        cached = json.loads(cache_path.read_text())
-    except OSError, json.JSONDecodeError:
-        cached = None
-    fallback = cached.get("servers", []) if isinstance(cached, dict) else []
-
-    # Fresh only for THIS url: after a token rotation the record may hold a
-    # fresh cache fetched with the old url. Records without "url" predate
-    # this scheme and are treated as matching (no mass refetch).
-    if (
-        not force
-        and isinstance(cached, dict)
-        and cached.get("url", url) == url
-        and time.time() - cached.get("at", 0) < hm.SUB_MAX_AGE
-    ):
-        return fallback, None
-
-    # the url comes from Happ's log: never let it open file:// or other schemes
-    if not url.startswith(("https://", "http://")):
-        return fallback, "not an http(s) url"
-    try:
-        data, info = _download_subscription(url)
-    except (OSError, ValueError) as e:
-        return fallback, _fetch_error_reason(e)
-    if not (isinstance(data, list) and data and isinstance(data[0], dict)):
-        return fallback, "not a Happ subscription answer"
-
-    configs = [s for s in data if s.get("outbounds")]
-    servers = [s for s in configs if not is_stub_server(s)]
-    record: dict[str, Any] = {"at": time.time(), "url": url, "servers": servers}
-    error = None
-    if not servers:
-        # The panel turned us away (unsupported client, device
-        # limit): keep the last real servers, remember why.
-        record["rejected"] = [str(s.get("remarks") or "") for s in configs]
-        error = next((r for r in record["rejected"] if r), "no servers")
-        if isinstance(cached, dict) and cached.get("url") == url:
-            servers = [s for s in cached.get("servers", []) if not is_stub_server(s)]
-            record["servers"] = servers
-    if info is not None:
-        record["info"] = info
-    elif (
-        isinstance(cached, dict)
-        and cached.get("url") == url
-        and isinstance(cached.get("info"), dict)
-    ):
-        # panel answered without headers — keep the previous info
-        record["info"] = cached["info"]
-    # configs carry UUIDs and reality keys — fsutil writes 0600
-    with contextlib.suppress(OSError):
-        fsutil.write_json_atomic(cache_path, record, ensure_ascii=False)
-    return servers, error
+    return fetch_subscription_to_cache(
+        _sub_cache_path(sub_id),
+        url,
+        _headers(),
+        force=force,
+        max_age=hm.SUB_MAX_AGE,
+    )
 
 
 def _parse_sub_info(resp) -> dict | None:

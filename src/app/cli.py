@@ -34,6 +34,7 @@ from providers.base import (
     ActionResult,
 )
 from providers.happ import run_keeper as run_happ_keeper
+from providers.incy import run_keeper as run_incy_keeper
 from providers.keys import run_keeper as run_keys_keeper
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -114,6 +115,12 @@ def main() -> None:
         nargs=2,
         metavar=("KIND", "SERVER_ID"),
         help="Hold the happd session that owns a key xray process (internal)",
+    )
+    group.add_argument(
+        "--incy-keeper",
+        nargs="*",
+        metavar="SERVER [SUBSCRIPTION_ID]",
+        help="Hold the INCY xray process (internal)",
     )
     group.add_argument(
         "--ping-now",
@@ -229,6 +236,8 @@ def main() -> None:
         run_happ_keeper(*args.happ_keeper[:2])
     elif args.keys_keeper is not None:
         run_keys_keeper(*args.keys_keeper)
+    elif args.incy_keeper is not None:
+        run_incy_keeper(*args.incy_keeper[:2])
     elif args.settings:
         run_settings_window()
     elif args.configure or args.install_wizard:

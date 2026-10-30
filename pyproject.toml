@@ -41,6 +41,9 @@ allowed-confusables = ["‹", "ℹ", "×", "а", "б", "в", "В", "д", "о", "
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S", "PLR", "PLC0415"]  # asserts, fixture-heavy signatures, imports inside tests
+"src/happ/subscriptions.py" = ["F405"]  # xray constants re-exported from happ.constants
+"src/happ/servers.py" = ["F405"]
+"src/happmeta.py" = ["F401", "F403", "F405"]  # backward-compatible facade (re-exports + patchable stdlib)
 
 [tool.mypy]
 python_version = "3.14"

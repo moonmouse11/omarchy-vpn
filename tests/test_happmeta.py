@@ -1449,9 +1449,21 @@ def test_measure_ping_goes_out_the_uplink_not_the_tunnel(monkeypatch):
 
 def test_measure_ping_unbound_without_uplink_and_none_on_failure(monkeypatch):
     monkeypatch.setattr(happmeta, "uplink_interface", lambda: None)
+    monkeypatch.setattr(happmeta, "_measure_icmp", lambda *a: None)
     log = _fake_ping_socket(monkeypatch, "5.6.7.8", fail=True)
     assert happmeta.measure_ping("5.6.7.8", 443) is None
-    assert log == [("connect", ("5.6.7.8", 443))]
+    assert log == [("connect", ("5.6.7.8", 443))] * 2
+
+
+def test_measure_ping_icmp_when_tcp_fails(monkeypatch):
+    monkeypatch.setattr(happmeta, "uplink_interface", lambda: "eth0")
+    monkeypatch.setattr(happmeta, "_measure_tcp", lambda *a: None)
+
+    def icmp(h, i):
+        return 42.0 if h == "vpn.example" and i == "eth0" else None
+
+    monkeypatch.setattr(happmeta, "_measure_icmp", icmp)
+    assert happmeta.measure_ping("vpn.example", 51820) == 42.0
 
 
 def test_measure_ping_ignores_a_fake_dns_answer(monkeypatch):

@@ -337,7 +337,11 @@ def test_server_list_never_blocks_on_the_network(env, monkeypatch):
     synchronously (measured 15 s against a real stale cache, see CLAUDE.md)."""
     calls = []
     monkeypatch.setattr(
-        happmeta, "request_subscription_update", lambda: calls.append("background refresh")
+        happmeta, "request_subscription_update", lambda: calls.append("happ refresh")
+    )
+    monkeypatch.setattr(
+        "incy.subscriptions.request_subscription_update",
+        lambda: calls.append("incy refresh"),
     )
 
     def fake_all_servers(allow_fetch=True):
@@ -347,7 +351,7 @@ def test_server_list_never_blocks_on_the_network(env, monkeypatch):
     monkeypatch.setattr(happmeta, "all_servers", fake_all_servers)
     monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("Happ", [])])
     vpn_manager.server_list()
-    assert calls == ["background refresh"]
+    assert calls == ["happ refresh", "incy refresh"]
 
 
 @pytest.mark.parametrize(("captured", "hint"), [(False, True), (True, False)])

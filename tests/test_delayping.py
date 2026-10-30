@@ -328,3 +328,16 @@ def test_each_result_reaches_the_cache_as_it_arrives(sweep, monkeypatch):
     monkeypatch.setattr(delayping, "probe", fake_probe)
     delayping.run([("a", {}), ("b", {}), ("c", {})], [], direct_allowed=True)
     assert seen_in_cache == [[], ["a"], ["a", "b"]]
+
+
+def test_incy_targets_use_tun_runtime(monkeypatch):
+    entry = {"name": "DE", "provider_id": "s1", "config": _SERVER}
+    monkeypatch.setattr(
+        "incy.subscriptions.all_catalog_entries",
+        lambda allow_fetch=False: [entry],
+    )
+    pairs = delayping.incy_targets(subscription_id="s1")
+    assert len(pairs) == 1
+    key, cfg = pairs[0]
+    assert key == "s1\tDE"
+    assert cfg["inbounds"][0]["protocol"] == "tun"

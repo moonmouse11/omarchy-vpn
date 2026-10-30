@@ -61,4 +61,5 @@ def test_failed_serialization_keeps_old_file_and_leaves_no_temp(tmp_path):
     with pytest.raises(TypeError):
         fsutil.write_json_atomic(target, {"bad": object()})
     assert json.loads(target.read_text()) == {"old": True}
-    assert [p.name for p in tmp_path.iterdir()] == ["state.json"]
+    extra = {p.name for p in tmp_path.iterdir()} - {"state.json"}
+    assert extra <= {"sub-cache"}  # conftest redirects Happ/INCY sub caches here

@@ -85,6 +85,23 @@ def test_a_scope_measures_exactly_its_servers(pings, scope, xray, direct):
     assert (keys, [t[0] for t in d]) == (xray, direct)
 
 
+def test_provider_incy_scope_uses_incy_targets(pings, monkeypatch):
+    class Incy:
+        name = "INCY"
+
+        def ping_targets(self):
+            return []
+
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [Incy()])
+    monkeypatch.setattr(
+        vpn_manager.delayping,
+        "incy_targets",
+        lambda sub_id=None, name=None: [("incy1\tPL", {}), ("incy1\tDE", {})],
+    )
+    _x, incy, _d = vpn_manager._ping_scope_targets({"group": "provider:INCY"})
+    assert [k for k, _ in incy] == ["incy1\tPL", "incy1\tDE"]
+
+
 @pytest.mark.parametrize(
     ("argv", "scope"),
     [

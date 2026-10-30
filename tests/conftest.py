@@ -84,3 +84,9 @@ def _no_real_panel_caches(monkeypatch, tmp_path):
     monkeypatch.setattr(vpn_manager.happ_provider, "KEEPER_STATE", tmp_path / "happ-keeper.json")
     # a connect asks happd and pgrep whether the Happ app holds the tunnel — never the live ones
     monkeypatch.setattr(vpn_manager.happ_provider, "app_connected", lambda: False)
+    sub_cache = tmp_path / "sub-cache"
+    sub_cache.mkdir()
+    monkeypatch.setattr("happ.constants.SUB_CACHE_DIR", sub_cache)
+    import incy.subscriptions as incy_subs
+
+    monkeypatch.setattr(incy_subs, "INCY_REFRESH", sub_cache / "incy-subs-refresh.json")

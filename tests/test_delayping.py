@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -328,3 +329,53 @@ def test_each_result_reaches_the_cache_as_it_arrives(sweep, monkeypatch):
     monkeypatch.setattr(delayping, "probe", fake_probe)
     delayping.run([("a", {}), ("b", {}), ("c", {})], [], direct_allowed=True)
     assert seen_in_cache == [[], ["a"], ["a", "b"]]
+
+
+def test_incy_probe_measures_through_staged_xray(monkeypatch):
+    seen = []
+
+    def fake_popen(cfg, slot):
+        seen.append(slot)
+        return SimpleNamespace(
+            pid=1,
+            poll=lambda: 0,
+            terminate=lambda: None,
+            wait=lambda timeout=0: 0,
+        )
+
+    from incy import xray_run as xr
+
+    monkeypatch.setattr(xr, "popen_xray", fake_popen)
+    monkeypatch.setattr(delayping, "_wait_listening", lambda port, timeout: True)
+    monkeypatch.setattr(delayping, "_request_ms", lambda port, url: 42.0)
+    runtime = {"remarks": "x", "outbounds": [{"protocol": "freedom", "tag": "direct"}]}
+    ms = delayping.incy_probe(runtime, "https://example/generate_204", None)
+    assert ms == 42.0
+    assert seen == [xr.PROBE_CFG]
+
+
+def test_run_invokes_incy_probe_for_incy_targets(monkeypatch, sweep):
+    incy_cfg = {"remarks": "DE", "outbounds": [{"protocol": "freedom", "tag": "direct"}]}
+    probes = []
+
+    def record_incy(cfg, url, uplink):
+        probes.append(cfg)
+        return 11.0
+
+    monkeypatch.setattr(delayping, "incy_probe", record_incy)
+    monkeypatch.setattr(delayping, "concurrency", lambda: 1)
+    delayping.run([], [], direct_allowed=True, kind="all", xray_incy=[("sub1\tDE", incy_cfg)])
+    assert len(probes) == 1
+
+
+def test_incy_targets_use_tun_runtime(monkeypatch):
+    entry = {"name": "DE", "provider_id": "s1", "config": _SERVER}
+    monkeypatch.setattr(
+        "incy.subscriptions.all_catalog_entries",
+        lambda allow_fetch=False: [entry],
+    )
+    pairs = delayping.incy_targets(subscription_id="s1")
+    assert len(pairs) == 1
+    key, cfg = pairs[0]
+    assert key == "s1\tDE"
+    assert cfg["inbounds"][0]["protocol"] == "tun"

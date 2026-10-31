@@ -47,6 +47,7 @@ KILLSWITCH_ICON = settings_tui.KILLSWITCH_ICON
 
 def refresh_all_menu() -> ActionResult:
     spawn_manager("--update-subs-force")
+    spawn_manager("--update-incy-subs-force")
     return ActionResult(True, "Refresh started in the background")
 
 

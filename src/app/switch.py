@@ -11,6 +11,7 @@ import ipv6guard
 import killswitch
 import logutil
 import providers.happd.happ as happ_provider
+import providers.incy as incy_provider
 from app.helpers import notify
 from app.registry import _provider_pool, active_connections
 from providers.base import (
@@ -267,6 +268,8 @@ def guarded_connect(provider, connection: VPNConnection) -> ActionResult:
     # before the lock: a refused click must not supersede a switch or abort the app tunnel's checks
     if happ_provider.app_connected():  # the user's rule: the plugin or the app, never a fight
         return ActionResult(False, HAPP_APP_CONNECTED)
+    if incy_provider.app_connected():
+        return ActionResult(False, INCY_APP_CONNECTED)
     try:
         with switch_lock(action):
             return _guarded_connect(provider, connection)
@@ -276,7 +279,7 @@ def guarded_connect(provider, connection: VPNConnection) -> ActionResult:
         return _cancelled(action)
 
 
-KILLSWITCH_PROVIDERS = ("WireGuard", "AmneziaWG", "OpenVPN", "VLESS", "Shadowsocks")
+KILLSWITCH_PROVIDERS = ("WireGuard", "AmneziaWG", "OpenVPN", "VLESS", "Shadowsocks", "INCY")
 
 
 def _killswitch_wanted(provider, enabled: bool) -> bool:
@@ -293,6 +296,21 @@ def _killswitch_targets(
 ) -> tuple[list[str], list[str]]:
     """(server IPs, tunnel interfaces) the rules must let through for this
     connect. cached_only: no DNS lookups, last known addresses only."""
+    if provider.name == "INCY":
+        from incy.config import TUN_IFACE  # noqa: PLC0415
+        from incy.config import server_endpoints as incy_endpoints  # noqa: PLC0415
+        from incy.subscriptions import subscription_targets  # noqa: PLC0415
+
+        endpoints = incy_endpoints(
+            connection.name, provider_id=connection.subscription_id, allow_fetch=False
+        )
+        if not endpoints:
+            return [], []
+        ips = killswitch.resolve_endpoint_ips(
+            [(connection.name, host, port) for host, port in endpoints] + subscription_targets(),
+            cached_only=cached_only,
+        )
+        return ips, [TUN_IFACE]
     if provider.name != "Happ":
         return _killswitch_all_targets(cached_only=cached_only)
     # Under an enabled killswitch detect() finds nothing pre-connect (no
@@ -411,6 +429,9 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
 HAPP_APP_CONNECTED = (
     "The Happ app holds the connection — disconnect it first "
     "(in the Happ app, or the panel's switch)"
+)
+INCY_APP_CONNECTED = (
+    "The INCY app holds the connection — disconnect it in INCY first (same one-tunnel rule as Happ)"
 )
 SYS_NET = Path("/sys/class/net")
 OPENVPN_TUN_WAIT = 20.0  # s the connect-time DNS hole stays open for OpenVPN

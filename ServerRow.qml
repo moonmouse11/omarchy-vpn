@@ -15,6 +15,8 @@ CursorSurface {
   property bool inWindow: false
   readonly property bool canImport: inWindow && isProvider && !!row.provider.importer
   readonly property bool isHappProvider: isProvider && row.provider && row.provider.name === "Happ"
+  readonly property bool isIncyProvider: isProvider && row.provider && row.provider.name === "INCY"
+  readonly property bool isSubProvider: isHappProvider || isIncyProvider
   readonly property bool isGroup: row && row.kind === "group"
   // the tree layout's top level: a protocol (Happ, WireGuard, …)
   readonly property bool isProvider: row && row.kind === "provider"
@@ -61,6 +63,10 @@ CursorSurface {
     onClicked: function(mouse) {
       if (mouse.button === Qt.RightButton) {
         if (serverRow.inWindow) serverRow.host.showProfile(serverRow.row)
+        else if (serverRow.row && serverRow.row.kind === "server" && serverRow.server
+            && serverRow.server.active === true)
+          serverRow.host.runArgs(["--disconnect", String(serverRow.row.group.provider),
+            String(serverRow.server.name)])
         return
       }
       serverRow.host.activateServerRow(serverRow.row)
@@ -89,22 +95,121 @@ CursorSurface {
       anchors.verticalCenter: parent.verticalCenter
     }
 
-    Text {
-      textFormat: Text.PlainText
-      text: serverRow.leftText
-      color: serverRow.isAuto ? serverRow.host.dim : serverRow.host.foreground
-      font.family: serverRow.host.fontFamily
-      font.pixelSize: serverRow.isHeader ? Style.font.body : Style.font.bodySmall
-      font.bold: serverRow.isHeader || serverRow.isActive
-      elide: Text.ElideRight
-      width: parent.width - rowGlyph.width
-        - (serverRow.isHeader ? rightLabel.width : pingSlot.width)
-        - (groupPing.visible ? groupPing.width + parent.spacing : 0)
-        - (happSubRefresh.visible ? happSubRefresh.width + parent.spacing : 0)
-        - (importButton.visible ? importButton.width + parent.spacing : 0)
-        - (starButton.visible ? starButton.width + parent.spacing : 0)
-        - parent.spacing * 2
+    Item {
+      width: Math.max(Style.space(40),
+        parent.width - rowGlyph.width - actionsRow.width - parent.spacing * 2)
+      height: titleText.implicitHeight
       anchors.verticalCenter: parent.verticalCenter
+
+      Text {
+        id: titleText
+        width: parent.width
+        textFormat: Text.PlainText
+        text: serverRow.leftText
+        color: serverRow.isAuto ? serverRow.host.dim : serverRow.host.foreground
+        font.family: serverRow.host.fontFamily
+        font.pixelSize: serverRow.isHeader ? Style.font.body : Style.font.bodySmall
+        font.bold: serverRow.isHeader || serverRow.isActive
+        elide: Text.ElideRight
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    Row {
+      id: actionsRow
+      spacing: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+
+    Text {
+      id: rightLabel
+      visible: serverRow.isHeader
+      textFormat: Text.PlainText
+      text: serverRow.rightText !== "" ? serverRow.rightText : serverRow.countText
+      color: serverRow.host.dim
+      font.family: serverRow.host.fontFamily
+      font.pixelSize: Style.font.caption
+    }
+
+    // a group's ping button, next to its summary (above the row click target)
+    Text {
+      id: groupPing
+      z: 10
+      visible: serverRow.isGroup
+      textFormat: Text.PlainText
+      text: ""  // nf-fa-refresh
+      color: groupPingMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
+      font.family: serverRow.host.fontFamily
+      font.pixelSize: Style.font.caption
+
+      MouseArea {
+        id: groupPingMouse
+        anchors.fill: parent
+        anchors.margins: -Style.space(4)
+        enabled: serverRow.isGroup
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: function(mouse) {
+          mouse.accepted = true
+          serverRow.host.pingRow(serverRow.row)
+        }
+      }
+    }
+
+    ProviderPing {
+      visible: serverRow.isSubProvider
+      host: serverRow.host
+      provider: serverRow.row && serverRow.row.provider ? serverRow.row.provider.name : ""
+    }
+
+    HappSubRefresh {
+      id: subRefresh
+      visible: serverRow.isSubProvider
+      host: serverRow.host
+      provider: serverRow.row && serverRow.row.provider ? serverRow.row.provider.name : "Happ"
+    }
+
+    // ★ a favourite (always), ☆ on hover: click (or `s`) stars it — QUICK CONNECT
+    Text {
+      id: starButton
+      visible: !!serverRow.server && serverRow.row.kind === "server"
+        && (serverRow.server.favourite === true || rowMouse.containsMouse || starMouse.containsMouse)
+      textFormat: Text.PlainText
+      text: serverRow.server && serverRow.server.favourite ? "\uf005" : "\uf006"  // nf-fa-star / star_o
+      color: starMouse.containsMouse || (serverRow.server && serverRow.server.favourite)
+        ? serverRow.host.foreground : serverRow.host.dim
+      font.family: serverRow.host.fontFamily
+      font.pixelSize: Style.font.caption
+
+      MouseArea {
+        id: starMouse
+        anchors.fill: parent
+        anchors.margins: -Style.space(4)
+        enabled: starButton.visible
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: serverRow.host.toggleFavourite(serverRow.row)
+      }
+    }
+
+    // a protocol's "+ Import" (the window only)
+    Text {
+      id: importButton
+      visible: serverRow.canImport
+      textFormat: Text.PlainText
+      text: "+ Import"
+      color: importMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
+      font.family: serverRow.host.fontFamily
+      font.pixelSize: Style.font.caption
+
+      MouseArea {
+        id: importMouse
+        anchors.fill: parent
+        anchors.margins: -Style.space(4)
+        enabled: serverRow.canImport
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: serverRow.host.startImport(serverRow.row.provider)
+      }
     }
 
     // Ping column: fixed width so hover never reflows the row; empty ping keeps
@@ -114,7 +219,6 @@ CursorSurface {
       visible: !serverRow.isHeader
       width: Math.max(pingLabel.implicitWidth, Style.space(44))
       implicitHeight: pingLabel.implicitHeight
-      anchors.verticalCenter: parent.verticalCenter
 
       Text {
         id: pingLabel
@@ -142,91 +246,7 @@ CursorSurface {
       }
     }
 
-    Text {
-      id: rightLabel
-      visible: serverRow.isHeader
-      textFormat: Text.PlainText
-      text: serverRow.rightText !== "" ? serverRow.rightText : serverRow.countText
-      color: serverRow.host.dim
-      font.family: serverRow.host.fontFamily
-      font.pixelSize: Style.font.caption
-      anchors.verticalCenter: parent.verticalCenter
-    }
-
-    // ★ a favourite (always), ☆ on hover: click (or `s`) stars it — QUICK CONNECT
-    Text {
-      id: starButton
-      visible: !!serverRow.server && serverRow.row.kind === "server"
-        && (serverRow.server.favourite === true || rowMouse.containsMouse || starMouse.containsMouse)
-      textFormat: Text.PlainText
-      text: serverRow.server && serverRow.server.favourite ? "\uf005" : "\uf006"  // nf-fa-star / star_o
-      color: starMouse.containsMouse || (serverRow.server && serverRow.server.favourite)
-        ? serverRow.host.foreground : serverRow.host.dim
-      font.family: serverRow.host.fontFamily
-      font.pixelSize: Style.font.caption
-      anchors.verticalCenter: parent.verticalCenter
-
-      MouseArea {
-        id: starMouse
-        anchors.fill: parent
-        anchors.margins: -Style.space(4)
-        enabled: starButton.visible
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: serverRow.host.toggleFavourite(serverRow.row)
-      }
-    }
-
-    HappSubRefresh {
-      id: happSubRefresh
-      visible: serverRow.isHappProvider
-      host: serverRow.host
-      anchors.verticalCenter: parent.verticalCenter
-    }
-
-    // a protocol's "+ Import" (the window only)
-    Text {
-      id: importButton
-      visible: serverRow.canImport
-      textFormat: Text.PlainText
-      text: "+ Import"
-      color: importMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
-      font.family: serverRow.host.fontFamily
-      font.pixelSize: Style.font.caption
-      anchors.verticalCenter: parent.verticalCenter
-
-      MouseArea {
-        id: importMouse
-        anchors.fill: parent
-        anchors.margins: -Style.space(4)
-        enabled: serverRow.canImport
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: serverRow.host.startImport(serverRow.row.provider)
-      }
-    }
-
-    // a group's ping button, next to its summary
-    Text {
-      id: groupPing
-      visible: serverRow.isGroup
-      textFormat: Text.PlainText
-      text: ""  // nf-fa-refresh
-      color: groupPingMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
-      font.family: serverRow.host.fontFamily
-      font.pixelSize: Style.font.caption
-      anchors.verticalCenter: parent.verticalCenter
-
-      MouseArea {
-        id: groupPingMouse
-        anchors.fill: parent
-        anchors.margins: -Style.space(4)
-        enabled: serverRow.isGroup
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: serverRow.host.pingRow(serverRow.row)
-      }
-    }
+    }  // actionsRow
   }
 
   PanelToolTip {

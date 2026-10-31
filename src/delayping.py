@@ -21,6 +21,7 @@ import fcntl
 import json
 import os
 import socket
+import subprocess
 import threading
 import time
 import urllib
@@ -148,6 +149,25 @@ def happ_targets(
     return list(targets.items())
 
 
+def incy_targets(
+    subscription_id: str | None = None, name: str | None = None
+) -> list[tuple[str, dict]]:
+    """(ping cache key, tunnel config) for INCY servers — xray runs locally."""
+    from incy.config import build_incy_runtime_config  # noqa: PLC0415 — lazy
+    from incy.subscriptions import all_catalog_entries  # noqa: PLC0415 — lazy
+
+    targets: dict[str, dict] = {}
+    for entry in all_catalog_entries(allow_fetch=False):
+        sub_id = entry.get("provider_id") or ""
+        if subscription_id is not None and sub_id != subscription_id:
+            continue
+        if name is not None and entry["name"] != name:
+            continue
+        cfg = build_incy_runtime_config(entry["config"], tunnel_dns=True)
+        targets.setdefault(happmeta.ping_key(entry["name"], sub_id), cfg)
+    return list(targets.items())
+
+
 def key_targets(kind: str | None = None, name: str | None = None) -> list[tuple[str, dict]]:
     """(name, tunnel config) for the imported keys — all, one kind's, or one."""
     targets: dict[str, dict] = {}
@@ -227,6 +247,28 @@ def _start(sock: socket.socket, process_id: str, cfg: dict) -> bool:
         if frame and frame.get("request-id") == request_id:
             return frame.get("status") in ("started", "success")
     return False
+
+
+def incy_probe(runtime_cfg: dict, url: str, uplink: str | None) -> float | None:
+    """Delay through one INCY server via a short-lived local xray (no happd)."""
+    from incy.xray_run import PROBE_CFG, popen_xray  # noqa: PLC0415
+
+    port = _free_port()
+    cfg = probe_config(runtime_cfg, port, uplink)
+    proc: subprocess.Popen[bytes] | None = None
+    try:
+        proc = popen_xray(cfg, PROBE_CFG)
+        if not _wait_listening(port, LISTEN_TIMEOUT):
+            return None
+        return _request_ms(port, url)
+    except OSError:
+        return None
+    finally:
+        if proc is not None and proc.poll() is None:
+            with contextlib.suppress(OSError, ProcessLookupError):
+                proc.terminate()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=2)
 
 
 def probe(process_id: str, runtime_cfg: dict, url: str, uplink: str | None) -> float | None:
@@ -321,6 +363,8 @@ def run(
     direct_allowed: bool,
     kind: str = ALL,
     on_progress: Callable[[int, int], None] | None = None,
+    *,
+    xray_incy: list[tuple[str, dict]] | None = None,
 ) -> dict[str, dict]:
     """Measure the xray servers (in parallel, Happ's concurrency) and the
     direct targets (WireGuard/OpenVPN; marked skipped when not allowed) and
@@ -329,7 +373,8 @@ def run(
     run keeps what it got). kind (ALL or QUEUED) goes into the progress
     file: a queued ping is refused while an ALL run is on. on_progress runs
     outside the lock (it may refresh the panel)."""
-    total = len(xray) + len(direct)
+    incy = xray_incy or []
+    total = len(xray) + len(incy) + len(direct)
     started = time.time()
     url, uplink = test_url(), happmeta.uplink_interface()
     results: dict[str, dict] = {}
@@ -348,7 +393,7 @@ def run(
         if on_progress:
             on_progress(count, total)
 
-    def one(name: str, cfg: dict) -> None:
+    def one_happ(name: str, cfg: dict) -> None:
         with lock:
             slot = slots.pop()
         try:
@@ -360,10 +405,19 @@ def run(
                 slots.append(slot)
         finished(name, {"ms": ms, "at": time.time()})
 
+    def one_incy(name: str, cfg: dict) -> None:
+        try:
+            ms = incy_probe(cfg, url, uplink)
+        except OSError:
+            ms = None
+        finished(name, {"ms": ms, "at": time.time()})
+
     write_progress(0, total, kind, started)
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(slots)) as pool:
-            for future in [pool.submit(one, name, cfg) for name, cfg in xray]:
+            futures = [pool.submit(one_happ, name, cfg) for name, cfg in xray]
+            futures += [pool.submit(one_incy, name, cfg) for name, cfg in incy]
+            for future in futures:
                 future.result()
         for item in direct:
             name, host, port = item[0], item[1], item[2]

@@ -1,5 +1,5 @@
 from providers.classic import NetworkManagerProvider, OpenVPNProvider
-from providers.happd import HappProvider, KeysProvider
+from providers.happd import HappProvider, IncyProvider, KeysProvider
 from providers.kernel import AmneziaWGProvider, WireGuardProvider
 
 ALL_PROVIDERS = [
@@ -10,4 +10,5 @@ ALL_PROVIDERS = [
     OpenVPNProvider(),
     NetworkManagerProvider(),
     HappProvider(),
+    IncyProvider(),
 ]

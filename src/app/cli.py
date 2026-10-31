@@ -34,6 +34,7 @@ from providers.base import (
     ActionResult,
 )
 from providers.happ import run_keeper as run_happ_keeper
+from providers.incy import run_keeper as run_incy_keeper
 from providers.keys import run_keeper as run_keys_keeper
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -116,6 +117,12 @@ def main() -> None:
         help="Hold the happd session that owns a key xray process (internal)",
     )
     group.add_argument(
+        "--incy-keeper",
+        nargs="*",
+        metavar="SERVER [SUBSCRIPTION_ID]",
+        help="Hold the INCY xray process (internal)",
+    )
+    group.add_argument(
         "--ping-now",
         nargs="*",
         metavar="group ID | server PROVIDER NAME [SUB_ID]",
@@ -130,6 +137,16 @@ def main() -> None:
         "--update-subs-force",
         action="store_true",
         help="Like --update-subs but bypassing the SUB_MAX_AGE cache gate (Refresh All)",
+    )
+    group.add_argument(
+        "--update-incy-subs",
+        action="store_true",
+        help="Refresh INCY subscription caches in the background (internal)",
+    )
+    group.add_argument(
+        "--update-incy-subs-force",
+        action="store_true",
+        help="Like --update-incy-subs but bypassing the cache gate (Refresh All)",
     )
     group.add_argument(
         "--update-reputation",
@@ -225,10 +242,24 @@ def main() -> None:
         failed = happmeta.update_subscriptions(force=True)
         notify(*_patched("subscription_report", subscription_report)(failed))
         _patched("refresh_bar", refresh_bar)()
+    elif args.update_incy_subs:
+        from incy.subscriptions import update_subscriptions as update_incy_subs  # noqa: PLC0415
+
+        for name, why in update_incy_subs().items():
+            logutil.log(f"incy subscription {name} not updated: {why}")
+    elif args.update_incy_subs_force:
+        from incy.subscriptions import update_subscriptions as update_incy_subs  # noqa: PLC0415
+
+        failed = update_incy_subs(force=True)
+        for name, why in failed.items():
+            logutil.log(f"incy subscription {name} not updated: {why}")
+        _patched("refresh_bar", refresh_bar)()
     elif args.happ_keeper is not None:
         run_happ_keeper(*args.happ_keeper[:2])
     elif args.keys_keeper is not None:
         run_keys_keeper(*args.keys_keeper)
+    elif args.incy_keeper is not None:
+        run_incy_keeper(*args.incy_keeper[:2])
     elif args.settings:
         run_settings_window()
     elif args.configure or args.install_wizard:

@@ -199,6 +199,9 @@ def server_list() -> dict:
     (it runs when the panel opens); stale subscriptions refresh in the
     background like the menu's, pings only on the Ping button."""
     happmeta.request_subscription_update()
+    from incy.subscriptions import request_subscription_update as request_incy_subs  # noqa: PLC0415
+
+    request_incy_subs()
     pinging = _pinging()
     groups: list[dict] = []
     # every visible protocol, empty ones too: the window's tree/tabs/sidebar list them
@@ -242,6 +245,17 @@ def server_list() -> dict:
             # nothing at all with default headers: a panel may want Happ's own
             if len(groups) == first and not happmeta.has_headers():
                 groups.append(_server_group("happ:no-headers", "Happ", HAPP_NO_HEADERS_TITLE, []))
+        elif provider.name == "INCY":
+            from providers.incy import incy_server_groups  # noqa: PLC0415 — optional provider
+
+            _servers, incy_groups = incy_server_groups(provider)
+            for pname, entries in incy_groups.items():
+                sub_id = entries[0].get("provider_id") or "" if entries else ""
+                groups.append(
+                    _server_group(
+                        f"incy:{sub_id}:{pname}", "INCY", pname, entries, sub_id, pinging=pinging
+                    )
+                )
         else:
             try:
                 conns = provider.connections()
@@ -331,6 +345,14 @@ def panel_connect(provider_name: str, name: str, sub_id: str | None = None) -> A
             subscription_id=sub_id or None,
             subscription_name=sub_name,
         )
+    elif provider.name == "INCY" and sub_id:
+        found = next(
+            (c for c in provider.connections() if c.name == name and c.subscription_id == sub_id),
+            None,
+        )
+        if found is None:
+            return ActionResult(False, f"{provider_name}: {name} not found in that subscription")
+        conn = found
     else:
         found = next((c for c in provider.connections() if c.name == name), None)
         if found is None:
@@ -338,7 +360,8 @@ def panel_connect(provider_name: str, name: str, sub_id: str | None = None) -> A
         conn = found
     result = _guarded_connect(provider, conn)
     if result.success:  # QUICK CONNECT's recent, and the power switch's "last server"
-        quickconnect.remember(provider.name, name, sub_id if provider.name == "Happ" else None)
+        remember_sub = sub_id if provider.name in ("Happ", "INCY") else None
+        quickconnect.remember(provider.name, name, remember_sub)
     return result
 
 

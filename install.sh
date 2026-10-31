@@ -94,7 +94,8 @@ SUDOERS_FILE="/etc/sudoers.d/vpn-manager"
 # Managed by this installer: rewrite on every run so upgrades pick up new rules.
 # Three things only, each with a fixed command surface:
 #   omarchy-vpn-helper (scripts/, root-owned): WireGuard/AmneziaWG/OpenVPN up/down,
-#     import, delete, autostart, endpoints — profile names only, never paths, and
+#     import, delete, autostart, endpoints, incy-run (INCY xray TUN) — profile names
+#     only, never paths, and
 #     it refuses imports that could run commands as root (WireGuard PostUp/…,
 #     OpenVPN directives off its allowlist: up/route-up/plugin/…);
 #   happ-killswitch (root-owned): the kill switch's nft rules;
@@ -228,4 +229,16 @@ echo "==> Done!"
 echo "    - bar widget:  omarchy plugin enable/disable $PLUGIN_ID, move with omarchy bar move"
 echo "    - keybinding:  SUPER+Shift+V opens the VPN window"
 echo "    - settings:    the window's Settings button, or re-run this installer"
+HINTS=$(python3 -B -c "
+import sys
+sys.path.insert(0, '$REPO_DIR/src')
+import config
+from installwizard import detect, hints
+for line in hints(config.load_config(), detect()):
+    print(line)
+" 2>/dev/null) || true
+if [[ -n $HINTS ]]; then
+    echo ""
+    echo "$HINTS" | sed 's/^/    /'
+fi
 echo ""

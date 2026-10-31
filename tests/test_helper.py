@@ -310,6 +310,12 @@ def test_openvpn_down_kills_only_the_profiles_openvpn(tree, comm, killed):
     assert (result.returncode == 0) is killed
 
 
+def test_incy_run_rejects_unknown_config_slot(tree):
+    result = tree("incy-run", "not-allowed.json")
+    assert result.returncode != 0
+    assert "invalid incy config slot" in result.stderr
+
+
 def test_audit_lists_configs_on_disk_that_run_root_commands(tree):
     """make install warns about configs that predate the helper: imports
     refuse hooks, but `up` runs whatever is already there."""

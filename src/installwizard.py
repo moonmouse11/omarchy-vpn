@@ -10,6 +10,7 @@ import contextlib
 import getpass
 import json
 import shutil
+import sqlite3
 import subprocess
 import sys
 from abc import ABC, abstractmethod
@@ -94,6 +95,23 @@ def _happ() -> str:
     return _count(n, "subscription") if n else "installed"
 
 
+def _incy() -> str:
+    from incy.paths import incy_installed  # noqa: PLC0415 — detect after import
+
+    db = Path.home() / ".local/share/incy/incy.db"
+    if not db.is_file():
+        return "installed" if incy_installed() else ""
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
+        try:
+            (n,) = conn.execute("SELECT COUNT(*) FROM subscriptions").fetchone()
+        finally:
+            conn.close()
+    except OSError, sqlite3.Error:
+        return "installed"
+    return _count(int(n), "subscription") if n else "installed"
+
+
 def _keys(kind: str) -> str:
     try:
         records = json.loads(KEYS_FILE.read_text())
@@ -118,6 +136,7 @@ _PROBES: dict[str, Callable[[], str]] = {
     "OpenVPN": _openvpn,
     "NetworkManager": _networkmanager,
     "Happ": _happ,
+    "INCY": _incy,
 }
 
 
@@ -181,6 +200,14 @@ def hints(cfg: Config, det: Detection, switched: bool = False) -> list[str]:
         lines.append(
             "Happ isn't installed (AUR: happ-desktop-bin) — Happ and VLESS/Shadowsocks keys need it"
         )
+    if cfg.provider_visible("INCY"):
+        from incy.paths import incy_installed  # noqa: PLC0415
+
+        if not incy_installed():
+            lines.append(
+                "INCY xray not found — install incy-bin (AUR) or the GitHub .pkg.tar.zst; "
+                "or set OMARCHY_VPN_INCY_ROOT to your INCY install directory"
+            )
     if resolved_mismatch(cfg, det) and not switched:
         lines.append(
             "DNS: /etc/resolv.conf isn't systemd-resolved's stub — "

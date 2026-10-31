@@ -86,6 +86,32 @@ class NetworkManagerProvider(VPNProvider):
 
         return nm.shutil.which("nmcli") is not None
 
+    def active_connections(self) -> list[VPNConnection]:
+        if not self._available():
+            return []
+        code, out = _nm_run(
+            ["nmcli", "-t", "-f", "NAME,UUID,TYPE,DEVICE", "connection", "show", "--active"]
+        )
+        if code != 0:
+            return []
+        result: list[VPNConnection] = []
+        for fields in _terse_lines(out):
+            if len(fields) < 4:
+                continue
+            conn_name, uuid, conn_type, device = fields[0], fields[1], fields[2], fields[3]
+            if conn_type.lower() not in VPN_TYPES:
+                continue
+            result.append(
+                VPNConnection(
+                    name=conn_name,
+                    provider=self.name,
+                    active=True,
+                    interface=device or None,
+                    uuid=uuid,
+                )
+            )
+        return result
+
     def connections(self) -> list[VPNConnection]:
         if not self._available():
             return []

@@ -602,6 +602,28 @@ class KeysProvider(VPNProvider):
     def tunnel_iface(self) -> str:
         return IFACES[self._kind]
 
+    def active_connections(self) -> list[VPNConnection]:
+        pub = _pub()
+        process_id, iface, state_path = pub._kind_meta(self._kind)
+        tun = Path(f"/sys/class/net/{iface}")
+        up = process_id in pub._daemon_running_processes() or tun.exists()
+        if not up:
+            return []
+        state = _read_keeper_state(state_path)
+        if not state or state.get("status") not in ("connected", "connecting"):
+            return []
+        server = state.get("server")
+        if not server:
+            return []
+        return [
+            VPNConnection(
+                name=server,
+                provider=self.name,
+                active=True,
+                interface=iface,
+            )
+        ]
+
     def connections(self) -> list[VPNConnection]:
         pub = _pub()
         process_id, iface, state_path = pub._kind_meta(self._kind)

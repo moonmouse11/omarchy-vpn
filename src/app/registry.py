@@ -35,4 +35,11 @@ def active_connections(providers=None) -> list[VPNConnection]:
                 return remote(providers=providers)
             return remote()
     pool = providers if providers is not None else _provider_pool()
-    return [conn for provider in pool for conn in provider.connections() if conn.active]
+    out: list[VPNConnection] = []
+    for provider in pool:
+        if hasattr(provider, "active_connections"):
+            out.extend(provider.active_connections())
+        else:
+            # Test doubles only implement connections().
+            out.extend(c for c in provider.connections() if c.active)
+    return out

@@ -229,6 +229,24 @@ def test_connections_marks_active_from_keeper_state(store, monkeypatch):
     ]
 
 
+def test_active_connections_empty_when_tunnel_down(store, monkeypatch):
+    keys.add_server(keys.parse_ss_key(ss_url(tag="s1")))
+    monkeypatch.setattr(keys, "_daemon_running_processes", list)
+    assert keys.KeysProvider("ss").active_connections() == []
+
+
+def test_active_connections_from_keeper_only(store, monkeypatch):
+    keys.add_server(keys.parse_ss_key(ss_url(tag="s1")))
+    keys.add_server(keys.parse_ss_key(ss_url(host="b.com", tag="s2")))
+    monkeypatch.setattr(keys, "_daemon_running_processes", lambda: ["xray-keys-ss"])
+    monkeypatch.setattr(
+        keys, "_read_keeper_state", lambda path: {"status": "connected", "server": "s1"}
+    )
+    active = keys.KeysProvider("ss").active_connections()
+    assert len(active) == 1
+    assert active[0].name == "s1" and active[0].interface == "keys-ss-tun0"
+
+
 def test_connections_empty_without_servers(store):
     assert keys.KeysProvider("ss").connections() == []
 

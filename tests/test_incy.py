@@ -249,6 +249,27 @@ def test_update_subscriptions_records_fetch_errors(tmp_path, monkeypatch):
     assert incy_subs.update_subscriptions(force=True) == {"WireCat": "timeout"}
 
 
+def test_fetch_servers_without_url_returns_error(tmp_path, monkeypatch):
+    from incy import subscriptions as incy_subs
+
+    db = tmp_path / "incy.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE subscriptions (
+            id TEXT PRIMARY KEY, name TEXT, isEnabled INTEGER DEFAULT 1, url TEXT
+        );
+        INSERT INTO subscriptions VALUES ('sub1', 'P', 1, NULL);
+        """
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(incy_mod, "INCY_DB", db)
+    servers, err = incy_subs.fetch_servers("sub1")
+    assert servers == []
+    assert err == "subscription not in incy.db"
+
+
 def test_subscription_targets_from_db(tmp_path, monkeypatch):
     from incy import subscriptions as incy_subs
 
@@ -383,6 +404,17 @@ def test_run_keeper_connects_with_mock_xray(tmp_path, monkeypatch):
     state = json.loads((tmp_path / "keeper.json").read_text())
     assert state.get("status") == "exited"
     assert state.get("server") == "🇩🇪 DE"
+
+
+def test_update_incy_subs_cli_logs_failures(monkeypatch):
+    import incy.subscriptions as incy_subs
+
+    monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", "--update-incy-subs"])
+    logged = []
+    monkeypatch.setattr(vpn_manager.logutil, "log", logged.append)
+    monkeypatch.setattr(incy_subs, "update_subscriptions", lambda force=False: {"P": "HTTP 403"})
+    vpn_manager.main()
+    assert any("HTTP 403" in line for line in logged)
 
 
 def test_manual_incy_subscription_refresh_refreshes_bar(monkeypatch):

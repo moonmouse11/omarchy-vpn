@@ -16,11 +16,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "--status":
-        import json  # bar tick: skip CLI/facade imports below
+        from app.status import emit_status_json
 
-        from app.status import get_status
-
-        print(json.dumps(get_status()))
+        emit_status_json()
     else:
         from app.cli import main
 
@@ -91,6 +89,7 @@ from app.status import (  # noqa: F401
     _switch_in_progress,
     activity_text,
     connecting_text,
+    emit_status_json,
     get_status,
     label_fields,
     panel_state,

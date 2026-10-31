@@ -1,9 +1,25 @@
+import json
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 import config
 import vpn_manager
 from app.spawn import MANAGER
 from providers.base import ActionResult, VPNConnection
+
+SRC = Path(__file__).resolve().parent.parent / "src"
+_MANAGER = SRC / "vpn_manager.py"
+# conftest fakes subprocess.Popen; --status probe needs a real child (see test_lazyimports.py).
+_REAL_RUN = subprocess.run
+_REAL_POPEN = subprocess.Popen
+
+
+@pytest.fixture(autouse=True)
+def _real_subprocess_for_status_probe(monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
 
 
 class FakeProvider:
@@ -54,6 +70,43 @@ def test_request_ip_update_spawns_vpn_manager(monkeypatch):
 
 def test_request_dns_autotest_spawns_vpn_manager(monkeypatch):
     _expect_manager_spawn(monkeypatch, vpn_manager.request_dns_autotest, "--dns-autotest")
+
+
+def test_vpn_manager_main_status_entry_prints_json():
+    """Widget runs vpn_manager.py as __main__ with --status, not import vpn_manager."""
+    probe = f"""
+import runpy
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+sys.path.insert(0, {str(SRC)!r})
+tmp = Path(tempfile.mkdtemp())
+import delayping
+import fsutil
+import killswitch
+import providers
+
+killswitch.STATE_CACHE = tmp / "killswitch-state.json"
+fsutil.write_json_atomic(killswitch.STATE_CACHE, {{"at": time.time(), "on": False}})
+killswitch.RESOLVED_CACHE = tmp / "resolved-ips.json"
+killswitch.RESOLV_CONF = tmp / "resolv.conf"
+delayping.PROGRESS = tmp / "ping-progress.json"
+providers.ALL_PROVIDERS = []
+sys.argv = [{str(_MANAGER)!r}, "--status"]
+runpy.run_path({str(_MANAGER)!r}, run_name="__main__")
+"""
+    out = _REAL_RUN(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    data = json.loads(out.stdout)
+    assert data["class"] == "vpn-disconnected"
+    assert "panel" in data and data["text"] == " VPN"
 
 
 def test_disconnected(monkeypatch):

@@ -1,6 +1,7 @@
 """Bar widget JSON (--status) and panel hero state."""
 
 import fcntl
+import json
 
 import config
 import delayping
@@ -103,6 +104,11 @@ def get_status() -> dict:
         "class": classes,
         "panel": panel,
     }
+
+
+def emit_status_json() -> None:
+    """Print bar widget JSON to stdout — the only --status output path."""
+    print(json.dumps(get_status()))
 
 
 def _badge(badge_id: str, label: str, state: str, hint: str) -> dict:

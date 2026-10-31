@@ -219,6 +219,34 @@ class WireGuardProvider(VPNProvider):
         AmneziaWG overrides (its link type may be unknown to ip(8))."""
         return set()
 
+    def active_connections(self) -> list[VPNConnection]:
+        active = set(_active_interfaces(self.link_type)) | self._extra_active()
+        if not active:
+            return []
+        result: list[VPNConnection] = []
+        if self.config_dir.exists():
+            for conf in sorted(self.config_dir.glob(_WG_CONF_GLOB)):
+                profile = conf.stem
+                if profile not in active:
+                    continue
+                result.append(
+                    VPNConnection(
+                        name=profile,
+                        provider=self.name,
+                        active=True,
+                        interface=profile,
+                        config_path=str(conf),
+                    )
+                )
+        known = {c.name for c in result}
+        excluded = {p.stem for d in self.other_config_dirs for p in d.glob(_WG_CONF_GLOB)}
+        result.extend(
+            VPNConnection(name=iface, provider=self.name, active=True, interface=iface)
+            for iface in active
+            if iface not in known and iface not in excluded
+        )
+        return result
+
     def connections(self) -> list[VPNConnection]:
         active = set(_active_interfaces(self.link_type)) | self._extra_active()
         result: list[VPNConnection] = []

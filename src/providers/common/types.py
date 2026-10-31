@@ -44,6 +44,10 @@ class VPNProvider(ABC):
         """Return all known connections (active and inactive)"""
         ...
 
+    def active_connections(self) -> list[VPNConnection]:
+        """Tunnels up right now — default scans connections(); providers override."""
+        return [c for c in self.connections() if c.active]
+
     @abstractmethod
     def connect(self, connection: VPNConnection) -> ActionResult: ...
 

@@ -18,6 +18,14 @@ from providers.common.types import ActionResult, PingTarget, VPNConnection, VPNP
 INCY_CONFIG = Path.home() / ".config/incy"
 INCY_SOCK = Path.home() / ".cache/incy/incy.sock"
 IFACE_PREFIX = "incy-"
+_INCY_LINK = Path(f"/sys/class/net/{TUN_IFACE}")
+
+
+def _incy_link_up() -> bool:
+    try:
+        return _INCY_LINK.is_dir()
+    except OSError:
+        return False
 
 
 def _pub():
@@ -56,10 +64,12 @@ def _incy_xray_running() -> bool:
 
 def app_connected() -> bool:
     """INCY GUI owns a tunnel (INCY xray up, not our keeper)."""
-    if not _incy_xray_running():
+    if not _incy_link_up():
         return False
     state = _read_keeper_state()
-    return not (state and state.get("status") == "connected" and state.get("pid"))
+    if state and state.get("status") == "connected" and state.get("pid"):
+        return False
+    return _incy_xray_running()
 
 
 def _load_connections() -> list[VPNConnection]:
@@ -145,6 +155,22 @@ class IncyProvider(VPNProvider):
     @property
     def name(self) -> str:
         return "INCY"
+
+    def active_connections(self) -> list[VPNConnection]:
+        state = _read_keeper_state()
+        if state and state.get("status") == "connected" and state.get("server"):
+            return [
+                VPNConnection(
+                    name=state["server"],
+                    provider=self.name,
+                    active=True,
+                    interface=TUN_IFACE,
+                    subscription_id=state.get("provider_id"),
+                )
+            ]
+        if not _incy_link_up():
+            return []
+        return [c for c in _load_connections() if c.active]
 
     def connections(self) -> list[VPNConnection]:
         return _load_connections()

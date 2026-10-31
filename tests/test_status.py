@@ -1,6 +1,8 @@
 import json
+import runpy
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -29,6 +31,20 @@ class FakeProvider:
 
     def connections(self):
         return self._conns
+
+
+def _hermetic_status_env(tmp_path: Path) -> None:
+    import delayping
+    import fsutil
+    import killswitch
+    import providers
+
+    killswitch.STATE_CACHE = tmp_path / "killswitch-state.json"
+    fsutil.write_json_atomic(killswitch.STATE_CACHE, {"at": time.time(), "on": False})
+    killswitch.RESOLVED_CACHE = tmp_path / "resolved-ips.json"
+    killswitch.RESOLV_CONF = tmp_path / "resolv.conf"
+    delayping.PROGRESS = tmp_path / "ping-progress.json"
+    providers.ALL_PROVIDERS = []
 
 
 def patch_env(
@@ -72,8 +88,45 @@ def test_request_dns_autotest_spawns_vpn_manager(monkeypatch):
     _expect_manager_spawn(monkeypatch, vpn_manager.request_dns_autotest, "--dns-autotest")
 
 
-def test_vpn_manager_main_status_entry_prints_json():
-    """Widget runs vpn_manager.py as __main__ with --status, not import vpn_manager."""
+def test_emit_status_json_prints_get_status(monkeypatch, capsys):
+    patch_env(monkeypatch, [])
+    from app.status import emit_status_json
+
+    emit_status_json()
+    data = json.loads(capsys.readouterr().out.strip())
+    assert data["class"] == "vpn-disconnected"
+    assert data["text"] == " VPN"
+
+
+def test_main_status_flag_prints_json(monkeypatch, capsys):
+    patch_env(monkeypatch, [])
+    monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", "--status"])
+    vpn_manager.main()
+    data = json.loads(capsys.readouterr().out.strip())
+    assert data["class"] == "vpn-disconnected"
+
+
+def test_vpn_manager_main_early_status_entry(monkeypatch, tmp_path, capsys):
+    """Widget path: __main__ + exactly --status (counts toward coverage in-process)."""
+    _hermetic_status_env(tmp_path)
+    monkeypatch.setattr(sys, "argv", [str(_MANAGER), "--status"])
+    with pytest.raises(SystemExit):
+        runpy.run_path(str(_MANAGER), run_name="__main__")
+    data = json.loads(capsys.readouterr().out.strip())
+    assert data["class"] == "vpn-disconnected"
+    assert "panel" in data
+
+
+def test_vpn_manager_main_non_status_argv_uses_cli(monkeypatch, tmp_path):
+    """More than two argv entries skip the fast path and call app.cli.main."""
+    _hermetic_status_env(tmp_path)
+    monkeypatch.setattr(sys, "argv", [str(_MANAGER), "--install-wizard"])
+    with pytest.raises(SystemExit):
+        runpy.run_path(str(_MANAGER), run_name="__main__")
+
+
+def test_vpn_manager_main_status_entry_subprocess():
+    """Same as early entry, in a fresh interpreter (regression guard)."""
     probe = f"""
 import runpy
 import sys
@@ -106,7 +159,6 @@ runpy.run_path({str(_MANAGER)!r}, run_name="__main__")
     )
     data = json.loads(out.stdout)
     assert data["class"] == "vpn-disconnected"
-    assert "panel" in data and data["text"] == " VPN"
 
 
 def test_disconnected(monkeypatch):

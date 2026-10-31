@@ -76,6 +76,26 @@ def _terse_lines(output: str) -> list[list[str]]:
     return lines
 
 
+def _vpn_connection_from_nm_fields(
+    conn_name: str,
+    uuid: str,
+    conn_type: str,
+    *,
+    active: bool,
+    interface: str | None,
+    provider_name: str,
+) -> VPNConnection | None:
+    if conn_type.lower() not in VPN_TYPES:
+        return None
+    return VPNConnection(
+        name=conn_name,
+        provider=provider_name,
+        active=active,
+        interface=interface or None,
+        uuid=uuid,
+    )
+
+
 class NetworkManagerProvider(VPNProvider):
     @property
     def name(self) -> str:
@@ -98,18 +118,16 @@ class NetworkManagerProvider(VPNProvider):
         for fields in _terse_lines(out):
             if len(fields) < 4:
                 continue
-            conn_name, uuid, conn_type, device = fields[0], fields[1], fields[2], fields[3]
-            if conn_type.lower() not in VPN_TYPES:
-                continue
-            result.append(
-                VPNConnection(
-                    name=conn_name,
-                    provider=self.name,
-                    active=True,
-                    interface=device or None,
-                    uuid=uuid,
-                )
+            conn = _vpn_connection_from_nm_fields(
+                fields[0],
+                fields[1],
+                fields[2],
+                active=True,
+                interface=fields[3] or None,
+                provider_name=self.name,
             )
+            if conn is not None:
+                result.append(conn)
         return result
 
     def connections(self) -> list[VPNConnection]:
@@ -134,18 +152,17 @@ class NetworkManagerProvider(VPNProvider):
             if len(fields) < 3:
                 continue
             conn_name, uuid, conn_type = fields[0], fields[1], fields[2]
-            if conn_type.lower() not in VPN_TYPES:
-                continue
             device = active.get(uuid)
-            result.append(
-                VPNConnection(
-                    name=conn_name,
-                    provider=self.name,
-                    active=uuid in active,
-                    interface=device or None,
-                    uuid=uuid,
-                )
+            conn = _vpn_connection_from_nm_fields(
+                conn_name,
+                uuid,
+                conn_type,
+                active=uuid in active,
+                interface=device or None,
+                provider_name=self.name,
             )
+            if conn is not None:
+                result.append(conn)
         return result
 
     def connect(self, connection: VPNConnection) -> ActionResult:

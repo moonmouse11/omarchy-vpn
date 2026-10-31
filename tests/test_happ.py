@@ -429,6 +429,39 @@ def test_active_connections_one_sub_cache_skips_all_servers(tmp_path, monkeypatc
     assert all_calls["n"] == 0
 
 
+def test_active_connections_sub_cache_miss_falls_back_to_all_servers(tmp_path, monkeypatch):
+    """Keeper provider_id set but name not in that cache — scan every subscription once."""
+    import happmeta
+
+    servers = [
+        {"name": "🇪🇪 Estonia", "provider_id": "2", "provider_name": "Other", "config": {}},
+    ]
+    keeper = {"status": "connected", "server": "🇪🇪 Estonia", "provider_id": "1"}
+    _patch_env(monkeypatch, tmp_path, servers, ["happ-xray"], ["xray-core"], None, keeper)
+    all_calls = {"n": 0}
+
+    def count_all(*args, **kwargs):
+        all_calls["n"] += 1
+        return servers
+
+    monkeypatch.setattr(happmeta, "all_servers", count_all)
+    monkeypatch.setattr(
+        happmeta,
+        "fetch_subscription_cached",
+        lambda sub_id: (
+            [{"remarks": "🇩🇪 Germany 4", "outbounds": [{"protocol": "vless"}]}]
+            if sub_id == "1"
+            else []
+        ),
+    )
+    monkeypatch.setattr(happmeta, "providers", lambda: {"1": {"name": "MySub"}})
+
+    active = happ.HappProvider().active_connections()
+    assert len(active) == 1
+    assert active[0].name == "🇪🇪 Estonia"
+    assert all_calls["n"] == 1
+
+
 def test_connections_marks_active_from_keeper(tmp_path, monkeypatch):
     servers = [
         {"name": "🇩🇪 Germany 1", "provider_id": "1", "provider_name": "P", "config": {}},

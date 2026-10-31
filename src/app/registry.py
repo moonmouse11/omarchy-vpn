@@ -38,8 +38,10 @@ def active_connections(providers=None) -> list[VPNConnection]:
     out: list[VPNConnection] = []
     for provider in pool:
         if hasattr(provider, "active_connections"):
+            # Every real VPNProvider inherits active_connections(); overrides must
+            # avoid full connections() on the --status path (default is slow).
             out.extend(provider.active_connections())
         else:
-            # Test doubles only implement connections().
+            # Plain test fakes: connections() only.
             out.extend(c for c in provider.connections() if c.active)
     return out

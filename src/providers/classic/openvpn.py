@@ -43,8 +43,22 @@ def _ovpn_dir() -> Path:
     return pub.OVPN_DIR
 
 
+def _pid_dir() -> Path:
+    from providers import openvpn as pub  # noqa: PLC0415 — tests patch openvpn.PID_DIR
+
+    return pub.PID_DIR
+
+
 def _pid_file(profile: str) -> Path:
-    return PID_DIR / f"client-{profile}.pid"
+    return _pid_dir() / f"client-{profile}.pid"
+
+
+def _config_for_profile(ovpn_dir: Path, profile: str) -> Path | None:
+    for ext in _OVPN_SUFFIXES:
+        path = ovpn_dir / f"{profile}{ext}"
+        if path.exists():
+            return path
+    return None
 
 
 def _is_running(profile: str) -> bool:
@@ -88,12 +102,16 @@ class OpenVPNProvider(VPNProvider):
 
     def active_connections(self) -> list[VPNConnection]:
         ovpn_dir = _ovpn_dir()
-        if not ovpn_dir.exists():
+        pid_dir = _pid_dir()
+        if not ovpn_dir.exists() or not pid_dir.exists():
             return []
         result: list[VPNConnection] = []
-        for conf in sorted(ovpn_dir.glob(_OVPN_GLOB_CONF)) + sorted(ovpn_dir.glob(_OVPN_GLOB_OVPN)):
-            profile = conf.stem
+        for pid_file in sorted(pid_dir.glob("client-*.pid")):
+            profile = pid_file.name.removeprefix("client-").removesuffix(".pid")
             if not _is_running(profile):
+                continue
+            conf = _config_for_profile(ovpn_dir, profile)
+            if conf is None:
                 continue
             result.append(
                 VPNConnection(

@@ -44,7 +44,11 @@ def test_openvpn_active_connections_only_running(tmp_path, monkeypatch):
     d.mkdir()
     (d / "a.conf").write_text("client\n")
     (d / "b.conf").write_text("client\n")
+    pid_dir = tmp_path / "run" / "openvpn"
+    pid_dir.mkdir(parents=True)
+    (pid_dir / "client-a.pid").write_text("1\n")
     monkeypatch.setattr(openvpn, "OVPN_DIR", d)
+    monkeypatch.setattr(openvpn, "PID_DIR", pid_dir)
     monkeypatch.setattr(openvpn_impl, "_is_running", lambda profile: profile == "a")
     active = OpenVPNProvider().active_connections()
     assert len(active) == 1

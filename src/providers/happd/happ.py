@@ -595,26 +595,6 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
         logutil.log("keeper: exited")
 
 
-def _servers_from_cached_sub(sub_id: str) -> list[dict]:
-    from happ.subscriptions import is_stub_server  # noqa: PLC0415
-
-    prov = happmeta.providers().get(sub_id) or {}
-    sub_name = prov.get("name", "")
-    servers: list[dict] = []
-    for cfg in happmeta.fetch_subscription_cached(sub_id):
-        if is_stub_server(cfg):
-            continue
-        servers.append(
-            {
-                "name": cfg.get("remarks") or "?",
-                "provider_id": sub_id,
-                "provider_name": sub_name,
-                "config": cfg,
-            }
-        )
-    return servers
-
-
 def _happ_active_identity() -> tuple[str | None, str | None]:
     state = _read_keeper_state()
     active_name = active_sub = None
@@ -650,10 +630,13 @@ class HappProvider(VPNProvider):
             ]
         matched: dict | None = None
         if active_sub:
+            from happ.servers import servers_from_cached_subscription  # noqa: PLC0415
+
             matched = happmeta.match_server(
-                active_name, _servers_from_cached_sub(active_sub), active_sub
+                active_name, servers_from_cached_subscription(active_sub), active_sub
             )
         if matched is None:
+            # Happ GUI tunnels often have no keeper provider_id — still need every cache.
             matched = happmeta.match_server(
                 active_name, happmeta.all_servers(allow_fetch=False), active_sub
             )

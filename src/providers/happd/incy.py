@@ -197,6 +197,7 @@ class IncyProvider(VPNProvider):
             ]
         if not _incy_link_up():
             return []
+        # INCY app-owned tunnel: full incy.db read (no plugin keeper state).
         return [c for c in _load_connections() if c.active]
 
     def connections(self) -> list[VPNConnection]:

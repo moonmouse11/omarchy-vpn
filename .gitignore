@@ -61,8 +61,10 @@ docs
 .claude 
 .vibe-wise/
 .agents/
+.cursor/
 skills-lock.json
 .pi/
+autoresearch/
 .context/
 
 Backlog.md

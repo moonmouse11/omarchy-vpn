@@ -190,6 +190,25 @@ def _configs() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def servers_from_cached_subscription(sub_id: str) -> list[dict]:
+    """One provider's subscription cache as server rows — same shape as `all_servers`."""
+    prov = providers().get(sub_id) or {}
+    sub_name = prov.get("name", "")
+    servers: list[dict] = []
+    for cfg in _happmeta().fetch_subscription_cached(sub_id):
+        if is_stub_server(cfg):
+            continue
+        servers.append(
+            {
+                "name": cfg.get("remarks") or "?",
+                "provider_id": sub_id,
+                "provider_name": sub_name,
+                "config": cfg,
+            }
+        )
+    return servers
+
+
 def all_servers(allow_fetch: bool = True) -> list[dict]:
     """[{name, provider_id, provider_name, config(subscription raw)}] —
     everything we can connect to, grouped per provider.
@@ -203,23 +222,22 @@ def all_servers(allow_fetch: bool = True) -> list[dict]:
         if not url:
             continue
         hm = _happmeta()
-        cfgs = (
-            hm.fetch_subscription(sub_id, url)
-            if allow_fetch
-            else hm.fetch_subscription_cached(sub_id)
-        )
-        for cfg in cfgs:
-            if is_stub_server(cfg):  # caches written before stubs were filtered
-                continue
-            name = cfg.get("remarks") or "?"
-            servers.append(
-                {
-                    "name": name,
-                    "provider_id": sub_id,
-                    "provider_name": prov["name"],
-                    "config": cfg,
-                }
-            )
+        if allow_fetch:
+            cfgs = hm.fetch_subscription(sub_id, url)
+            for cfg in cfgs:
+                if is_stub_server(cfg):  # caches written before stubs were filtered
+                    continue
+                name = cfg.get("remarks") or "?"
+                servers.append(
+                    {
+                        "name": name,
+                        "provider_id": sub_id,
+                        "provider_name": prov["name"],
+                        "config": cfg,
+                    }
+                )
+        else:
+            servers.extend(servers_from_cached_subscription(sub_id))
     # Captured servers missing from every subscription (e.g. old captures).
     # Matched by address (host, port), not name: a subscription can rename
     # or rotate a server onto a new address under the same display name,

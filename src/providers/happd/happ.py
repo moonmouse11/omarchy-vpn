@@ -595,10 +595,70 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
         logutil.log("keeper: exited")
 
 
+def _happ_active_identity() -> tuple[str | None, str | None]:
+    state = _read_keeper_state()
+    active_name = active_sub = None
+    if state and state.get("status") == "connected":
+        active_name = state.get("server")
+        active_sub = state.get("provider_id")
+    if not active_name and _gui_running():
+        active_name = _last_server_name()
+    return active_name, active_sub
+
+
 class HappProvider(VPNProvider):
     @property
     def name(self) -> str:
         return "Happ"
+
+    def active_connections(self) -> list[VPNConnection]:
+        interfaces = _happ_interfaces()
+        processes = _happ_processes()
+        if not (interfaces or processes):
+            return []
+        happmeta.request_subscription_update()
+        active_name, active_sub = _happ_active_identity()
+        iface = interfaces[0] if interfaces else None
+        if not active_name:
+            return [
+                VPNConnection(
+                    name="Happ",
+                    provider=self.name,
+                    active=True,
+                    interface=iface,
+                )
+            ]
+        matched: dict | None = None
+        if active_sub:
+            from happ.servers import servers_from_cached_subscription  # noqa: PLC0415
+
+            matched = happmeta.match_server(
+                active_name, servers_from_cached_subscription(active_sub), active_sub
+            )
+        if matched is None:
+            # Happ GUI tunnels often have no keeper provider_id — still need every cache.
+            matched = happmeta.match_server(
+                active_name, happmeta.all_servers(allow_fetch=False), active_sub
+            )
+        if matched is None:
+            return [
+                VPNConnection(
+                    name="Happ",
+                    provider=self.name,
+                    active=True,
+                    interface=iface,
+                )
+            ]
+        return [
+            VPNConnection(
+                name=matched["name"],
+                provider=self.name,
+                active=True,
+                interface=iface,
+                subscription_id=matched["provider_id"],
+                subscription_name=matched["provider_name"],
+            )
+        ]
 
     def connections(self) -> list[VPNConnection]:
         interfaces = _happ_interfaces()
@@ -620,18 +680,7 @@ class HappProvider(VPNProvider):
                 )
             ]
 
-        # Which server is active? The keeper state knows best — including
-        # which subscription it came from, for same-named servers.
-        active_name = active_sub = None
-        if is_active:
-            state = _read_keeper_state()
-            if state and state.get("status") == "connected":
-                active_name = state.get("server")
-                active_sub = state.get("provider_id")
-            if not active_name and _gui_running():
-                # only a running GUI can own a tunnel we have no state for;
-                # otherwise its lastServerName names someone else's server
-                active_name = _last_server_name()
+        active_name, active_sub = _happ_active_identity() if is_active else (None, None)
 
         # Exact match, or the unique substring match (GUI names can lack
         # the emoji prefix); ambiguous prefixes mark nothing.

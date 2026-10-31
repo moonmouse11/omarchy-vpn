@@ -64,12 +64,10 @@ def _incy_xray_running() -> bool:
 
 def app_connected() -> bool:
     """INCY GUI owns a tunnel (INCY xray up, not our keeper)."""
-    if not _incy_link_up():
+    if not _incy_xray_running():
         return False
     state = _read_keeper_state()
-    if state and state.get("status") == "connected" and state.get("pid"):
-        return False
-    return _incy_xray_running()
+    return not (state and state.get("status") == "connected" and state.get("pid"))
 
 
 def _load_connections() -> list[VPNConnection]:

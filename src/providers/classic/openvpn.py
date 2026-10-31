@@ -86,6 +86,26 @@ class OpenVPNProvider(VPNProvider):
     def name(self) -> str:
         return "OpenVPN"
 
+    def active_connections(self) -> list[VPNConnection]:
+        ovpn_dir = _ovpn_dir()
+        if not ovpn_dir.exists():
+            return []
+        result: list[VPNConnection] = []
+        for conf in sorted(ovpn_dir.glob(_OVPN_GLOB_CONF)) + sorted(ovpn_dir.glob(_OVPN_GLOB_OVPN)):
+            profile = conf.stem
+            if not _is_running(profile):
+                continue
+            result.append(
+                VPNConnection(
+                    name=profile,
+                    provider=self.name,
+                    active=True,
+                    interface="tun0",
+                    config_path=str(conf),
+                )
+            )
+        return result
+
     def connections(self) -> list[VPNConnection]:
         result: list[VPNConnection] = []
 

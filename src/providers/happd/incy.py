@@ -28,6 +28,33 @@ def _incy_link_up() -> bool:
         return False
 
 
+def _subscription_name(sub_id: str | None) -> str | None:
+    if not sub_id:
+        return None
+    db = _pub().INCY_DB
+    if not db.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute(
+            """
+            SELECT COALESCE(NULLIF(profileName, ''), NULLIF(customName, ''), name)
+            FROM subscriptions WHERE id = ?
+            """,
+            (sub_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if not row or not row[0]:
+        return None
+    return str(row[0])
+
+
 def _pub():
     import providers.incy as m  # noqa: PLC0415 — tests patch providers.incy
 
@@ -157,13 +184,15 @@ class IncyProvider(VPNProvider):
     def active_connections(self) -> list[VPNConnection]:
         state = _read_keeper_state()
         if state and state.get("status") == "connected" and state.get("server"):
+            sub_id = state.get("provider_id")
             return [
                 VPNConnection(
                     name=state["server"],
                     provider=self.name,
                     active=True,
                     interface=TUN_IFACE,
-                    subscription_id=state.get("provider_id"),
+                    subscription_id=sub_id,
+                    subscription_name=_subscription_name(sub_id),
                 )
             ]
         if not _incy_link_up():

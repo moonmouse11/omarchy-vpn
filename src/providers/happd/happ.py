@@ -615,9 +615,7 @@ def _servers_from_cached_sub(sub_id: str) -> list[dict]:
     return servers
 
 
-def _happ_active_identity(
-    interfaces: list[str], processes: list[str]
-) -> tuple[str | None, str | None]:
+def _happ_active_identity() -> tuple[str | None, str | None]:
     state = _read_keeper_state()
     active_name = active_sub = None
     if state and state.get("status") == "connected":
@@ -639,7 +637,7 @@ class HappProvider(VPNProvider):
         if not (interfaces or processes):
             return []
         happmeta.request_subscription_update()
-        active_name, active_sub = _happ_active_identity(interfaces, processes)
+        active_name, active_sub = _happ_active_identity()
         iface = interfaces[0] if interfaces else None
         if not active_name:
             return [
@@ -699,9 +697,7 @@ class HappProvider(VPNProvider):
                 )
             ]
 
-        active_name, active_sub = (
-            _happ_active_identity(interfaces, processes) if is_active else (None, None)
-        )
+        active_name, active_sub = _happ_active_identity() if is_active else (None, None)
 
         # Exact match, or the unique substring match (GUI names can lack
         # the emoji prefix); ambiguous prefixes mark nothing.

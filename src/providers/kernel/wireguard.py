@@ -219,8 +219,19 @@ class WireGuardProvider(VPNProvider):
         AmneziaWG overrides (its link type may be unknown to ip(8))."""
         return set()
 
+    def _active_iface_set(self) -> set[str]:
+        return set(_active_interfaces(self.link_type)) | self._extra_active()
+
+    def _orphan_active_rows(self, active: set[str], known: set[str]) -> list[VPNConnection]:
+        excluded = {p.stem for d in self.other_config_dirs for p in d.glob(_WG_CONF_GLOB)}
+        return [
+            VPNConnection(name=iface, provider=self.name, active=True, interface=iface)
+            for iface in active
+            if iface not in known and iface not in excluded
+        ]
+
     def active_connections(self) -> list[VPNConnection]:
-        active = set(_active_interfaces(self.link_type)) | self._extra_active()
+        active = self._active_iface_set()
         if not active:
             return []
         result: list[VPNConnection] = []
@@ -239,16 +250,11 @@ class WireGuardProvider(VPNProvider):
                     )
                 )
         known = {c.name for c in result}
-        excluded = {p.stem for d in self.other_config_dirs for p in d.glob(_WG_CONF_GLOB)}
-        result.extend(
-            VPNConnection(name=iface, provider=self.name, active=True, interface=iface)
-            for iface in active
-            if iface not in known and iface not in excluded
-        )
+        result.extend(self._orphan_active_rows(active, known))
         return result
 
     def connections(self) -> list[VPNConnection]:
-        active = set(_active_interfaces(self.link_type)) | self._extra_active()
+        active = self._active_iface_set()
         result: list[VPNConnection] = []
 
         if self.config_dir.exists():
@@ -271,12 +277,7 @@ class WireGuardProvider(VPNProvider):
         # that share a kind) can misattribute an active interface to us
         # even though its profile actually lives under the other provider.
         known = {c.name for c in result}
-        excluded = {p.stem for d in self.other_config_dirs for p in d.glob(_WG_CONF_GLOB)}
-        result.extend(
-            VPNConnection(name=iface, provider=self.name, active=True, interface=iface)
-            for iface in active
-            if iface not in known and iface not in excluded
-        )
+        result.extend(self._orphan_active_rows(active, known))
 
         return result
 

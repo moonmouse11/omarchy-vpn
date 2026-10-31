@@ -21,7 +21,7 @@ from app.servers import (
     server_list,
     subscription_report,
 )
-from app.status import emit_status_json
+from app.status import get_status
 from app.switch import disconnect_all, sync_ipv6_boot
 from app.tools import (
     TOOLS,
@@ -174,7 +174,7 @@ def main() -> None:
         parser.error(f"argument --keys-keeper: invalid KIND {kind!r} (choose from 'ss', 'vless')")
 
     if args.status:
-        emit_status_json()
+        print(json.dumps(get_status()))
     elif args.servers:
         print(json.dumps(server_list(), ensure_ascii=False))
     elif args.connect is not None:

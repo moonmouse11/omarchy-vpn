@@ -212,6 +212,56 @@ def activity_text() -> str:
     return f"ping {progress.get('done', 0)}/{progress.get('total', 0)}"
 
 
+def _label_fields_for_connection(
+    fields: dict[str, str],
+    conn: VPNConnection,
+    *,
+    by_id: dict[str, str],
+    rate: str,
+    total: str,
+    cfg,
+) -> None:
+    fields.update(
+        label=conn.label,
+        provider=conn.provider,
+        subscription=conn.subscription_name or "",
+        server=conn.name,
+        interface=conn.interface or "",
+        dns=by_id.get("dns", ""),
+        ipv6=by_id.get("ipv6", ""),
+        rate=rate,
+        total=total,
+    )
+    fields["down"], fields["up"] = _split_arrows(rate)
+    fields["total_down"], fields["total_up"] = _split_arrows(total)
+    cache = ipinfo.read_cache()
+    if cache and ipinfo.is_fresh(cache, conn.name, cfg.exit_ip_max_age):
+        country = (cache.get("country_code") or "").upper()
+        fields.update(
+            exit_ip=str(cache.get("ip") or ""),
+            exit_country=country,
+            exit_flag=ipinfo.flag_emoji(country),
+        )
+    ms = happmeta.ping_ms(happmeta.ping_key(conn.name, conn.subscription_id))
+    if ms is not None:
+        fields["ping"] = f"{round(ms)} ms"
+    fields["protocol"] = conn.provider
+    if conn.provider == "Happ":
+        server_cfg = happmeta.resolve_config(
+            conn.name, allow_fetch=False, provider_id=conn.subscription_id
+        )
+        if server_cfg:
+            fields["protocol"] = happmeta.protocol_label(server_cfg) or conn.provider
+    info = happmeta.subscription_info(conn.subscription_id) if conn.subscription_id else None
+    if info:
+        used = happmeta.fmt_traffic(info.get("download"))
+        if used != "?":
+            fields["sub_traffic"] = f"{used} / {happmeta.fmt_limit(info.get('total'))}"
+        expire = happmeta.fmt_expire(info.get("expire"))
+        if expire != "?":
+            fields["sub_expire"] = expire
+
+
 def label_fields(
     active: list[VPNConnection], title: str, badges: list[dict], *, rate: str, total: str, cfg
 ) -> dict[str, str]:
@@ -227,46 +277,8 @@ def label_fields(
     if not active:
         return fields
     first = active[0]
-    fields.update(
-        label=first.label,
-        provider=first.provider,
-        subscription=first.subscription_name or "",
-        server=first.name,
-        count=str(len(active)),
-        interface=first.interface or "",
-        dns=by_id.get("dns", ""),
-        ipv6=by_id.get("ipv6", ""),
-        rate=rate,
-        total=total,
-    )
-    fields["down"], fields["up"] = _split_arrows(rate)
-    fields["total_down"], fields["total_up"] = _split_arrows(total)
-    cache = ipinfo.read_cache()
-    if cache and ipinfo.is_fresh(cache, first.name, cfg.exit_ip_max_age):
-        country = (cache.get("country_code") or "").upper()
-        fields.update(
-            exit_ip=str(cache.get("ip") or ""),
-            exit_country=country,
-            exit_flag=ipinfo.flag_emoji(country),
-        )
-    ms = happmeta.ping_ms(happmeta.ping_key(first.name, first.subscription_id))
-    if ms is not None:
-        fields["ping"] = f"{round(ms)} ms"
-    fields["protocol"] = first.provider
-    if first.provider == "Happ":
-        server_cfg = happmeta.resolve_config(
-            first.name, allow_fetch=False, provider_id=first.subscription_id
-        )
-        if server_cfg:
-            fields["protocol"] = happmeta.protocol_label(server_cfg) or first.provider
-    info = happmeta.subscription_info(first.subscription_id) if first.subscription_id else None
-    if info:
-        used = happmeta.fmt_traffic(info.get("download"))
-        if used != "?":
-            fields["sub_traffic"] = f"{used} / {happmeta.fmt_limit(info.get('total'))}"
-        expire = happmeta.fmt_expire(info.get("expire"))
-        if expire != "?":
-            fields["sub_expire"] = expire
+    fields["count"] = str(len(active))
+    _label_fields_for_connection(fields, first, by_id=by_id, rate=rate, total=total, cfg=cfg)
     return fields
 
 
@@ -291,48 +303,60 @@ def _window_tools(active: list[VPNConnection], cfg) -> list[str]:
     return keys
 
 
-def panel_state(active: list[VPNConnection], cfg) -> dict:
-    """What the bar panel draws: a hero (state, connection, exit) and the
-    protection badges. Built from caches and cheap probes only — it rides
-    on the 3 s --status tick (the kill switch via its 30 s state cache)."""
-    ks_on = killswitch.cached_is_enabled()
-    ipv6_off = ipv6guard.is_disabled()
-    ks_badge = (
-        _badge("killswitch", "Kill switch on", "ok", "Traffic outside the tunnel is blocked")
-        if ks_on
-        else _badge(
-            "killswitch", "Kill switch off", "unknown", "Nothing stops a leak if the tunnel drops"
-        )
+def _killswitch_badge(ks_on: bool) -> dict:
+    if ks_on:
+        return _badge("killswitch", "Kill switch on", "ok", "Traffic outside the tunnel is blocked")
+    return _badge(
+        "killswitch", "Kill switch off", "unknown", "Nothing stops a leak if the tunnel drops"
     )
-    if not active:
-        return {
-            "connected": False,
-            "state": "blocked" if ks_on else "off",
-            "title": "Traffic blocked" if ks_on else "Not protected",
-            "meta": "Kill switch holds traffic until a VPN connects" if ks_on else "VPN is off",
-            "detail": "",
-            "exit_ip": "",
-            "rate": "",
-            "total": "",
-            "badges": [ks_badge],
-            "key_hints": cfg.panel_key_hints,
-            "tools": _window_tools(active, cfg),
-            "fields": label_fields(
-                [],
-                "Traffic blocked" if ks_on else "Not protected",
-                [ks_badge],
-                rate="",
-                total="",
-                cfg=cfg,
-            ),
-        }
-    first = active[0]
+
+
+def _ipv6_badge(ipv6_off: bool, cfg) -> dict:
     if ipv6_off:
-        ipv6_badge = _badge("ipv6", "IPv6 blocked", "ok", "IPv6 is off while the VPN is up")
-    else:
-        why = "" if cfg.ipv6_guard else " — IPv6 guard is off in ⚙ Settings"
-        ipv6_badge = _badge("ipv6", "IPv6 leaks", "bad", f"IPv6 is on and bypasses the tunnel{why}")
-    badges = [_exit_badge(first, cfg.exit_ip_max_age), _dns_badge(first), ipv6_badge]
+        return _badge("ipv6", "IPv6 blocked", "ok", "IPv6 is off while the VPN is up")
+    why = "" if cfg.ipv6_guard else " — IPv6 guard is off in ⚙ Settings"
+    return _badge("ipv6", "IPv6 leaks", "bad", f"IPv6 is on and bypasses the tunnel{why}")
+
+
+def _protection_title(badges: list[dict]) -> tuple[str, str]:
+    checks = [b["state"] for b in badges if b["id"] in PROTECTION_CHECKS]
+    if "bad" in checks:
+        return "at_risk", "At risk"
+    if all(c == "ok" for c in checks):
+        return "protected", "Protected"
+    return "unverified", "Unverified"
+
+
+def _panel_state_disconnected(
+    active: list[VPNConnection], cfg, ks_on: bool, ks_badge: dict
+) -> dict:
+    title = "Traffic blocked" if ks_on else "Not protected"
+    meta = "Kill switch holds traffic until a VPN connects" if ks_on else "VPN is off"
+    return {
+        "connected": False,
+        "state": "blocked" if ks_on else "off",
+        "title": title,
+        "meta": meta,
+        "detail": "",
+        "exit_ip": "",
+        "rate": "",
+        "total": "",
+        "badges": [ks_badge],
+        "key_hints": cfg.panel_key_hints,
+        "tools": _window_tools(active, cfg),
+        "fields": label_fields([], title, [ks_badge], rate="", total="", cfg=cfg),
+    }
+
+
+def _panel_state_connected(
+    active: list[VPNConnection], cfg, ks_badge: dict, ipv6_off: bool
+) -> dict:
+    first = active[0]
+    badges = [
+        _exit_badge(first, cfg.exit_ip_max_age),
+        _dns_badge(first),
+        _ipv6_badge(ipv6_off, cfg),
+    ]
     if not _killswitch_unsupported(active):
         badges.append(ks_badge)
     if first.provider == "Happ" and happ_provider.app_owns_connection():
@@ -350,15 +374,7 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
     if cache and ipinfo.is_fresh(cache, first.name, cfg.exit_ip_max_age):
         exit_ip = f"{cache.get('ip')} {ipinfo.flag_emoji(cache.get('country_code'))}".strip()
     detail = first.provider + (f" +{len(active) - 1}" if len(active) > 1 else "")
-    # "Protected" is earned, not assumed: every check (not the kill switch,
-    # a preference) must have passed — an untested DNS keeps it "Unverified"
-    checks = [b["state"] for b in badges if b["id"] in PROTECTION_CHECKS]
-    if "bad" in checks:
-        state, title = "at_risk", "At risk"
-    elif all(c == "ok" for c in checks):
-        state, title = "protected", "Protected"
-    else:
-        state, title = "unverified", "Unverified"
+    state, title = _protection_title(badges)
     rate = (_iface_rate(first.interface) or "") if first.interface else ""
     total = (_iface_traffic(first.interface) or "") if first.interface else ""
     return {
@@ -375,6 +391,18 @@ def panel_state(active: list[VPNConnection], cfg) -> dict:
         "tools": _window_tools(active, cfg),
         "fields": label_fields(active, title, badges, rate=rate, total=total, cfg=cfg),
     }
+
+
+def panel_state(active: list[VPNConnection], cfg) -> dict:
+    """What the bar panel draws: a hero (state, connection, exit) and the
+    protection badges. Built from caches and cheap probes only — it rides
+    on the 3 s --status tick (the kill switch via its 30 s state cache)."""
+    ks_on = killswitch.cached_is_enabled()
+    ipv6_off = ipv6guard.is_disabled()
+    ks_badge = _killswitch_badge(ks_on)
+    if not active:
+        return _panel_state_disconnected(active, cfg, ks_on, ks_badge)
+    return _panel_state_connected(active, cfg, ks_badge, ipv6_off)
 
 
 def request_ip_update(connection_name: str):

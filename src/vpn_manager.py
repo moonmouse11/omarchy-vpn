@@ -14,6 +14,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] == "--status":
+        from app.status import emit_status_json
+
+        emit_status_json()
+    else:
+        from app.cli import main
+
+        main()
+    raise SystemExit
+
 # Submodules and stdlib aliases tests patch on the vpn_manager module object
 import config  # noqa: F401
 import delayping  # noqa: F401
@@ -78,6 +89,7 @@ from app.status import (  # noqa: F401
     _switch_in_progress,
     activity_text,
     connecting_text,
+    emit_status_json,
     get_status,
     label_fields,
     panel_state,
@@ -150,6 +162,3 @@ from providers.base import (  # noqa: F401
     terminate_registered_subprocesses,
 )
 from providers.common.types import ActionResult, VPNConnection  # noqa: F401
-
-if __name__ == "__main__":
-    main()

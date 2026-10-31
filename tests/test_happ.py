@@ -365,6 +365,35 @@ def test_connections_lists_subscription_servers(tmp_path, monkeypatch):
     assert not any(c.active for c in conns)
 
 
+def test_active_connections_empty_when_nothing_up(tmp_path, monkeypatch):
+    _patch_env(monkeypatch, tmp_path, [], [], [], None, None)
+    assert happ.HappProvider().active_connections() == []
+
+
+def test_active_connections_generic_row_without_server_name(tmp_path, monkeypatch):
+    _patch_env(monkeypatch, tmp_path, [], ["happ-xray"], ["xray-core"], None, None)
+    active = happ.HappProvider().active_connections()
+    assert len(active) == 1
+    assert active[0].name == "Happ" and active[0].interface == "happ-xray"
+
+
+def test_active_connections_gui_name_uses_all_servers(tmp_path, monkeypatch):
+    import happmeta
+
+    servers = [{"name": "🇪🇪 Estonia", "provider_id": "1", "provider_name": "P", "config": {}}]
+    _patch_env(monkeypatch, tmp_path, servers, ["happ-xray"], ["xray-core"], "Estonia", None)
+    all_calls = {"n": 0}
+
+    def count_all(*args, **kwargs):
+        all_calls["n"] += 1
+        return servers
+
+    monkeypatch.setattr(happmeta, "all_servers", count_all)
+    active = happ.HappProvider().active_connections()
+    assert active[0].name == "🇪🇪 Estonia"
+    assert all_calls["n"] == 1
+
+
 def test_active_connections_one_sub_cache_skips_all_servers(tmp_path, monkeypatch):
     """--status hot path: keeper provider_id must not parse every subscription."""
     import happmeta

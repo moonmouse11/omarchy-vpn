@@ -50,6 +50,40 @@ def test_load_connections_from_incy_db(tmp_path, monkeypatch):
     assert groups["WireCat VPN"][0]["provider_id"] == "sub1"
 
 
+def test_active_connections_loads_active_rows_when_link_up_without_keeper(tmp_path, monkeypatch):
+    import providers.happd.incy as incy_impl
+
+    db = tmp_path / "incy.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE subscriptions (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, customName TEXT,
+            profileName TEXT, isEnabled INTEGER NOT NULL DEFAULT 1,
+            orderIndex INTEGER DEFAULT 0
+        );
+        CREATE TABLE servers (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, subscriptionId TEXT,
+            isActive INTEGER NOT NULL DEFAULT 0, orderIndex INTEGER DEFAULT 0,
+            address TEXT, port INTEGER, proxyProtocol TEXT, uuid TEXT,
+            encryption TEXT, network TEXT, security TEXT
+        );
+        INSERT INTO subscriptions VALUES ('sub1', 'Prov', '', 'WireCat VPN', 1, 0);
+        INSERT INTO servers VALUES ('s1', '🇩🇪 DE', 'sub1', 1, 0,
+            '1.1.1.1', 443, 'vless', 'u', 'none', 'tcp', 'tls');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(incy_mod, "INCY_DB", db)
+    monkeypatch.setattr(incy_mod, "KEEPER_STATE", tmp_path / "missing-keeper.json")
+    monkeypatch.setattr(incy_impl, "_incy_link_up", lambda: True)
+
+    active = IncyProvider().active_connections()
+    assert len(active) == 1 and active[0].name == "🇩🇪 DE"
+
+
 def test_active_connections_keeper_resolves_sub_name_without_full_list(tmp_path, monkeypatch):
     import providers.happd.incy as incy_impl
 

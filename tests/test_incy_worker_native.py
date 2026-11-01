@@ -5,11 +5,13 @@ Set INCY_TEST_LIBRARY to the read-only mounted libincycore.so. No host TUN is ne
 
 import os
 import socket
+import threading
 from contextlib import suppress
 from pathlib import Path
 
 import pytest
 
+from incy import broker
 from incy.worker import Core
 
 LIBRARY = os.environ.get("INCY_TEST_LIBRARY", "")
@@ -68,9 +70,16 @@ def test_native_socket_protector_failure_blocks_connection(raises):
             core.stop()
 
 
-def test_native_socket_protector_allows_connection():
+def test_native_socket_protector_allows_connection_through_fd_broker():
     core = Core(LIBRARY)
-    with socket.socket() as origin, socket.socket() as reservation:
+    protected = []
+
+    def apply(sock):
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        protected.append(sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE))
+
+    client_channel, server_channel = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    with client_channel, server_channel, socket.socket() as origin, socket.socket() as reservation:
         origin.bind(("127.0.0.1", 0))
         origin.listen()
         origin.settimeout(2)
@@ -78,7 +87,9 @@ def test_native_socket_protector_allows_connection():
         port = reservation.getsockname()[1]
         reservation.close()
         target = origin.getsockname()[1]
-        core.set_socket_protector(lambda _fd: True)
+        thread = threading.Thread(target=broker.serve, args=(server_channel, apply))
+        thread.start()
+        core.set_socket_protector(broker.Client(client_channel).protect)
         try:
             core.start(
                 {
@@ -96,8 +107,12 @@ def test_native_socket_protector_allows_connection():
                     assert b"GET / HTTP/1.1" in conn.recv(4096)
                     conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                 assert b"200 OK" in client.recv(4096)
+                assert protected == [1]
         finally:
             core.stop()
+            client_channel.shutdown(socket.SHUT_RDWR)
+            thread.join(2)
+        assert not thread.is_alive()
 
 
 def test_native_core_uses_supplied_fd():

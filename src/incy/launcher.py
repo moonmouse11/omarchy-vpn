@@ -64,10 +64,14 @@ def watch_parent(pid: int) -> None:
 
 
 def run(mode: str, ready_fd: int, parent_pid: int) -> int:
-    path = endpoint(os.getuid(), secrets.token_hex(16))
+    token = secrets.token_hex(16)
+    path = endpoint(os.getuid(), token)
     proc: subprocess.Popen | None = None
     entered_worker = False
     try:
+        helper_mode = {"connect": "connect", "probe": "probe"}.get(mode)
+        if helper_mode is None:
+            raise ValueError("Invalid INCY session mode")
         worker.require_unprivileged()
         watch_parent(parent_pid)
         path.parent.mkdir(mode=0o700, exist_ok=True)
@@ -82,7 +86,7 @@ def run(mode: str, ready_fd: int, parent_pid: int) -> int:
             # Cancellation reaps this launcher in popen_xray; owner death kills it via prctl.
             # Losing its channel makes the broker remove the TUN/routes and exit.
             proc = subprocess.Popen(
-                ["sudo", "-n", HELPER, "incy-network", mode, path.stem.removeprefix("incy-")],
+                ["sudo", "-n", HELPER, "incy-network", helper_mode, token],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,

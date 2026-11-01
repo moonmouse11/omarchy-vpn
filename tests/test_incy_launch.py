@@ -4,8 +4,9 @@ import io
 import json
 import os
 import socket
+import struct
 import subprocess
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -138,3 +139,77 @@ def test_cancellation_during_readiness_terminates_and_reaps_launcher(monkeypatch
     process.kill.assert_called_once_with()
     assert process.wait.call_count == 2
     assert process.stdin.closed
+
+
+@pytest.fixture
+def session(monkeypatch, tmp_path):
+    path = tmp_path / ("incy-" + "a" * 32 + ".sock")
+    monkeypatch.setattr(launcher, "endpoint", lambda uid, token: path)
+    monkeypatch.setattr(launcher, "watch_parent", lambda pid: None)
+    channel = MagicMock()
+    channel.__enter__.return_value = channel
+    channel.getsockopt.return_value = struct.pack("3i", 123, 0, 0)
+    channel.detach.return_value = 123
+    listener = MagicMock()
+    listener.__enter__.return_value = listener
+    listener.accept.return_value = (channel, None)
+    monkeypatch.setattr(launcher.socket, "socket", lambda *args: listener)
+    process = Mock(stderr=io.BytesIO(b"helper refused session"))
+    process.poll.return_value = None
+    spawn = Mock(return_value=process)
+    monkeypatch.setattr(launcher.subprocess, "Popen", spawn)
+    monkeypatch.setattr(launcher, "receive_tun", lambda channel, mode: None)
+    monkeypatch.setattr(launcher, "asset_dir", lambda: None)
+    monkeypatch.setattr(launcher, "incy_library", lambda: "/unused/libincycore.so")
+    core = Mock(return_value=0)
+    monkeypatch.setattr(launcher.worker, "main", core)
+    replies = []
+    monkeypatch.setattr(launcher.worker, "notify_ready", lambda fd, data: replies.append(data))
+    return listener, channel, process, spawn, core, replies
+
+
+@pytest.mark.parametrize("mode", ["", "--help", "connect;id", "CONNECT", "probe\n"])
+def test_launcher_rejects_nonliteral_modes_before_sudo(session, mode):
+    _, _, _, spawn, core, replies = session
+    assert launcher.run(mode, 7, os.getpid()) == 1
+    spawn.assert_not_called()
+    core.assert_not_called()
+    assert "Invalid INCY session mode" in replies[0]["error"]
+
+
+@pytest.mark.parametrize("mode", ["connect", "probe"])
+def test_launcher_passes_only_fixed_helper_mode_and_token(session, mode):
+    _, _, process, spawn, core, replies = session
+    assert launcher.run(mode, 7, os.getpid()) == 0
+    args = spawn.call_args.args[0]
+    assert args[:5] == ["sudo", "-n", launcher.HELPER, "incy-network", mode]
+    assert len(args[5]) == 32
+    assert all(char in "0123456789abcdef" for char in args[5])
+    assert core.call_args.args[0][-2:] == ["--broker-fd", "123"]
+    assert replies == []
+    process.wait.assert_called_once_with(timeout=8)
+    assert process.stderr.closed
+
+
+@pytest.mark.parametrize("failure", ["wrong-peer", "helper-exit", "timeout", "bad-handshake"])
+def test_launcher_reports_startup_failures_without_starting_core(monkeypatch, session, failure):
+    listener, channel, process, _, core, replies = session
+    if failure == "wrong-peer":
+        channel.getsockopt.return_value = struct.pack("3i", 123, 1000, 1000)
+        expected = "must run as root"
+    elif failure == "bad-handshake":
+        monkeypatch.setattr(launcher, "receive_tun", Mock(side_effect=OSError("bad handshake")))
+        expected = "bad handshake"
+    else:
+        listener.accept.side_effect = TimeoutError
+        if failure == "helper-exit":
+            process.poll.return_value = 1
+            expected = "helper refused session"
+        else:
+            monkeypatch.setattr(launcher, "START_TIMEOUT", -1)
+            expected = "timed out"
+    assert launcher.run("connect", 7, os.getpid()) == 1
+    assert expected in replies[0]["error"]
+    core.assert_not_called()
+    process.wait.assert_called_once_with(timeout=8)
+    assert process.stderr.closed

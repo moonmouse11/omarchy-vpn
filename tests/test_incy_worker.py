@@ -36,6 +36,7 @@ def library(monkeypatch):
     lib.IncycoreXrayStart.return_value = None
     lib.IncycoreStartXrayWithTunFd.return_value = None
     lib.IncycoreXrayStop.return_value = None
+    lib.IncycoreXrayIsRunning.return_value = 0
     monkeypatch.setattr(worker.ctypes, "CDLL", lambda path: lib)
     return lib
 
@@ -62,6 +63,35 @@ def test_error_string_is_freed(library):
     with pytest.raises(OSError, match="rejected config"):
         worker.Core("/unused/libincycore.so").start({})
     library.IncycoreFreeString.assert_called_once_with(pointer)
+
+
+def test_protector_denies_when_broker_raises(library):
+    core = worker.Core("/unused/libincycore.so")
+
+    def unavailable(_fd):
+        raise OSError("broker unavailable")
+
+    core.set_socket_protector(unavailable)
+    callback = library.xray_set_protect.call_args.args[0]
+    assert callback(7) is False
+    core.stop()
+    assert not library.xray_set_protect.call_args.args[0]
+
+
+def test_protector_preserves_broker_result(library):
+    core = worker.Core("/unused/libincycore.so")
+    core.set_socket_protector(lambda fd: fd == 7)
+    callback = library.xray_set_protect.call_args.args[0]
+    assert callback(7) is True
+    assert callback(8) is False
+
+
+def test_cannot_replace_protector_on_running_core(library):
+    core = worker.Core("/unused/libincycore.so")
+    library.IncycoreXrayIsRunning.return_value = 1
+    with pytest.raises(RuntimeError):
+        core.set_socket_protector(lambda _fd: True)
+    library.xray_set_protect.assert_not_called()
 
 
 def test_stop_calls_core_and_frees_error(library):

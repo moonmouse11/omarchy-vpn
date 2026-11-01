@@ -15,6 +15,7 @@ from typing import BinaryIO
 
 CONFIG_MAX = 16 * 1024 * 1024
 STATUS = Path("/proc/self/status")
+PROTECT_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_long)
 
 
 def require_unprivileged() -> None:
@@ -47,6 +48,7 @@ class Core:
         self._lib.IncycoreFreeString.restype = None
         self._lib.IncycoreXrayIsRunning.argtypes = []
         self._lib.IncycoreXrayIsRunning.restype = ctypes.c_int
+        self._protector: Callable[[int], bool] | None = None
 
     def _check(self, error: int | None) -> None:
         if error is not None:
@@ -65,8 +67,29 @@ class Core:
         else:
             self._check(self._lib.IncycoreStartXrayWithTunFd(payload, tun_fd))
 
+    def set_socket_protector(self, protect: Callable[[int], bool]) -> None:
+        if self.running():
+            raise RuntimeError("Install the socket protector before starting INCY")
+
+        def checked(fd: int) -> bool:
+            try:
+                return bool(protect(fd))
+            except BaseException:  # noqa: BLE001 — no exception may escape a native callback
+                # Exceptions escaping a ctypes callback leave its native return value undefined.
+                return False
+
+        callback = PROTECT_CALLBACK(checked)
+        self._lib.xray_set_protect.argtypes = [PROTECT_CALLBACK]
+        self._lib.xray_set_protect.restype = None
+        # The Go IncycoreSetProtectFd wrapper discards the callback's failure result.
+        self._lib.xray_set_protect(callback)
+        self._protector = callback
+
     def stop(self) -> None:
         self._check(self._lib.IncycoreXrayStop())
+        if self._protector is not None:
+            self._lib.xray_set_protect(PROTECT_CALLBACK())
+            self._protector = None
 
     def running(self) -> bool:
         return bool(self._lib.IncycoreXrayIsRunning())

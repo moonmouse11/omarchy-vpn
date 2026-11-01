@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from incy_artifacts import verify_artifacts
 from incy_packets_check import packet_checks
 
 from incy.xray_run import await_ready
@@ -89,6 +90,7 @@ def start(mode: str, config: dict) -> subprocess.Popen:
         proc.wait()
         if proc.stderr:
             print(proc.stderr.read().decode(errors="replace"), file=sys.stderr)
+            proc.stderr.close()
         raise
     finally:
         os.close(read)
@@ -104,6 +106,17 @@ def stop(proc: subprocess.Popen) -> None:
 
 
 def lifecycle() -> None:
+    invalid = {**CONFIG, "outbounds": [{"protocol": "invalid-test-protocol"}]}
+    try:
+        proc = start("connect", invalid)
+    except OSError as error:
+        assert "INCY worker:" in str(error) and "timed out" not in str(error)
+    else:
+        stop(proc)
+        raise AssertionError("Native core accepted an invalid protocol")
+    clean()
+    print("Native config rejection reaches caller and cleans broker/TUN/routes: OK", flush=True)
+
     for mode in ("probe", "connect"):
         cfg = CONFIG if mode == "connect" else {"outbounds": [{"protocol": "blackhole"}]}
         proc = start(mode, cfg)
@@ -161,6 +174,8 @@ def lifecycle() -> None:
 
 def main() -> None:
     assert os.getuid() == 0
+    verify_artifacts(ROOT)
+    print("Pinned INCY native library SHA256 checks passed", flush=True)
     runtime = Path("/run/user/65534")
     runtime.mkdir(parents=True, mode=0o700)
     os.chown(runtime, 65534, 65534)

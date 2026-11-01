@@ -9,7 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from incy import worker
+from incy import worker, xray_run
 
 
 @pytest.mark.parametrize("raw", [b"[]", b"null", b"{} trailing", b"{", b'"x"'])
@@ -68,7 +68,13 @@ def test_cli_reports_native_start_failure(monkeypatch, capsys):
     core.start.side_effect = OSError("native startup failed")
     monkeypatch.setattr(worker, "Core", lambda library: core)
     monkeypatch.setattr(worker.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(b"{}")))
-    assert worker.main(["--library", "/unused/libincycore.so"]) == 1
+    read, write = os.pipe()
+    try:
+        assert worker.main(["--library", "/unused/libincycore.so", "--ready-fd", str(write)]) == 1
+        with pytest.raises(OSError, match="native startup failed"):
+            xray_run.await_ready(read, 0.1)
+    finally:
+        os.close(read)
     assert "native startup failed" in capsys.readouterr().err
     core.stop.assert_called_once_with()
 

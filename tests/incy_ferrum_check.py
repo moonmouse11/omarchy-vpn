@@ -1,4 +1,4 @@
-"""Standalone vendor-library sniffing check. No omarchy-vpn imports, TUN or broker.
+"""Standalone vendor-library sniffing check. No backend imports, TUN or broker.
 
 Run in Dockerfile.incy-test's disposable container, overriding its entrypoint:
 python3 /repo/tests/incy_ferrum_check.py
@@ -17,6 +17,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+from incy_artifacts import verify_artifacts
 
 LIBRARY = "/inspect/lib/app/resources/bin/libincycore.so"
 ENTRY = "11.0.0.2"
@@ -117,6 +119,7 @@ def main() -> None:
     parser.add_argument("--case", choices=("off", "route-only", "override"))
     parser.add_argument("--padding", type=int, default=0)
     args = parser.parse_args()
+    verify_artifacts(Path("/inspect"))
     if args.case:
         print("RESULT " + json.dumps(native_case(args.case, args.padding)), flush=True)
         return

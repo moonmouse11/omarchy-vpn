@@ -53,6 +53,8 @@ for name in omarchy-vpn-helper happ-killswitch openvpn-dns-updown omarchy-vpn-in
     HELPER_SHA[$name]=$(printf %s "${HELPER[$name]}" | sha256sum | cut -d' ' -f1)
 done
 
+# Root gets ONLY these stdlib-only modules; keep worker/launcher/config/assets user-side.
+# network.protect_socket is root-side; network.prepare_config's app imports must stay lazy.
 declare -A ROOT_MODULE ROOT_MODULE_SHA
 for name in __init__.py broker.py network.py privileged.py; do
     ROOT_MODULE[$name]=$(cat "$REPO_DIR/src/incy/$name" && printf .)

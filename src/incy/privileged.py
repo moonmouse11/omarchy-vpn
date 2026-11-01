@@ -123,16 +123,20 @@ def tunnel() -> Iterator[int]:
                 os.close(fd)
 
 
-def run_session(channel: socket.socket, mode: str, uid: int, uplink: str) -> None:
-    if mode not in ("connect", "probe"):
-        raise ValueError("Invalid INCY session mode")
-    if channel.family != socket.AF_UNIX or channel.type != socket.SOCK_SEQPACKET:
-        raise ValueError("Invalid INCY session channel")
+def require_peer_uid(channel: socket.socket, uid: int) -> None:
     _, peer_uid, _ = struct.unpack(
         "3i", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
     )
     if peer_uid != uid:
         raise PermissionError("INCY session peer uid does not match sudo caller")
+
+
+def run_session(channel: socket.socket, mode: str, uid: int, uplink: str) -> None:
+    if mode not in ("connect", "probe"):
+        raise ValueError("Invalid INCY session mode")
+    if channel.family != socket.AF_UNIX or channel.type != socket.SOCK_SEQPACKET:
+        raise ValueError("Invalid INCY session channel")
+    require_peer_uid(channel, uid)
     if mode == "connect":
         with tunnel() as fd:
             if socket.send_fds(channel, [b"T"], [fd]) != 1:
@@ -174,11 +178,7 @@ def main(argv: list[str] | None = None) -> int:
             channel.settimeout(5)
             channel.connect(str(address))
             # Authenticate before probing or changing any host network state.
-            _, peer_uid, _ = struct.unpack(
-                "3i", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
-            )
-            if peer_uid != uid:
-                raise PermissionError("INCY session peer uid does not match sudo caller")
+            require_peer_uid(channel, uid)
             uplink = uplink_interface()
             channel.settimeout(None)
             run_session(channel, args.mode, uid, uplink)

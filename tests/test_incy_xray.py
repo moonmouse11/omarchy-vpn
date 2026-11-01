@@ -21,6 +21,40 @@ def test_preflight_checks_library_without_starting_network(monkeypatch, tmp_path
     assert xray.config_error({"outbounds": "invalid"}) == "INCY outbounds must be a list"
 
 
+@pytest.mark.parametrize(
+    "cfg, reason",
+    [
+        (None, "configuration must be an object"),
+        ({"inbounds": None}, "inbounds must be a list"),
+        ({"inbounds": [None]}, "inbounds[0] must be an object"),
+        ({"outbounds": ["vless"]}, "outbounds[0] must be an object"),
+        ({"inbounds": [{"settings": []}]}, "inbounds[0].settings must be an object"),
+        ({"inbounds": [{"sniffing": True}]}, "inbounds[0].sniffing must be an object"),
+        ({"outbounds": [{"streamSettings": []}]}, "outbounds[0].streamSettings must be an object"),
+        (
+            {"outbounds": [{"streamSettings": {"sockopt": []}}]},
+            "outbounds[0].streamSettings.sockopt must be an object",
+        ),
+        (
+            {"outbounds": [{"streamSettings": {"sockopt": {"customSockopt": {}}}}]},
+            "outbounds[0].streamSettings.sockopt.customSockopt must be a list",
+        ),
+    ],
+)
+def test_preflight_rejects_invalid_structure(monkeypatch, tmp_path, cfg, reason):
+    library = tmp_path / "libincycore.so"
+    library.touch()
+    monkeypatch.setattr(xray, "_incy_library", lambda: library)
+    assert xray.config_error(cfg) == f"INCY {reason}"
+
+
+def test_preflight_leaves_native_semantics_to_worker(monkeypatch, tmp_path):
+    library = tmp_path / "libincycore.so"
+    library.touch()
+    monkeypatch.setattr(xray, "_incy_library", lambda: library)
+    assert xray.config_error({"outbounds": [{"protocol": "native-must-validate-this"}]}) is None
+
+
 def test_asset_dir_finds_geoip_under_install_root(monkeypatch, tmp_path):
     root = tmp_path / "incy"
     geo = root / "lib/app/resources"
@@ -74,6 +108,20 @@ def test_keeper_reports_config_error(monkeypatch, tmp_path):
     keeper.run_keeper("x", "sub1")
     errors = [s for s in recorded if s.get("status") == "error"]
     assert errors and "xray rejected" in errors[-1]["message"]
+
+
+def test_keeper_preserves_native_startup_error(monkeypatch, tmp_path):
+    recorded = _keeper_state_recorder(monkeypatch, tmp_path)
+    monkeypatch.setattr(keeper, "resolve_config", lambda *a, **kw: {})
+    monkeypatch.setattr(keeper, "config_error", lambda _cfg: None)
+
+    def rejected(*args):
+        raise OSError("INCY worker: native rejected protocol")
+
+    monkeypatch.setattr(keeper, "popen_xray", rejected)
+    keeper.run_keeper("x", "sub1")
+    assert recorded[-1]["status"] == "error"
+    assert recorded[-1]["message"] == "INCY worker: native rejected protocol"
 
 
 def test_keeper_reports_tun_timeout(monkeypatch, tmp_path):

@@ -1,4 +1,7 @@
-"""INCY broker socket policy; the core never needs network capabilities."""
+"""Shared deployment: root uses protect_socket; only the user backend calls prepare_config.
+
+Keep module-level imports stdlib-only: the root package has no app/worker dependencies.
+"""
 
 from __future__ import annotations
 

@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from incy.xray import config_error
+
 KEEPER_CFG = "incy-xray-active.json"
 PROBE_CFG = "incy-xray-probe.json"
 START_TIMEOUT = 30.0
@@ -32,6 +34,8 @@ def await_ready(fd: int, timeout: float) -> None:
 def popen_xray(cfg: dict, slot: str) -> subprocess.Popen[bytes]:
     if slot not in (KEEPER_CFG, PROBE_CFG):
         raise ValueError("bad incy config slot")
+    if reason := config_error(cfg):
+        raise OSError(f"INCY config: {reason}")
     read, write = os.pipe()
     proc: subprocess.Popen[bytes] | None = None
     try:

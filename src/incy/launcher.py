@@ -78,6 +78,9 @@ def run(mode: str, ready_fd: int, parent_pid: int) -> int:
             listener.bind(str(path))
             listener.listen(1)
             listener.settimeout(0.2)
+            # run_helper() waits for exit; this broker must stay alive while we run the core.
+            # Cancellation reaps this launcher in popen_xray; owner death kills it via prctl.
+            # Losing its channel makes the broker remove the TUN/routes and exit.
             proc = subprocess.Popen(
                 ["sudo", "-n", HELPER, "incy-network", mode, path.stem.removeprefix("incy-")],
                 stdin=subprocess.DEVNULL,

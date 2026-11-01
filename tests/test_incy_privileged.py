@@ -7,7 +7,7 @@ import signal
 import socket
 import struct
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -99,6 +99,18 @@ def test_peer_mismatch_is_rejected_before_network_changes(monkeypatch):
         privileged.run_session(channel, "connect", 1000, "eth0")
     create.assert_not_called()
     channel.send.assert_not_called()
+
+
+def test_main_rejects_wrong_peer_before_uplink_probe(monkeypatch):
+    channel = MagicMock()
+    channel.__enter__.return_value = channel
+    channel.getsockopt.return_value = struct.pack("3i", 123, 2000, 2000)
+    monkeypatch.setattr(privileged, "caller_uid", lambda: 1000)
+    monkeypatch.setattr(privileged.socket, "socket", lambda *args: channel)
+    uplink = Mock()
+    monkeypatch.setattr(privileged, "uplink_interface", uplink)
+    assert privileged.main(["connect", "a" * 32]) == 1
+    uplink.assert_not_called()
 
 
 def test_kernel_tun_creation_is_exclusive(monkeypatch):

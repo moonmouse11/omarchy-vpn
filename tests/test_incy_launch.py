@@ -1,12 +1,22 @@
 """Startup is acknowledged by the unprivileged core, never by TUN existence alone."""
 
+import io
 import json
 import os
 import socket
+import subprocess
+from unittest.mock import Mock
 
 import pytest
 
-from incy import launcher, xray_run
+from incy import keeper, launcher, xray, xray_run
+
+
+@pytest.fixture
+def core_library(monkeypatch, tmp_path):
+    library = tmp_path / "libincycore.so"
+    library.touch()
+    monkeypatch.setattr(xray, "_incy_library", lambda: library)
 
 
 @pytest.mark.parametrize(
@@ -64,7 +74,7 @@ def test_bad_handshake_closes_received_fds(mode, payload, count):
         assert len(list(Path("/proc/self/fd").iterdir())) == before
 
 
-def test_send_config_is_bounded_and_readiness_has_no_secret(monkeypatch):
+def test_send_config_is_bounded_and_readiness_has_no_secret(monkeypatch, core_library):
     captured = []
 
     class Process:
@@ -103,3 +113,28 @@ def test_send_config_is_bounded_and_readiness_has_no_secret(monkeypatch):
     assert "not-in-argv" not in " ".join(calls[0])
     assert "sudo" not in calls[0]
     assert "incy.launcher" in calls[0]
+
+
+@pytest.mark.parametrize("slot", [xray_run.KEEPER_CFG, xray_run.PROBE_CFG])
+def test_invalid_structure_never_starts_launcher(monkeypatch, tmp_path, slot):
+    library = tmp_path / "libincycore.so"
+    library.touch()
+    monkeypatch.setattr(xray, "_incy_library", lambda: library)
+    spawn = Mock(side_effect=AssertionError("launched invalid config"))
+    monkeypatch.setattr(xray_run.subprocess, "Popen", spawn)
+    with pytest.raises(OSError, match="outbounds"):
+        xray_run.popen_xray({"outbounds": [None]}, slot)
+    spawn.assert_not_called()
+
+
+def test_cancellation_during_readiness_terminates_and_reaps_launcher(monkeypatch, core_library):
+    process = Mock(stdin=io.BytesIO())
+    process.wait.side_effect = [subprocess.TimeoutExpired("launcher", 3), 0]
+    monkeypatch.setattr(xray_run.subprocess, "Popen", lambda *a, **kw: process)
+    monkeypatch.setattr(xray_run, "await_ready", Mock(side_effect=keeper.KeeperCancelled))
+    with pytest.raises(keeper.KeeperCancelled):
+        xray_run.popen_xray({}, xray_run.KEEPER_CFG)
+    process.terminate.assert_called_once_with()
+    process.kill.assert_called_once_with()
+    assert process.wait.call_count == 2
+    assert process.stdin.closed

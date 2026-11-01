@@ -15,7 +15,7 @@
 ![nftables](https://img.shields.io/badge/nftables-kill_switch-555)
 
 A VPN manager for the [Omarchy](https://omarchy.org/) 4 shell: a bar widget, a panel and an app
-window for **WireGuard, AmneziaWG, OpenVPN, VLESS and Shadowsocks keys, Happ subscriptions** and
+window for **WireGuard, AmneziaWG, OpenVPN, VLESS and Shadowsocks keys, Happ/INCY subscriptions** and
 any VPN managed by **NetworkManager**.
 
 > Omarchy 3 (Waybar + Walker) is served by
@@ -25,7 +25,7 @@ any VPN managed by **NetworkManager**.
 
 - **Bar widget** — a lock icon with the active connection; a left click opens the panel, a right
   click (or **SUPER+Shift+V**) the app window.
-- **Every server in one list** — Happ grouped by subscription, WireGuard, AmneziaWG, OpenVPN,
+- **Every server in one list** — Happ/INCY grouped by subscription, WireGuard, AmneziaWG, OpenVPN,
   imported keys and NetworkManager VPNs. Filter with `/` (by name, protocol or country code),
   connect with a click or Enter, star favourites for quick connect.
 - **Happ without the Happ window** — servers come straight from your subscriptions and connect
@@ -57,21 +57,33 @@ After `omarchy plugin update omarchy-vpn` the panel shows **Update setup** — p
 From a checkout instead: `git clone https://github.com/moonmouse11/omarchy-vpn && cd omarchy-vpn && make install`.
 
 **You install yourself, if you want them:** Happ (AUR: `happ-desktop-bin` — also needed for
-VLESS/Shadowsocks keys) and AmneziaWG (AUR: `amneziawg-tools` plus `amneziawg-dkms` and
+VLESS/Shadowsocks keys), INCY Desktop (see [INCY setup](#incy-setup)), and AmneziaWG
+(AUR: `amneziawg-tools` plus `amneziawg-dkms` and
 `linux-headers`, or prebuilt `amneziawg-linux` for the stock kernel). The installer
 reminds you when you pick them.
 
 ### What setup changes
 
 - Installs only the packages your picks need (`wireguard-tools`, `openvpn`, a `resolvconf`).
-- Adds three root-owned helpers to `/usr/local/bin` (`omarchy-vpn-helper`, `happ-killswitch`,
-  `openvpn-dns-updown`) and a sudoers rule (`/etc/sudoers.d/vpn-manager`) that lets your user run
-  exactly those, plus the IPv6 guard's `sysctl` calls, without a password. The helper refuses
-  VPN configs that would run commands as root.
+- Adds root-owned helpers to `/usr/local/bin` (`omarchy-vpn-helper`, `happ-killswitch`,
+  `openvpn-dns-updown`, `omarchy-vpn-incy-network`) and the INCY helper's isolated Python package
+  to `/usr/local/lib/omarchy-vpn`. The sudoers rule (`/etc/sudoers.d/vpn-manager`) grants access
+  only to `omarchy-vpn-helper`, `happ-killswitch` and the IPv6 guard's fixed `sysctl` calls.
+  OpenVPN invokes its DNS helper; the main helper invokes INCY's fixed network entry.
+  Privileged helper sources are copied before the sudo prompt and re-hashed after installation.
+  The main helper refuses VPN configs that would run commands as root.
 - Copies the app to `~/.local/share/omarchy-vpn` and adds the SUPER+Shift+V binding to
   `~/.config/hypr/bindings.lua`.
 - `/etc/resolv.conf` is left alone, unless you agree to switch it back to systemd-resolved
   when the installer asks.
+
+### INCY Shadowsocks compatibility
+
+INCY configurations containing Shadowsocks temporarily run with TUN sniffing disabled,
+including mixed/balancer configurations. This avoids a reproduced stall in our external-TUN-FD
+path with bundled Ferrum 26.10.13. Domain rules that need sniffed names may not match;
+IP-based rules and the kill switch are unchanged. VLESS-only configurations keep sniffing.
+This is a compatibility workaround, not a confirmed application-wide Ferrum bug.
 
 ## Usage
 
@@ -124,6 +136,66 @@ If a provider still refuses (device limit, unsupported client), the server list 
 `<provider> · ⚠ <its message>` — free a device slot with your provider. If a provider needs
 other request headers, put them in `~/.config/happ-capture/headers.json` as one JSON object
 (`{"User-Agent": "…", "X-Hwid": "…"}`) and `chmod 600` it; they replace the default ones.
+
+## INCY setup
+
+1. Install **INCY Desktop** yourself: AUR `incy-bin`, or the official Arch `.pkg.tar.zst`
+   from [INCY's releases](https://github.com/INCY-DEV/incy-platforms). The plugin installer
+   does not download or install INCY. The tested package is Desktop **3.9.0**, bundled
+   **Ferrum 26.10.13 (0da8c683)**; other versions are not guaranteed compatible.
+2. Open INCY and add your subscription URLs/QR codes there. The plugin reads its
+   `~/.local/share/incy/incy.db` and keeps separate subscription caches; it does not import
+   subscriptions into the app or replace its database.
+3. Disconnect any tunnel in the INCY app before connecting from the plugin. Enable INCY
+   in the plugin's Settings if hidden, then select a server in Locations. Refresh All
+   updates subscription caches; Ping measures through a separate short-lived core.
+
+The default installation is `/opt/incy`. Both `lib/app/resources/bin/libincycore.so` and
+its sibling `libxray_ffi.so` are required; a standalone `xray` binary is not used.
+Discovery also checks `incy` in PATH and the user desktop entry. For a custom installation,
+set `OMARCHY_VPN_INCY_ROOT` to the directory containing `lib/` and `bin/` in the environment
+inherited by the shell/plugin, not just in an unrelated terminal.
+
+**One owner at a time.** The app's tunnel is `tun_incy`; the plugin's is `incy-xray`.
+The plugin refuses connect/disconnect actions while the app owns a tunnel: disconnect in
+INCY first. Closing its window is not a substitute for disconnecting.
+
+**Privilege boundary.** `make install` installs the fixed root-owned network helper and
+its isolated Python package. The helper accepts only a mode and random session token;
+it creates the fixed TUN/routes and binds outgoing sockets to the uplink. It never loads
+INCY libraries, subscription configuration or user code. The library worker runs as the
+user with no root UID or capabilities. Connect and Ping both use this separation.
+The kill switch accepts broker mark `0x6b74` only together with generated proxy priority
+`6`; subscription-direct traffic does not gain a blanket bypass.
+
+**Upgrading from the old `incy-run` implementation:** disconnect the old connection,
+update the plugin and run **Update setup** (or `make install` from the checkout). Updating
+only the user backend is not enough: the root helpers/package must match too. The old
+root execution command is removed; there is no fallback to running the core as root.
+Your INCY database/subscriptions are kept. If startup fails, the plugin checks basic config
+structure before launching the broker; full protocol/config validation happens in the
+unprivileged worker, with its error returned to the caller.
+
+See [INCY Shadowsocks compatibility](#incy-shadowsocks-compatibility) for the temporary
+TUN sniffing limitation, including its effect on domain-based routing.
+
+### Native test pinning
+
+The optional native suite verifies both library hashes against tracked
+`tests/incy-artifacts.sha256` **before network setup or loading native code**:
+
+```bash
+make test-docker-build
+make test-incy-docker INCY_TEST_ROOT=/path/to/extracted/opt/incy
+```
+
+All network changes stay inside the disposable container. An absent or different library
+fails the test; these hashes are **not** an install/runtime allowlist for users.
+To test a new release, authenticate its official package and record its provenance, update
+both library hashes and package/version comments in the manifest, then run the native
+suite and regular `make test-docker`. Retain the update only with successful compatibility
+results; changing a hash alone is not evidence of compatibility. The standalone
+`tests/incy_ferrum_check.py` uses the same pin before its no-TUN control checks.
 
 ## Privacy
 

@@ -267,8 +267,12 @@ def incy_probe(runtime_cfg: dict, url: str, uplink: str | None) -> float | None:
         if proc is not None and proc.poll() is None:
             with contextlib.suppress(OSError, ProcessLookupError):
                 proc.terminate()
-            with contextlib.suppress(subprocess.TimeoutExpired):
+            try:
                 proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(OSError):
+                    proc.kill()
+                proc.wait()
 
 
 def probe(process_id: str, runtime_cfg: dict, url: str, uplink: str | None) -> float | None:

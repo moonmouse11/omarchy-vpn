@@ -302,6 +302,12 @@ def test_script_accepts_xray_mark_and_no_conf():
     script = (Path(__file__).resolve().parent.parent / "scripts/happ-killswitch").read_text()
     assert f"XRAY_MARK={happmeta.KILLSWITCH_MARK:#x}\n" in script
     assert "meta mark $XRAY_MARK accept" in script
+    from incy.network import BROKER_MARK, PROXY_PRIORITY
+
+    assert f"INCY_MARK={BROKER_MARK:#x}\n" in script
+    assert f"INCY_PRIORITY={PROXY_PRIORITY}\n" in script
+    assert "meta mark $INCY_MARK meta priority $INCY_PRIORITY accept" in script
+    assert "meta mark $INCY_MARK accept" not in script
     assert "--no-conf)" in script
 
 

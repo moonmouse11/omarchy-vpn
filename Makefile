@@ -20,4 +20,19 @@ lint:
 test-docker:
 	docker run --rm --network none -v "$$PWD":/repo:ro -w /repo omarchy-vpn-test
 
-.PHONY: install uninstall lint test-docker-build test-docker
+# Opt-in bundled Ferrum checks: point at an extracted official /opt/incy tree.
+# Root helpers and native core run only inside this disposable network namespace.
+test-incy-docker-build:
+	docker build -t omarchy-vpn-incy-test -f Dockerfile.incy-test .
+
+test-incy-docker: test-incy-docker-build
+	@test -f "$(INCY_TEST_ROOT)/lib/app/resources/bin/libincycore.so" || \
+		{ echo 'Set INCY_TEST_ROOT to the extracted official /opt/incy directory'; exit 1; }
+	docker run --rm --hostname incy-test --add-host incy-test:127.0.0.1 \
+		--network none --read-only --cap-drop ALL \
+		--cap-add NET_ADMIN --cap-add NET_BIND_SERVICE --cap-add SYS_ADMIN \
+		--cap-add SETUID --cap-add SETGID --cap-add KILL --cap-add CHOWN --cap-add DAC_OVERRIDE \
+		--device /dev/net/tun --tmpfs /run:rw,mode=755 --tmpfs /tmp:rw,mode=1777 \
+		-v "$$PWD":/repo:ro -v "$(INCY_TEST_ROOT)":/inspect:ro omarchy-vpn-incy-test
+
+.PHONY: install uninstall lint test-docker-build test-docker test-incy-docker-build test-incy-docker

@@ -1,23 +1,16 @@
-"""INCY-bundled xray helpers."""
+"""INCY asset discovery and cheap preflight; native startup validates the actual config."""
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 from pathlib import Path
 
-from incy.paths import incy_xray as _incy_xray
+from incy.paths import incy_library as _incy_library
 from incy.paths import install_root
 
 GEO_DIRS = (
     Path.home() / ".local/share/incy/geo_trimmed",
     Path.home() / ".local/share/incy/geo",
 )
-
-XRAY_TEST_TIMEOUT = 10
-XRAY_ERROR_PREFIX = "main: failed to load config files:"
-XRAY_ERROR_MAXLEN = 240
 
 
 def _geo_dirs() -> tuple[Path, ...]:
@@ -38,30 +31,26 @@ def asset_dir() -> Path | None:
 
 
 def config_error(cfg: dict) -> str | None:
-    xray = _incy_xray()
-    if not xray.is_file():
-        return "INCY xray binary missing"
-    env = {**os.environ}
-    if ad := asset_dir():
-        env["XRAY_LOCATION_ASSET"] = str(ad)
-    try:
-        result = subprocess.run(
-            [str(xray), "run", "-test", "-c", "stdin:"],
-            input=json.dumps(cfg),
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=XRAY_TEST_TIMEOUT,
-            check=False,
-        )
-    except OSError, subprocess.TimeoutExpired:
-        return None
-    if result.returncode == 0:
-        return None
-    lines = (result.stdout + result.stderr).strip().splitlines()
-    for line in reversed(lines):
-        if XRAY_ERROR_PREFIX in line:
-            msg = line.split(XRAY_ERROR_PREFIX, 1)[-1].strip()
-            return msg[:XRAY_ERROR_MAXLEN]
-    tail = lines[-1] if lines else "xray rejected the config"
-    return tail[:XRAY_ERROR_MAXLEN]
+    if not _incy_library().is_file():
+        return "INCY core library missing"
+    if not isinstance(cfg, dict):
+        return "INCY configuration must be an object"
+    # Validate containers we access, not Ferrum's evolving protocol/settings schema.
+    for field in ("inbounds", "outbounds"):
+        entries = cfg.get(field, [])
+        if not isinstance(entries, list):
+            return f"INCY {field} must be a list"
+        for index, entry in enumerate(entries):
+            name = f"{field}[{index}]"
+            if not isinstance(entry, dict):
+                return f"INCY {name} must be an object"
+            for key in ("settings", "sniffing", "streamSettings"):
+                if key in entry and not isinstance(entry[key], dict):
+                    return f"INCY {name}.{key} must be an object"
+            stream = entry.get("streamSettings", {})
+            sockopt = stream.get("sockopt", {})
+            if not isinstance(sockopt, dict):
+                return f"INCY {name}.streamSettings.sockopt must be an object"
+            if not isinstance(sockopt.get("customSockopt", []), list):
+                return f"INCY {name}.streamSettings.sockopt.customSockopt must be a list"
+    return None

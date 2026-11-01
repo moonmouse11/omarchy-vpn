@@ -7,7 +7,6 @@ import json
 import os
 import signal
 import sqlite3
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -19,11 +18,12 @@ INCY_CONFIG = Path.home() / ".config/incy"
 INCY_SOCK = Path.home() / ".cache/incy/incy.sock"
 IFACE_PREFIX = "incy-"
 _INCY_LINK = Path(f"/sys/class/net/{TUN_IFACE}")
+_GUI_LINK = Path("/sys/class/net/tun_incy")
 
 
 def _incy_link_up() -> bool:
     try:
-        return _INCY_LINK.is_dir()
+        return _INCY_LINK.is_dir() or _GUI_LINK.is_dir()
     except OSError:
         return False
 
@@ -73,28 +73,17 @@ def _read_keeper_state() -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _incy_xray_running() -> bool:
-    xray = _pub().incy_xray()
-    needle = str(xray) if xray.is_file() else "resources/bin/xray"
+def _live_worker(state: dict | None) -> bool:
     try:
-        proc = subprocess.run(
-            ["pgrep", "-af", "xray"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=2,
-        )
-    except OSError, subprocess.SubprocessError:
+        pid = int((state or {}).get("xray_pid", 0))
+        return pid > 0 and b"incy.launcher" in Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError, ValueError, TypeError:
         return False
-    return any(needle in line for line in proc.stdout.splitlines())
 
 
 def app_connected() -> bool:
-    """INCY GUI owns a tunnel (INCY xray up, not our keeper)."""
-    if not _incy_xray_running():
-        return False
-    state = _read_keeper_state()
-    return not (state and state.get("status") == "connected" and state.get("pid"))
+    """The stock INCY app uses tun_incy; our broker exclusively owns incy-xray."""
+    return _GUI_LINK.is_dir()
 
 
 def _load_connections() -> list[VPNConnection]:
@@ -127,15 +116,10 @@ def _load_connections() -> list[VPNConnection]:
 
     state = _read_keeper_state()
     active_name = active_sub = None
-    if state and state.get("status") == "connected":
+    if state and state.get("status") == "connected" and _live_worker(state):
         active_name = state.get("server")
         active_sub = state.get("provider_id")
-    elif app_connected():
-        for name, sub_id, is_active, _sub_name in rows:
-            if is_active:
-                active_name, active_sub = name, sub_id
-                break
-    else:
+    elif _incy_link_up():
         for name, sub_id, is_active, _sub_name in rows:
             if is_active:
                 active_name, active_sub = name, sub_id
@@ -153,7 +137,7 @@ def _load_connections() -> list[VPNConnection]:
                 name=name,
                 provider="INCY",
                 active=active,
-                interface=TUN_IFACE if active else None,
+                interface=("tun_incy" if _GUI_LINK.is_dir() else TUN_IFACE) if active else None,
                 subscription_id=sub_id or None,
                 subscription_name=sub_name or None,
             )
@@ -183,7 +167,12 @@ class IncyProvider(VPNProvider):
 
     def active_connections(self) -> list[VPNConnection]:
         state = _read_keeper_state()
-        if state and state.get("status") == "connected" and state.get("server"):
+        if (
+            state
+            and state.get("status") == "connected"
+            and state.get("server")
+            and _live_worker(state)
+        ):
             sub_id = state.get("provider_id")
             return [
                 VPNConnection(
@@ -219,7 +208,7 @@ class IncyProvider(VPNProvider):
         if not incy_installed():
             return ActionResult(
                 False,
-                "INCY xray not found — install incy-bin (AUR), the GitHub .pkg.tar.zst, "
+                "INCY native libraries not found — install incy-bin (AUR) or the official package, "
                 "or set OMARCHY_VPN_INCY_ROOT to your INCY install",
             )
         if app_connected():
@@ -235,9 +224,15 @@ class IncyProvider(VPNProvider):
         pub = _pub()
         state = _read_keeper_state()
         pub.KEEPER_STATE.unlink(missing_ok=True)
-        if state and (xpid := state.get("xray_pid")):
-            with contextlib.suppress(OSError, ProcessLookupError):
-                os.kill(int(xpid), signal.SIGTERM)
+        if state and (pid := state.get("pid")):
+            try:
+                if b"--incy-keeper" in Path(f"/proc/{int(pid)}/cmdline").read_bytes():
+                    os.kill(int(pid), signal.SIGTERM)
+            except OSError, ValueError, TypeError:
+                pass
+        if state and _live_worker(state):
+            with contextlib.suppress(OSError):
+                os.kill(int(state["xray_pid"]), signal.SIGTERM)
         deadline = time.time() + 5
         while time.time() < deadline:
             if not Path(f"/sys/class/net/{TUN_IFACE}").exists():
@@ -257,11 +252,16 @@ class IncyProvider(VPNProvider):
             stderr=pub.subprocess.DEVNULL,
             start_new_session=True,
         )
-        deadline = time.time() + 30
+        deadline = time.time() + 40
+        success = False
         try:
-            return self._await_keeper(deadline, keeper.pid)
+            result = self._await_keeper(deadline, keeper.pid)
+            success = result.success
+            return result
         finally:
-            pass
+            if not success:
+                with contextlib.suppress(OSError):
+                    keeper.terminate()
 
     def _await_keeper(self, deadline: float, pid: int) -> ActionResult:
         pub = _pub()
@@ -278,15 +278,13 @@ class IncyProvider(VPNProvider):
         return ActionResult(False, "keeper timeout — see log")
 
     def disconnect(self, connection: VPNConnection) -> ActionResult:
-        pub = _pub()
+        if app_connected():
+            return ActionResult(False, "Disconnect the INCY app connection in INCY first")
         if not Path(f"/sys/class/net/{TUN_IFACE}").exists() and not _read_keeper_state():
             return ActionResult(False, "INCY is not connected")
-        pub.KEEPER_STATE.unlink(missing_ok=True)
-        deadline = time.time() + 5
-        while time.time() < deadline:
-            if not Path(f"/sys/class/net/{TUN_IFACE}").exists():
-                return ActionResult(True, "Disconnected INCY")
-            pub.time.sleep(0.2)
+        self._stop_running()
+        if Path(f"/sys/class/net/{TUN_IFACE}").exists():
+            return ActionResult(False, "INCY disconnect timed out — see log")
         return ActionResult(True, "Disconnected INCY")
 
     def import_config(self, path: str) -> ActionResult:

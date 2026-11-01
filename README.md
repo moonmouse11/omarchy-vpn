@@ -64,10 +64,13 @@ reminds you when you pick them.
 ### What setup changes
 
 - Installs only the packages your picks need (`wireguard-tools`, `openvpn`, a `resolvconf`).
-- Adds three root-owned helpers to `/usr/local/bin` (`omarchy-vpn-helper`, `happ-killswitch`,
-  `openvpn-dns-updown`) and a sudoers rule (`/etc/sudoers.d/vpn-manager`) that lets your user run
-  exactly those, plus the IPv6 guard's `sysctl` calls, without a password. The helper refuses
-  VPN configs that would run commands as root.
+- Adds root-owned helpers to `/usr/local/bin` (`omarchy-vpn-helper`, `happ-killswitch`,
+  `openvpn-dns-updown`, `omarchy-vpn-incy-network`) and the INCY helper's isolated Python package
+  to `/usr/local/lib/omarchy-vpn`. The sudoers rule (`/etc/sudoers.d/vpn-manager`) grants access
+  only to `omarchy-vpn-helper`, `happ-killswitch` and the IPv6 guard's fixed `sysctl` calls.
+  OpenVPN invokes its DNS helper; the main helper invokes INCY's fixed network entry.
+  Privileged helper sources are copied before the sudo prompt and re-hashed after installation.
+  The main helper refuses VPN configs that would run commands as root.
 - Copies the app to `~/.local/share/omarchy-vpn` and adds the SUPER+Shift+V binding to
   `~/.config/hypr/bindings.lua`.
 - `/etc/resolv.conf` is left alone, unless you agree to switch it back to systemd-resolved

@@ -310,6 +310,29 @@ def test_openvpn_down_kills_only_the_profiles_openvpn(tree, comm, killed):
     assert (result.returncode == 0) is killed
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        (),
+        ("connect",),
+        ("bad", "a" * 32),
+        ("connect", "../x"),
+        ("probe", "a" * 32, "extra"),
+    ],
+)
+def test_incy_network_refuses_paths_and_extra_arguments(tree, args):
+    result = tree("incy-network", *args)
+    assert result.returncode != 0
+    assert "invalid INCY network session" in result.stderr
+
+
+def test_incy_network_executes_only_fixed_entry(tree):
+    result = tree("incy-network", "probe", "a" * 32)
+    assert result.returncode == 0, result.stderr
+    assert "/usr/local/bin/omarchy-vpn-incy-network" in result.stdout
+    assert "probe" in result.stdout
+
+
 def test_incy_run_rejects_unknown_config_slot(tree):
     result = tree("incy-run", "not-allowed.json")
     assert result.returncode != 0

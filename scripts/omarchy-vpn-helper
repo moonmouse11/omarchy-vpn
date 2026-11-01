@@ -431,6 +431,16 @@ cmd_incy_run() {
     exec env "${extra[@]}" "$xray" run -config "$cfg"
 }
 
+if [[ ${1:-} == incy-network ]]; then
+    (( $# == 3 )) && [[ $2 == connect || $2 == probe ]] && [[ $3 =~ ^[0-9a-f]{32}$ ]] \
+        || die "invalid INCY network session"
+    if [[ -n ${DRY_RUN:-} ]]; then
+        run /usr/local/bin/omarchy-vpn-incy-network "$2" "$3"
+    else
+        exec /usr/local/bin/omarchy-vpn-incy-network "$2" "$3"
+    fi
+    exit 0
+fi
 if [[ ${1:-} == incy-run ]]; then
     cmd_incy_run "${2:-incy-xray-active.json}"
     exit 0

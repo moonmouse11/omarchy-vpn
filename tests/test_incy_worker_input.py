@@ -1,7 +1,9 @@
 """Bounded stdin transport and worker lifecycle, without loading native code."""
 
 import io
+import os
 import signal
+import socket
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -69,6 +71,38 @@ def test_cli_reports_native_start_failure(monkeypatch, capsys):
     assert worker.main(["--library", "/unused/libincycore.so"]) == 1
     assert "native startup failed" in capsys.readouterr().err
     core.stop.assert_called_once_with()
+
+
+def test_broker_loss_detects_remote_and_local_close():
+    client, server = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    with client, server:
+        assert worker.broker_lost(client) is False
+        server.send(b"1")
+        assert worker.broker_lost(client) is False
+        server.close()
+        assert worker.broker_lost(client) is True
+        client.close()
+        assert worker.broker_lost(client) is True
+
+
+def test_cli_refuses_non_root_broker_before_loading_library(monkeypatch):
+    load = Mock()
+    monkeypatch.setattr(worker, "Core", load)
+    monkeypatch.setattr(worker.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(b"{}")))
+    client, server = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    with client, server:
+        assert (
+            worker.main(
+                [
+                    "--library",
+                    "/unused/libincycore.so",
+                    "--broker-fd",
+                    str(os.dup(client.fileno())),
+                ]
+            )
+            == 1
+        )
+    load.assert_not_called()
 
 
 def test_missing_capability_fields_fail_closed(monkeypatch):

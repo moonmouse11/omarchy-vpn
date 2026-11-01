@@ -20,6 +20,59 @@ from incy import network, privileged
 from incy.worker import Core
 
 
+def check_worker_broker_death(library: str) -> None:
+    with privileged.tunnel() as tun_fd:
+        client, server = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        with client, server:
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "incy.worker",
+                    "--library",
+                    library,
+                    "--tun-fd",
+                    str(tun_fd),
+                    "--broker-fd",
+                    str(client.fileno()),
+                ],
+                pass_fds=(tun_fd, client.fileno()),
+                user=65534,
+                group=65534,
+                extra_groups=[],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={"PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+            )
+            client.close()
+            try:
+                assert process.stdin is not None and process.stdout is not None
+                config = {
+                    "inbounds": [
+                        {
+                            "protocol": "tun",
+                            "settings": {
+                                "name": "incy-xray",
+                                "mtu": 1500,
+                            },
+                        }
+                    ],
+                    "outbounds": [{"protocol": "blackhole"}],
+                }
+                process.stdin.write(json.dumps(config).encode())
+                process.stdin.close()
+                assert select.select([process.stdout], [], [], 5)[0], "worker startup timed out"
+                assert b"started" in process.stdout.readline(), "worker did not start core"
+                server.close()
+                assert process.wait(timeout=5) == 0, "worker failed after broker death"
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+    print("Worker CLI stops native core after broker channel death: OK", flush=True)
+
+
 def child(library: str, token: str, ready: int, result: int) -> None:
     os.setgroups([])
     os.setgid(65534)
@@ -120,6 +173,7 @@ def main() -> None:
         routes = json.loads(subprocess.check_output(["ip", "-j", "route", "show"]))
         assert not any(route.get("dev") == "incy-xray" for route in routes)
         print("Authenticated TUN FD -> unprivileged core -> disconnect cleanup: OK", flush=True)
+        check_worker_broker_death(sys.argv[1])
     finally:
         os.close(ready_r)
         os.close(result_r)

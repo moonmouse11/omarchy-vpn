@@ -6,12 +6,17 @@ import argparse
 import ctypes
 import json
 import os
+import select
 import signal
+import socket
+import struct
 import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
+
+from incy import broker
 
 CONFIG_MAX = 16 * 1024 * 1024
 STATUS = Path("/proc/self/status")
@@ -116,25 +121,55 @@ def serve(core: Core, config: dict, tun_fd: int | None, wait: Callable[[], bool]
         core.stop()
 
 
+def broker_lost(channel: socket.socket) -> bool:
+    if channel.fileno() < 0:
+        return True
+    poll = select.poll()
+    poll.register(channel, select.POLLHUP | select.POLLERR | select.POLLRDHUP)
+    return bool(poll.poll(0))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Unprivileged INCY core worker")
     parser.add_argument("--library", required=True)
     parser.add_argument("--tun-fd", type=int)
+    parser.add_argument("--broker-fd", type=int)
     args = parser.parse_args(argv)
     stopped = threading.Event()
     signals = (signal.SIGTERM, signal.SIGINT)
     previous = {sig: signal.getsignal(sig) for sig in signals}
+    channel: socket.socket | None = None
     try:
         for sig in signals:
             signal.signal(sig, lambda _sig, _frame: stopped.set())
+        if args.broker_fd is not None:
+            if args.broker_fd < 3:
+                raise ValueError("Broker fd must be >= 3")
+            channel = socket.socket(fileno=args.broker_fd)
+            if channel.family != socket.AF_UNIX or channel.type != socket.SOCK_SEQPACKET:
+                raise ValueError("Invalid INCY broker channel")
+            _, uid, _ = struct.unpack(
+                "3i", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+            )
+            if uid != 0:
+                raise PermissionError("INCY broker must run as root")
         config = read_config(sys.stdin.buffer)
         core = Core(args.library)
-        serve(core, config, args.tun_fd, lambda: stopped.wait(0.25))
+        if channel is not None:
+            core.set_socket_protector(broker.Client(channel).protect)
+        serve(
+            core,
+            config,
+            args.tun_fd,
+            lambda: stopped.wait(0.25) or (channel is not None and broker_lost(channel)),
+        )
         return 0
     except (OSError, ValueError) as error:
         print(f"INCY worker: {error}", file=sys.stderr)
         return 1
     finally:
+        if channel is not None:
+            channel.close()
         for sig, handler in previous.items():
             signal.signal(sig, handler)
 

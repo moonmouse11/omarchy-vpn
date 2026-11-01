@@ -6,13 +6,13 @@ import copy
 import re
 import socket
 
-from happ.constants import KILLSWITCH_MARK
-
 BROKER_MARK = 0x6B74
 PROXY_PRIORITY = 6
 
 
 def prepare_config(config: dict) -> dict:
+    from happ.constants import KILLSWITCH_MARK  # noqa: PLC0415 — root broker never imports app code
+
     result = copy.deepcopy(config)
     for inbound in result.get("inbounds", []):
         if inbound.get("protocol") != "tun":

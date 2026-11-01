@@ -59,6 +59,7 @@ class Core:
             raise OSError(message)
 
     def start(self, config: dict, *, tun_fd: int | None = None) -> None:
+        """Start core; a successful TUN start transfers ownership of tun_fd to native code."""
         if tun_fd is not None and tun_fd < 3:
             raise ValueError("TUN fd must be >= 3")
         payload = json.dumps(config, separators=(",", ":"), ensure_ascii=False).encode()

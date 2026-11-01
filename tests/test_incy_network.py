@@ -29,6 +29,7 @@ def test_translates_proxy_mark_but_not_direct_and_preserves_source():
                 "protocol": "freedom",
                 "streamSettings": {
                     "sockopt": {
+                        "mark": KILLSWITCH_MARK,
                         "customSockopt": [{"level": "1", "opt": "12", "value": "6", "type": "int"}],
                     }
                 },
@@ -87,6 +88,24 @@ def test_external_tun_does_not_ask_core_to_manage_host_network():
     }
     result = network.prepare_config(cfg)
     assert result["inbounds"][0]["settings"] == {"name": "incy-xray", "mtu": 1500}
+
+
+@pytest.mark.parametrize("protocols", [("shadowsocks",), ("vless", "shadowsocks"), ("vless",)])
+def test_ss_workaround_only_disables_tun_sniffing(protocols):
+    cfg = {
+        "inbounds": [
+            {"protocol": "tun", "sniffing": {"enabled": True, "routeOnly": True}},
+            {"protocol": "http", "sniffing": {"enabled": True}},
+        ],
+        "outbounds": [{"protocol": protocol} for protocol in protocols],
+        "routing": {"rules": [{"domain": ["example.com"], "outboundTag": "direct"}]},
+    }
+    original = copy.deepcopy(cfg)
+    result = network.prepare_config(cfg)
+    assert cfg == original
+    assert result["inbounds"][0]["sniffing"]["enabled"] is ("shadowsocks" not in protocols)
+    assert result["inbounds"][1]["sniffing"]["enabled"] is True
+    assert result["routing"] == cfg["routing"]
 
 
 def test_rejects_malformed_custom_sockopts():

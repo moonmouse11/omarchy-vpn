@@ -103,7 +103,6 @@ SUDOERS_FILE="/etc/sudoers.d/vpn-manager"
 #   omarchy-vpn-helper (scripts/, root-owned): WireGuard/AmneziaWG/OpenVPN up/down,
 #     import, delete, autostart, endpoints — profile names only, never paths;
 #     incy-network — fixed mode + session token, root-owned Python -I entry;
-#     legacy incy-run remains until the keeper migration is complete;
 #     it refuses imports that could run commands as root (WireGuard PostUp/…,
 #     OpenVPN directives off its allowlist: up/route-up/plugin/…);
 #   happ-killswitch (root-owned): the kill switch's nft rules;

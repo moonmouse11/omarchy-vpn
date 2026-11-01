@@ -11,12 +11,19 @@ PROXY_PRIORITY = 6
 
 
 def prepare_config(config: dict) -> dict:
-    from happ.constants import KILLSWITCH_MARK  # noqa: PLC0415 — root broker never imports app code
+    from happ.constants import (  # noqa: PLC0415 — root broker never imports app code
+        KILLSWITCH_MARK,
+        NON_PROXY_PROTOCOLS,
+    )
 
     result = copy.deepcopy(config)
+    has_ss = any(o.get("protocol") == "shadowsocks" for o in result.get("outbounds", []))
     for inbound in result.get("inbounds", []):
         if inbound.get("protocol") != "tun":
             continue
+        if has_ss:
+            # shortcut: SS + TUN sniffing stalls in the tested FD path; restore after investigation.
+            inbound.setdefault("sniffing", {})["enabled"] = False
         settings = inbound.setdefault("settings", {})
         for field in (
             "gateway",
@@ -27,8 +34,14 @@ def prepare_config(config: dict) -> dict:
             settings.pop(field, None)
     for outbound in result.get("outbounds", []):
         sockopt = outbound.setdefault("streamSettings", {}).setdefault("sockopt", {})
-        proxy = sockopt.pop("mark", None) == KILLSWITCH_MARK
+        proxy = sockopt.pop("mark", None) == KILLSWITCH_MARK and (
+            outbound.get("protocol") not in NON_PROXY_PROTOCOLS
+            or outbound.get("tag") == "dns-direct"
+        )
         sockopt.pop("interface", None)
+        if proxy:
+            # Endpoint hostnames must use the tagged bootstrap resolver, not libc through the TUN.
+            sockopt["domainStrategy"] = "UseIPv4"
         custom = sockopt.setdefault("customSockopt", [])
         if not isinstance(custom, list):
             raise ValueError("INCY customSockopt must be a list")

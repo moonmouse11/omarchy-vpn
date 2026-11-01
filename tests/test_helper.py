@@ -2,6 +2,8 @@
 AmneziaWG/OpenVPN. Run for real (bash), against a temp tree: the directory
 overrides and DRY_RUN (print, don't run) work only outside sudo."""
 
+import os
+import pwd
 import subprocess
 from pathlib import Path
 
@@ -333,10 +335,39 @@ def test_incy_network_executes_only_fixed_entry(tree):
     assert "probe" in result.stdout
 
 
+def test_legacy_incy_run_cannot_execute_a_user_binary(tree):
+    home = tree.dirs["run"] / "home"
+    state = home / ".local/state/vpn-manager"
+    state.mkdir(parents=True)
+    user = pwd.getpwuid(os.getuid()).pw_name
+    shims = home / "bin"
+    shims.mkdir()
+    getent = shims / "getent"
+    getent.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' '{user}:x:1000:1000::" + str(home) + ":/bin/sh'\n"
+    )
+    getent.chmod(0o755)
+    binary = home / "untrusted"
+    binary.write_text("#!/bin/sh\necho VULNERABLE\n")
+    binary.chmod(0o755)
+    (state / "incy-xray-active.json").write_text("{}")
+    (state / "incy-xray.bin").write_text(str(binary))
+    result = tree(
+        "incy-run",
+        "incy-xray-active.json",
+        extra_env={
+            "SUDO_USER": user,
+            "PATH": f"{shims}:/usr/bin:/bin",
+        },
+    )
+    assert result.returncode != 0
+    assert "VULNERABLE" not in result.stdout
+
+
 def test_incy_run_rejects_unknown_config_slot(tree):
     result = tree("incy-run", "not-allowed.json")
     assert result.returncode != 0
-    assert "invalid incy config slot" in result.stderr
+    assert "usage:" in result.stderr
 
 
 def test_audit_lists_configs_on_disk_that_run_root_commands(tree):

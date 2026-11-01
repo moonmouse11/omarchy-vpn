@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -18,6 +19,14 @@ KEEPER_STATE = Path.home() / ".local/state/vpn-manager/incy-keeper.json"
 XRAY_START_TIMEOUT = 25.0
 
 
+class KeeperCancelled(BaseException):
+    pass
+
+
+def _cancel(_sig, _frame) -> None:
+    raise KeeperCancelled
+
+
 def _pub():
     import providers.incy as m  # noqa: PLC0415 — tests patch providers.incy
 
@@ -26,7 +35,7 @@ def _pub():
 
 def _read_state() -> dict | None:
     try:
-        data = json.loads(KEEPER_STATE.read_text())
+        data = json.loads(_pub().KEEPER_STATE.read_text())
     except OSError, json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) else None
@@ -38,7 +47,7 @@ def _write_state(state: dict) -> None:
 
 def _write_own_state(state: dict) -> None:
     current = _read_state()
-    if current is not None and current.get("pid") not in (None, os.getpid()):
+    if current is None or current.get("pid") not in (None, os.getpid()):
         return
     _write_state(state)
 
@@ -60,7 +69,10 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
     state: dict = {"status": "connecting", "pid": os.getpid()}
     _write_state(state)
     proc: subprocess.Popen[bytes] | None = None
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
+        for sig in previous:
+            signal.signal(sig, _cancel)
         name = server_name or ""
         cfg = resolve_config(name, provider_id=provider_id, allow_fetch=False)
         if cfg is None and provider_id:
@@ -88,7 +100,7 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
         if not _wait_iface(deadline):
             state.update(
                 status="error",
-                message=f"TUN {TUN_IFACE} did not come up — re-run make install (incy-run helper)",
+                message=f"TUN {TUN_IFACE} did not come up — re-run make install",
             )
             _write_own_state(state)
             return
@@ -107,6 +119,8 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
             if current is None or current.get("pid") != os.getpid():
                 break
             time.sleep(0.5)
+    except KeeperCancelled:
+        pass
     except OSError as e:
         logutil.log(f"incy keeper: {e}")
         state.update(status="error", message=str(e))
@@ -118,6 +132,10 @@ def run_keeper(server_name: str | None = None, provider_id: str | None = None) -
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-        state.update(status="exited")
+                proc.wait()
+        if state.get("status") != "error":
+            state.update(status="exited")
         _write_own_state(state)
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
         logutil.log("incy keeper: exited")

@@ -12,41 +12,13 @@ from incy.config import build_incy_runtime_config, resolve_config, server_endpoi
 from providers.happd.incy import IncyProvider
 
 
-def test_config_error_accepts_valid_config(monkeypatch, tmp_path):
-    bin_path = tmp_path / "xray"
-    bin_path.write_bytes(b"\x7fELF")
-    monkeypatch.setattr(xray, "_incy_xray", lambda: bin_path)
-    monkeypatch.setattr(xray, "asset_dir", lambda: None)
-
-    class Ok:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    monkeypatch.setattr(xray.subprocess, "run", lambda *a, **k: Ok())
-    cfg = {"log": {}, "inbounds": [], "outbounds": [{"protocol": "freedom", "tag": "direct"}]}
-    assert xray.config_error(cfg) is None
-
-
-def test_config_error_surfaces_xray_message(monkeypatch, tmp_path):
-    bin_path = tmp_path / "xray"
-    bin_path.write_bytes(b"\x7fELF")
-    monkeypatch.setattr(xray, "_incy_xray", lambda: bin_path)
-    monkeypatch.setattr(xray, "asset_dir", lambda: tmp_path / "assets")
-
-    class Bad:
-        returncode = 1
-        stdout = ""
-        stderr = "main: failed to load config files: invalid outbound tag\n"
-
-    monkeypatch.setattr(xray.subprocess, "run", lambda *a, **k: Bad())
-    reason = xray.config_error({"outbounds": []})
-    assert reason == "invalid outbound tag"
-
-
-def test_config_error_missing_binary(monkeypatch, tmp_path):
-    monkeypatch.setattr(xray, "_incy_xray", lambda: tmp_path / "missing")
-    assert xray.config_error({}) == "INCY xray binary missing"
+def test_preflight_checks_library_without_starting_network(monkeypatch, tmp_path):
+    library = tmp_path / "libincycore.so"
+    monkeypatch.setattr(xray, "_incy_library", lambda: library)
+    assert xray.config_error({}) == "INCY core library missing"
+    library.touch()
+    assert xray.config_error({"outbounds": []}) is None
+    assert xray.config_error({"outbounds": "invalid"}) == "INCY outbounds must be a list"
 
 
 def test_asset_dir_finds_geoip_under_install_root(monkeypatch, tmp_path):
@@ -59,64 +31,9 @@ def test_asset_dir_finds_geoip_under_install_root(monkeypatch, tmp_path):
     assert xray.asset_dir() == geo
 
 
-def test_stage_xray_run_writes_staged_files(monkeypatch, tmp_path):
-    state = tmp_path / "state"
-    xray_bin = tmp_path / "bin/xray"
-    xray_bin.parent.mkdir(parents=True)
-    xray_bin.write_bytes(b"x")
-    assets = tmp_path / "assets"
-    assets.mkdir()
-    monkeypatch.setattr(xray_run, "STATE_DIR", state)
-    monkeypatch.setattr(xray_run, "BIN_FILE", state / "incy-xray.bin")
-    monkeypatch.setattr(xray_run, "ASSET_FILE", state / "incy-xray.assets")
-    monkeypatch.setattr(xray_run, "incy_xray", lambda: xray_bin)
-    monkeypatch.setattr(xray_run, "asset_dir", lambda: assets)
-    cfg = {"remarks": "probe", "inbounds": []}
-    xray_run.stage_xray_run(cfg, xray_run.PROBE_CFG)
-    assert json.loads((state / xray_run.PROBE_CFG).read_text()) == cfg
-    assert (state / "incy-xray.bin").read_text() == str(xray_bin)
-    assert (state / "incy-xray.assets").read_text() == str(assets)
-
-
-def test_stage_xray_run_clears_assets_when_none(monkeypatch, tmp_path):
-    state = tmp_path / "state"
-    state.mkdir()
-    xray_bin = tmp_path / "xray"
-    xray_bin.write_bytes(b"x")
-    asset_file = state / "incy-xray.assets"
-    asset_file.write_text("/old")
-    monkeypatch.setattr(xray_run, "STATE_DIR", state)
-    monkeypatch.setattr(xray_run, "ASSET_FILE", asset_file)
-    monkeypatch.setattr(xray_run, "BIN_FILE", state / "incy-xray.bin")
-    monkeypatch.setattr(xray_run, "incy_xray", lambda: xray_bin)
-    monkeypatch.setattr(xray_run, "asset_dir", lambda: None)
-    xray_run.stage_xray_run({"a": 1}, xray_run.KEEPER_CFG)
-    assert not asset_file.exists()
-
-
-def test_stage_xray_run_rejects_bad_slot():
+def test_popen_xray_rejects_bad_slot():
     with pytest.raises(ValueError, match="bad incy config slot"):
-        xray_run.stage_xray_run({}, "evil.json")
-
-
-def test_popen_xray_invokes_helper(monkeypatch, tmp_path):
-    state = tmp_path / "state"
-    xray_bin = tmp_path / "xray"
-    xray_bin.write_bytes(b"x")
-    monkeypatch.setattr(xray_run, "STATE_DIR", state)
-    monkeypatch.setattr(xray_run, "BIN_FILE", state / "incy-xray.bin")
-    monkeypatch.setattr(xray_run, "ASSET_FILE", state / "incy-xray.assets")
-    monkeypatch.setattr(xray_run, "incy_xray", lambda: xray_bin)
-    monkeypatch.setattr(xray_run, "asset_dir", lambda: None)
-    calls = []
-    monkeypatch.setattr(
-        xray_run.subprocess,
-        "Popen",
-        lambda cmd, **kw: calls.append(cmd) or SimpleNamespace(pid=7),
-    )
-    proc = xray_run.popen_xray({"remarks": "k"}, xray_run.KEEPER_CFG)
-    assert proc.pid == 7
-    assert calls[0][:4] == ["sudo", "-n", xray_run.HELPER, "incy-run"]
+        xray_run.popen_xray({}, "evil.json")
 
 
 def _keeper_state_recorder(monkeypatch, tmp_path):
@@ -280,8 +197,7 @@ def test_db_server_raw_config_bad_json(tmp_path, monkeypatch):
 def test_app_connected_when_gui_xray_without_keeper(monkeypatch):
     import providers.happd.incy as incy_impl
 
-    monkeypatch.setattr(incy_impl, "_incy_xray_running", lambda: True)
-    monkeypatch.setattr(incy_impl, "_read_keeper_state", lambda: None)
+    monkeypatch.setattr(incy_impl, "_GUI_LINK", SimpleNamespace(is_dir=lambda: True))
     assert incy_impl.app_connected() is True
 
 

@@ -105,6 +105,15 @@ def test_cli_refuses_non_root_broker_before_loading_library(monkeypatch):
     load.assert_not_called()
 
 
+def test_saved_root_uid_is_rejected_before_native_load(monkeypatch):
+    monkeypatch.setattr(worker.os, "getresuid", lambda: (1000, 1000, 0))
+    load = Mock()
+    monkeypatch.setattr(worker.ctypes, "CDLL", load)
+    with pytest.raises(PermissionError):
+        worker.Core("/unused/libincycore.so")
+    load.assert_not_called()
+
+
 def test_missing_capability_fields_fail_closed(monkeypatch):
     monkeypatch.setattr(worker.os, "getuid", lambda: 1000)
     monkeypatch.setattr(worker.os, "geteuid", lambda: 1000)

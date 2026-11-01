@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from incy.keeper import KEEPER_STATE, run_keeper
-from incy.paths import incy_bin, incy_installed, incy_xray
+from incy.paths import incy_bin, incy_installed, incy_library
 from providers.happd.incy import (
     IFACE_PREFIX,
     INCY_CONFIG,
@@ -27,8 +27,8 @@ __all__ = [
     "app_connected",
     "incy_bin",
     "incy_installed",
+    "incy_library",
     "incy_server_groups",
-    "incy_xray",
     "run_keeper",
     "subprocess",
     "time",

@@ -1,60 +1,80 @@
-"""Start INCY's bundled xray via omarchy-vpn-helper (TUN needs root/CAP_NET_ADMIN)."""
+"""Start an unprivileged native worker and wait for actual core startup."""
 
 from __future__ import annotations
 
+import contextlib
+import json
 import os
+import select
 import subprocess
-import tempfile
+import sys
 from pathlib import Path
 
-import fsutil
-from incy.paths import incy_xray
-from incy.xray import asset_dir
-from providers.common.helper import HELPER
-
-STATE_DIR = Path.home() / ".local/state/vpn-manager"
 KEEPER_CFG = "incy-xray-active.json"
-PROBE_CFG = "incy-probe-active.json"
-BIN_FILE = STATE_DIR / "incy-xray.bin"
-ASSET_FILE = STATE_DIR / "incy-xray.assets"
+PROBE_CFG = "incy-xray-probe.json"
+START_TIMEOUT = 30.0
 
 
-def stage_xray_run(cfg: dict, slot: str) -> None:
-    if slot not in (KEEPER_CFG, PROBE_CFG):
-        raise ValueError(f"bad incy config slot: {slot!r}")
-    xray = incy_xray()
-    if not xray.is_file():
-        raise OSError("INCY xray binary missing")
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    fsutil.write_json_atomic(STATE_DIR / slot, cfg)
-    _write_text_atomic(BIN_FILE, str(xray))
-    if ad := asset_dir():
-        _write_text_atomic(ASSET_FILE, str(ad))
-    else:
-        ASSET_FILE.unlink(missing_ok=True)
-
-
-def _write_text_atomic(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+def await_ready(fd: int, timeout: float) -> None:
+    if not select.select([fd], [], [], timeout)[0]:
+        raise OSError("INCY worker startup timed out")
     try:
-        os.write(fd, text.encode())
-        os.close(fd)
-        fd = -1
-        tmp_path = Path(tmp)
-        tmp_path.chmod(0o600)
-        tmp_path.replace(path)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-        Path(tmp).unlink(missing_ok=True)
+        message = json.loads(os.read(fd, 4096))
+    except ValueError:
+        raise OSError("INCY worker exited before startup") from None
+    if not isinstance(message, dict) or message.get("ready") is not True:
+        error = (
+            message.get("error", "invalid startup reply") if isinstance(message, dict) else message
+        )
+        raise OSError(f"INCY worker: {str(error)[:2000]}")
 
 
 def popen_xray(cfg: dict, slot: str) -> subprocess.Popen[bytes]:
-    stage_xray_run(cfg, slot)
-    return subprocess.Popen(
-        ["sudo", "-n", HELPER, "incy-run", slot],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    if slot not in (KEEPER_CFG, PROBE_CFG):
+        raise ValueError("bad incy config slot")
+    read, write = os.pipe()
+    proc: subprocess.Popen[bytes] | None = None
+    try:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "incy.launcher",
+                "connect" if slot == KEEPER_CFG else "probe",
+                "--ready-fd",
+                str(write),
+                "--parent-pid",
+                str(os.getpid()),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            pass_fds=(write,),
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+        )
+        os.close(write)
+        write = -1
+        if proc.stdin is None:
+            raise OSError("INCY worker stdin unavailable")
+        proc.stdin.write(json.dumps(cfg, ensure_ascii=False).encode())
+        proc.stdin.close()
+        await_ready(read, START_TIMEOUT)
+        return proc
+    except BaseException:
+        if proc is not None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.terminate()
+            if proc.stdin is not None:
+                with contextlib.suppress(OSError):
+                    proc.stdin.close()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                proc.wait()
+        raise
+    finally:
+        os.close(read)
+        if write >= 0:
+            os.close(write)

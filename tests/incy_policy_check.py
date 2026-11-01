@@ -49,6 +49,7 @@ def run_case(library: str, proxy: bool) -> None:
                 "outbounds": [
                     {
                         "protocol": "freedom",
+                        "tag": "dns-direct" if proxy else "direct",
                         "streamSettings": {
                             "sockopt": {
                                 "mark": KILLSWITCH_MARK if proxy else 0,

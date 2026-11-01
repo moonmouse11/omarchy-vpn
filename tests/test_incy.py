@@ -43,7 +43,7 @@ def test_load_connections_from_incy_db(tmp_path, monkeypatch):
     assert conns[0].name == "🇩🇪 DE"
     assert conns[0].subscription_id == "sub1"
     assert conns[0].subscription_name == "WireCat VPN"
-    assert conns[0].active is True
+    assert conns[0].active is False  # DB selection is not a live tunnel.
 
     _all, groups = incy_server_groups(provider)
     assert "WireCat VPN" in groups
@@ -114,6 +114,7 @@ def test_active_connections_keeper_resolves_sub_name_without_full_list(tmp_path,
     keeper = tmp_path / "keeper.json"
     keeper.write_text(json.dumps({"status": "connected", "server": "🇩🇪 DE", "provider_id": "sub1"}))
     monkeypatch.setattr(incy_mod, "KEEPER_STATE", keeper)
+    monkeypatch.setattr(incy_impl, "_live_worker", lambda _s: True)
 
     load_calls = {"n": 0}
     real_load = incy_impl._load_connections
@@ -215,15 +216,18 @@ def test_incy_paths_from_desktop_exec(tmp_path, monkeypatch):
     (root / "bin").mkdir(parents=True)
     (root / "lib" / "app" / "resources" / "bin").mkdir(parents=True)
     (root / "bin" / "incy").write_text("#!/bin/sh\n")
-    xray = root / "lib" / "app" / "resources" / "bin" / "xray"
-    xray.write_bytes(b"\x7fELF")
+    library = root / "lib/app/resources/bin/libincycore.so"
+    library.write_bytes(b"\x7fELF")
+    library.with_name("libxray_ffi.so").write_bytes(b"\x7fELF")
     desktop = tmp_path / "incy.desktop"
     desktop.write_text(f"Exec={root / 'bin' / 'incy'} %u\n")
     monkeypatch.setattr(incy_paths, "DESKTOP", desktop)
     monkeypatch.setattr(incy_paths, "DEFAULT_ROOT", tmp_path / "missing")
     incy_paths.install_root.cache_clear()
     assert incy_paths.incy_installed()
-    assert incy_paths.incy_xray() == xray
+    assert incy_paths.incy_library() == library
+    library.with_name("libxray_ffi.so").unlink()
+    assert not incy_paths.incy_installed()
 
 
 def _patch_sub_cache(monkeypatch, tmp_path) -> Path:

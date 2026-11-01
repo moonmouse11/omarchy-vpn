@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from incy import broker
+from incy.network import prepare_config
 
 CONFIG_MAX = 16 * 1024 * 1024
 STATUS = Path("/proc/self/status")
@@ -24,7 +25,7 @@ PROTECT_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_long)
 
 
 def require_unprivileged() -> None:
-    if os.getuid() == 0 or os.geteuid() == 0:
+    if os.getuid() == 0 or os.geteuid() == 0 or 0 in os.getresuid():
         raise PermissionError("INCY core must not run as root")
     fields = dict(line.split(":", 1) for line in STATUS.read_text().splitlines() if ":" in line)
     for name in ("CapPrm", "CapEff", "CapAmb"):
@@ -62,6 +63,11 @@ class Core:
             finally:
                 self._lib.IncycoreFreeString(error)
             raise OSError(message)
+
+    def set_assets(self, path: str) -> None:
+        self._lib.IncycoreSetAssetsPath.argtypes = [ctypes.c_char_p]
+        self._lib.IncycoreSetAssetsPath.restype = None
+        self._lib.IncycoreSetAssetsPath(path.encode())
 
     def start(self, config: dict, *, tun_fd: int | None = None) -> None:
         """Start core; a successful TUN start transfers ownership of tun_fd to native code."""
@@ -111,9 +117,17 @@ def read_config(stream: BinaryIO) -> dict:
     return config
 
 
-def serve(core: Core, config: dict, tun_fd: int | None, wait: Callable[[], bool]) -> None:
+def serve(
+    core: Core,
+    config: dict,
+    tun_fd: int | None,
+    wait: Callable[[], bool],
+    ready: Callable[[], None] | None = None,
+) -> None:
     try:
         core.start(config, tun_fd=tun_fd)
+        if ready is not None:
+            ready()
         while core.running():
             if wait():
                 break
@@ -129,12 +143,29 @@ def broker_lost(channel: socket.socket) -> bool:
     return bool(poll.poll(0))
 
 
+def notify_ready(fd: int, message: dict) -> None:
+    try:
+        os.write(fd, json.dumps(message, ensure_ascii=False).encode(errors="replace"))
+    finally:
+        os.close(fd)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Unprivileged INCY core worker")
     parser.add_argument("--library", required=True)
     parser.add_argument("--tun-fd", type=int)
     parser.add_argument("--broker-fd", type=int)
+    parser.add_argument("--ready-fd", type=int)
+    parser.add_argument("--assets")
     args = parser.parse_args(argv)
+    ready_fd = args.ready_fd
+
+    def ready() -> None:
+        nonlocal ready_fd
+        if ready_fd is not None:
+            fd, ready_fd = ready_fd, None
+            notify_ready(fd, {"ready": True})
+
     stopped = threading.Event()
     signals = (signal.SIGTERM, signal.SIGINT)
     previous = {sig: signal.getsignal(sig) for sig in signals}
@@ -153,8 +184,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             if uid != 0:
                 raise PermissionError("INCY broker must run as root")
-        config = read_config(sys.stdin.buffer)
+        config = prepare_config(read_config(sys.stdin.buffer))
         core = Core(args.library)
+        if args.assets:
+            core.set_assets(args.assets)
         if channel is not None:
             core.set_socket_protector(broker.Client(channel).protect)
         serve(
@@ -162,9 +195,13 @@ def main(argv: list[str] | None = None) -> int:
             config,
             args.tun_fd,
             lambda: stopped.wait(0.25) or (channel is not None and broker_lost(channel)),
+            ready,
         )
         return 0
     except (OSError, ValueError) as error:
+        if ready_fd is not None:
+            fd, ready_fd = ready_fd, None
+            notify_ready(fd, {"error": str(error)[:500]})
         print(f"INCY worker: {error}", file=sys.stderr)
         return 1
     finally:

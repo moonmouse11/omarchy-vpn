@@ -76,6 +76,14 @@ reminds you when you pick them.
 - `/etc/resolv.conf` is left alone, unless you agree to switch it back to systemd-resolved
   when the installer asks.
 
+### INCY Shadowsocks compatibility
+
+INCY configurations containing Shadowsocks temporarily run with TUN sniffing disabled,
+including mixed/balancer configurations. This avoids a reproduced stall in our external-TUN-FD
+path with bundled Ferrum 26.10.13. Domain rules that need sniffed names may not match;
+IP-based rules and the kill switch are unchanged. VLESS-only configurations keep sniffing.
+This is a compatibility workaround, not a confirmed application-wide Ferrum bug.
+
 ## Usage
 
 | Where | How |

@@ -38,6 +38,9 @@ set -euo pipefail
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/happ-killswitch.conf"
 # must equal happmeta.KILLSWITCH_MARK (checked by tests/test_killswitch.py)
 XRAY_MARK=0x6b73
+# INCY's broker marks every protected socket; only generated proxy traffic has priority 6.
+INCY_MARK=0x6b74
+INCY_PRIORITY=6
 # happd's systemd cgroup (relative to the cgroup2 root): happd and every xray
 # it starts live here, the browser and the rest of the session don't.
 # Overridable for tests only — sudo's env_reset strips it from callers.
@@ -181,6 +184,7 @@ table inet happ-ks {
 
     oifname "lo"        accept
     meta mark $XRAY_MARK accept
+    meta mark $INCY_MARK meta priority $INCY_PRIORITY accept
     oifname "happ-*"    accept
 $iface_rules$dns_rules$cgroup_rules$addrs$lan_rules
     ip daddr 255.255.255.255 udp dport 67 accept

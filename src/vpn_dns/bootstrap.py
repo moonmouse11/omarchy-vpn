@@ -159,6 +159,12 @@ def _upstreams(channel: socket.socket, deadline: float) -> list[str]:
     channel.settimeout(_remaining(deadline))
     data, _ = _receive(channel, 1024, 0)
     upstreams = json.loads(data)
+    if (
+        isinstance(upstreams, dict)
+        and set(upstreams) == {"error"}
+        and isinstance(upstreams["error"], str)
+    ):
+        raise OSError(upstreams["error"])
     if not isinstance(upstreams, list) or not 0 < len(upstreams) <= 16:
         raise OSError("Invalid DNS bootstrap upstream list")
     for value in upstreams:

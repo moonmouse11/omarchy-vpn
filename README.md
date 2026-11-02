@@ -66,16 +66,29 @@ reminds you when you pick them.
 
 - Installs only the packages your picks need (`wireguard-tools`, `openvpn`, a `resolvconf`).
 - Adds root-owned helpers to `/usr/local/bin` (`omarchy-vpn-helper`, `happ-killswitch`,
-  `openvpn-dns-updown`, `omarchy-vpn-incy-network`) and the INCY helper's isolated Python package
-  to `/usr/local/lib/omarchy-vpn`. The sudoers rule (`/etc/sudoers.d/vpn-manager`) grants access
+  `openvpn-dns-updown`, `omarchy-vpn-incy-network`, `omarchy-vpn-dns-bootstrap`) and the isolated
+  INCY/DNS root modules to `/usr/local/lib/omarchy-vpn`. The sudoers rule (`/etc/sudoers.d/vpn-manager`) grants access
   only to `omarchy-vpn-helper`, `happ-killswitch` and the IPv6 guard's fixed `sysctl` calls.
-  OpenVPN invokes its DNS helper; the main helper invokes INCY's fixed network entry.
+  OpenVPN invokes its DNS helper; the main helper invokes the fixed INCY/DNS entries.
   Privileged helper sources are copied before the sudo prompt and re-hashed after installation.
   The main helper refuses VPN configs that would run commands as root.
 - Copies the app to `~/.local/share/omarchy-vpn` and adds the SUPER+Shift+V binding to
   `~/.config/hypr/bindings.lua`.
 - `/etc/resolv.conf` is left alone, unless you agree to switch it back to systemd-resolved
   when the installer asks.
+
+### Endpoint bootstrap compatibility
+
+The plugin resolves WireGuard, AmneziaWG and OpenVPN endpoint hostnames once, then passes the
+same IPv4 answers to the firewall and a private runtime profile. It does not replace the
+profile's DNS settings. On a plugin-managed disconnect, `SaveConfig=true` keeps native state
+changes while restoring the original hostname for matching WireGuard/AmneziaWG peers.
+External `wg-quick`/systemd operations retain their own native save behavior.
+
+Bootstrap currently uses UDP/TCP port 53 to configured upstreams, not a public fallback.
+Strict DNS-over-TLS and unrecognized local DNS proxies are refused rather than silently
+bypassed; no resolver settings are rewritten. The restricted bootstrap-only nft rules are
+still pending on this development branch: this is not yet a completed DNS kill-switch change.
 
 ### INCY Shadowsocks compatibility
 

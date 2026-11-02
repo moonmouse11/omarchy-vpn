@@ -110,6 +110,24 @@ def endpoints(kind: str, text: str) -> list[Endpoint]:
     raise ValueError("Invalid profile kind")
 
 
+def describe(kind: str, text: str) -> dict[str, object]:
+    hosts: set[str] = set()
+    ipv4: set[str] = set()
+    for record in endpoints(kind, text):
+        try:
+            address = ipaddress.ip_address(record.host.strip("[]"))
+        except ValueError:
+            hosts.add(hostname(record.host))
+        else:
+            if address.version == 4:
+                ipv4.add(str(address))
+    return {
+        "hosts": sorted(hosts),
+        "ipv4": sorted(ipv4),
+        "random_hostname": kind == "ovpn" and bool(_ovpn_endpoints(text.splitlines())[1]),
+    }
+
+
 def numeric_config(kind: str, text: str, mapping: dict[str, str]) -> str:
     records = endpoints(kind, text)
     if kind in ("wg", "awg") and any(not r.peer and not _ip(r.host) for r in records):

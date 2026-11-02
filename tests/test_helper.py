@@ -33,9 +33,9 @@ def tree(tmp_path, monkeypatch):
         "DRY_RUN": "1",
     }
 
-    def helper(*args, stdin="", extra_env=None):
+    def helper(*args, stdin="", extra_env=None, script=HELPER):
         return _REAL_RUN(
-            ["bash", str(HELPER), *args],
+            ["bash", str(script), *args],
             input=stdin,
             capture_output=True,
             text=True,
@@ -194,6 +194,20 @@ def test_up_down_autostart_rm_run_fixed_commands(tree):
     assert tree("down", "awg", "home").stdout == "awg-quick down home\n"
 
 
+def _helper_without_runtime(tmp_path):
+    # These two tests isolate native fallback; real runtime integration is tested separately.
+    script = tmp_path / "helper"
+    text = HELPER.read_text().replace("/run/omarchy-vpn-profile.lock", str(tmp_path / "lock"))
+    text = text.replace(
+        "profile_runtime() {",
+        "profile_runtime() {\n"
+        '    [[ $1 != current ]] || echo "/etc/wireguard/$3.conf"\n'
+        "    return 0\n",
+    )
+    script.write_text(text)
+    return script
+
+
 def test_down_deletes_interface_when_quick_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
     bind = tmp_path / "bin"
@@ -201,6 +215,7 @@ def test_down_deletes_interface_when_quick_fails(tmp_path, monkeypatch):
     (bind / "wg-quick").write_text("#!/bin/sh\nexit 1\n")
     (bind / "ip").write_text(
         "#!/bin/sh\n"
+        'if [ "$1" = -details ]; then echo " wireguard"; exit 0; fi\n'
         'if [ "$1" = link ] && [ "$2" = show ] && [ "$3" = dev ]; then exit 0; fi\n'
         'if [ "$1" = link ] && [ "$2" = delete ]; then echo "ip link delete dev $4"; exit 0; fi\n'
         "exit 1\n"
@@ -219,7 +234,7 @@ def test_down_deletes_interface_when_quick_fails(tmp_path, monkeypatch):
     for d in ("wg", "awg", "ovpn", "run", "proc", "systemd"):
         (tmp_path / d).mkdir()
     result = _REAL_RUN(
-        ["bash", str(HELPER), "down", "wg", "orphan"],
+        ["bash", str(_helper_without_runtime(tmp_path)), "down", "wg", "orphan"],
         capture_output=True,
         text=True,
         env=env,
@@ -249,7 +264,7 @@ def test_down_fails_when_quick_fails_and_interface_gone(tmp_path, monkeypatch):
     for d in ("wg", "awg", "ovpn", "run", "proc", "systemd"):
         (tmp_path / d).mkdir()
     result = _REAL_RUN(
-        ["bash", str(HELPER), "down", "wg", "missing"],
+        ["bash", str(_helper_without_runtime(tmp_path)), "down", "wg", "missing"],
         capture_output=True,
         text=True,
         env=env,
@@ -486,7 +501,22 @@ def test_src_runs_sudo_only_through_the_narrow_entry_points():
     assert offenders == []
 
 
+def test_profile_info_uses_only_fixed_isolated_root_module(tree):
+    result = tree("profile-info", "wg", "home")
+    assert result.returncode == 0, result.stderr
+    assert "/usr/bin/python3 -I -c" in result.stdout
+    assert "/usr/local/lib/omarchy-vpn" in result.stdout
+    assert "from vpn_dns.runtime import main" in result.stdout
+    assert "describe wg home" in result.stdout
+    assert tree("profile-info", "wg", "../secret").returncode != 0
+    assert tree("profile-info", "wg", "home", "extra").returncode != 0
+
+
 def test_failed_quick_up_preserves_exit_code(tree, tmp_path):
+    script = tmp_path / "helper"
+    script.write_text(
+        HELPER.read_text().replace("/run/omarchy-vpn-profile.lock", str(tmp_path / "lock"))
+    )
     binaries = tmp_path / "bin"
     binaries.mkdir()
     for name, body in {
@@ -501,6 +531,10 @@ def test_failed_quick_up_preserves_exit_code(tree, tmp_path):
     for kind in ("wg", "awg"):
         (tree.dirs[kind] / "home.conf").write_text(WG)
         result = tree(
-            "up", kind, "home", extra_env={"DRY_RUN": "", "PATH": f"{binaries}:/usr/bin:/bin"}
+            "up",
+            kind,
+            "home",
+            extra_env={"DRY_RUN": "", "PATH": f"{binaries}:/usr/bin:/bin"},
+            script=script,
         )
         assert result.returncode == 23, result.stderr

@@ -21,6 +21,7 @@ from providers.base import (
     terminate_registered_subprocesses,
 )
 from providers.keys import KeysProvider
+from vpn_dns import snapshot
 
 # ── Menu actions ──────────────────────────────────────────────────────────────
 
@@ -338,6 +339,9 @@ def _killswitch_targets(
 def _killswitch_apply(provider, ips: list[str], ifaces: list[str], dns: list[str]):
     if provider.name == "Happ":
         return killswitch.resume_for_happ(extra_ips=ips, dns=dns)
+    if getattr(provider, "helper_kind", "") in ("wg", "awg", "ovpn"):
+        # No detect()/saved IP merge: the whitelist must be the selected snapshot.
+        return killswitch.enable(extra_ips=ips, ifaces=ifaces, dns=dns, fresh=True)
     return killswitch.enable(extra_ips=ips, ifaces=ifaces, dns=dns)
 
 
@@ -359,24 +363,26 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
     ips: list[str] = []
     ifaces: list[str] = []
     hole_open = False
-    if wanted:
-        resolvers = killswitch.system_resolvers()
-        if enabled and resolvers:
-            # the current rules have no DNS hole: open it with the last known
-            # addresses first, then resolve once with DNS working
-            ips, ifaces = _killswitch_targets(provider, connection, cached_only=True)
-            ks_result = _killswitch_apply(provider, ips, ifaces, resolvers)
-            hole_open = ks_result is not None and ks_result.success
-        fresh, ifaces = _killswitch_targets(provider, connection)
-        if ks_result is None or not ks_result.success or set(fresh) != set(ips):
-            ips = fresh
-            ks_result = _killswitch_apply(provider, ips, ifaces, resolvers)
-            hole_open = hole_open or bool(resolvers and ks_result and ks_result.success)
-    elif enabled:
-        ks_result = killswitch.suspend_for(provider.name)
-
+    numeric_kind = getattr(provider, "helper_kind", "")
+    numeric = numeric_kind in ("wg", "awg", "ovpn")
+    connection.endpoint_addresses = None
+    connection.endpoint_ipv4 = None
     result = ActionResult(False, "")
     try:
+        if wanted:
+            resolvers = killswitch.system_resolvers()
+            if enabled and resolvers:
+                # Open bootstrap DNS with cached IPs first; native profiles never resolve again.
+                ips, ifaces = _killswitch_targets(provider, connection, cached_only=True)
+                ks_result = _killswitch_apply(provider, ips, ifaces, resolvers)
+                hole_open = ks_result is not None and ks_result.success
+            fresh, ifaces = _killswitch_targets(provider, connection, cached_only=numeric)
+            if ks_result is None or not ks_result.success or set(fresh) != set(ips):
+                ips = fresh
+                ks_result = _killswitch_apply(provider, ips, ifaces, resolvers)
+                hole_open = hole_open or bool(resolvers and ks_result and ks_result.success)
+        elif enabled:
+            ks_result = killswitch.suspend_for(provider.name)
         # one tunnel at a time: tear down anything else that is up before
         # connecting (two VPNs fight over the default route and traffic
         # splits unpredictably). Same-provider server switching is handled
@@ -391,6 +397,23 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
             if not down.success:
                 _sync_ipv6_guard()  # the teardown may have dropped everything anyway
                 return down
+        if numeric:
+            try:
+                addresses, selected_ips = snapshot.resolve_profile(numeric_kind, connection.name)
+            except (OSError, ValueError) as error:
+                result = ActionResult(False, f"Endpoint bootstrap failed: {error}")
+                return result
+            connection.endpoint_addresses = addresses
+            connection.endpoint_ipv4 = selected_ips
+            ips = selected_ips
+            ifaces = (
+                [connection.interface or connection.name] if numeric_kind != "ovpn" else ["tun*"]
+            )
+            if wanted:
+                ks_result = _killswitch_apply(provider, ips, ifaces, resolvers)
+                if ks_result is None or not ks_result.success:
+                    result = ActionResult(False, "Could not install endpoint firewall rules")
+                    return result
         tuns_before = _tun_interfaces()
         result = provider.connect(connection)
         if hole_open and result.success and provider.name == "OpenVPN":
@@ -398,6 +421,8 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
             # DNS hole until its tun device exists (or the wait runs out)
             _wait_for_new_tun(tuns_before, getattr(_vm(), "OPENVPN_TUN_WAIT", OPENVPN_TUN_WAIT))
     finally:
+        connection.endpoint_addresses = None
+        connection.endpoint_ipv4 = None
         if hole_open:
             closed = _close_dns_hole(provider, ips, ifaces, result.success, cfg)
             if closed is not None:

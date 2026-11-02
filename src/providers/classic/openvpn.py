@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from providers.common.helper import read_config_text
@@ -96,6 +97,8 @@ def ovpn_endpoint(conf_path) -> tuple[str, int] | None:
 
 
 class OpenVPNProvider(VPNProvider):
+    helper_kind = "ovpn"
+
     @property
     def name(self) -> str:
         return "OpenVPN"
@@ -161,7 +164,20 @@ class OpenVPNProvider(VPNProvider):
         # file, openvpn-dns-updown as --up/--down (--script-security 2), and
         # --persist-remote-ip (a ping-restart can't resolve `remote` again
         # under the kill switch)
-        code, out = run_helper("up", "ovpn", connection.name)
+        if connection.endpoint_addresses is None:
+            code, out = run_helper("up", "ovpn", connection.name)
+        else:
+            code, out = run_helper(
+                "up-numeric",
+                "ovpn",
+                connection.name,
+                stdin=json.dumps(
+                    {
+                        "addresses": connection.endpoint_addresses,
+                        "ipv4": connection.endpoint_ipv4,
+                    }
+                ),
+            )
         if code != 0:
             return ActionResult(success=False, message=out)
         return ActionResult(success=True, message=f"Connected: {connection.name}")

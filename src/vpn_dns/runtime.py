@@ -29,9 +29,13 @@ def _paths(kind: str, name: str) -> tuple[Path, Path]:
     if kind != "ovpn" and len(name) > 15:
         raise ValueError("WireGuard names are at most 15 characters")
     source = DIRECTORIES[kind] / f"{name}.conf"
-    if kind == "ovpn" and not source.exists():
+    directory = RUNTIME / f"{kind}-{name}"
+    if kind == "ovpn" and (
+        (_has_runtime(directory) and (directory / f"{name}.ovpn").exists())
+        or (not source.exists() and not (directory / source.name).exists())
+    ):
         source = DIRECTORIES[kind] / f"{name}.ovpn"
-    return source, RUNTIME / f"{kind}-{name}"
+    return source, directory
 
 
 def _safe_dir(path: Path) -> None:
@@ -69,12 +73,25 @@ def _atomic_text(path: Path, text: str, preserve: os.stat_result | None = None) 
         raise
 
 
-def prepare(kind: str, name: str, mapping: dict[str, str]) -> Path:
+def describe(kind: str, name: str) -> dict[str, object]:
+    source, _ = _paths(kind, name)
+    text, _ = _read(source)
+    return dnsprofiles.describe(kind, text)
+
+
+def prepare(
+    kind: str, name: str, mapping: dict[str, str], *, expected_ips: list[str] | None = None
+) -> Path:
     source, directory = _paths(kind, name)
     original, _ = _read(source)
     numeric = dnsprofiles.numeric_config(kind, original, mapping)
-    if numeric == original:
-        return source
+    if expected_ips is not None:
+        if not isinstance(expected_ips, list) or any(
+            not isinstance(ip, str) for ip in expected_ips
+        ):
+            raise ValueError("Invalid snapshot IPv4 addresses")
+        if dnsprofiles.describe(kind, numeric)["ipv4"] != sorted(set(expected_ips)):
+            raise ValueError("Profile endpoints changed since bootstrap; retry connection")
     RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
     _safe_dir(RUNTIME)
     directory.mkdir(mode=0o700)  # Never replace an active/recoverable session.
@@ -110,6 +127,26 @@ def current(kind: str, name: str) -> Path:
     return path
 
 
+def mark(kind: str, name: str, action: str) -> None:
+    _, directory = _paths(kind, name)
+    if not _has_runtime(directory):
+        return
+    if action == "starting":
+        _atomic_text(directory / ".starting", "")
+    elif action == "started":
+        (directory / ".starting").unlink(missing_ok=True)
+    elif action == "stopping" and not (directory / ".starting").exists():
+        _atomic_text(directory / ".saving", "")
+
+
+def recover(kind: str, name: str) -> bool:
+    _, directory = _paths(kind, name)
+    if not _has_runtime(directory):
+        return False
+    finish(kind, name, save=(directory / ".saving").exists())
+    return True
+
+
 def _retire(directory: Path, filename: str) -> None:
     # Free the profile name atomically; failed cleanup must not block its next connect.
     retired = Path(tempfile.mkdtemp(dir=RUNTIME, prefix=".finished-"))
@@ -120,7 +157,12 @@ def _retire(directory: Path, filename: str) -> None:
             retired.rmdir()
         raise
     try:
-        for path in (retired / filename, retired / ".source"):
+        for path in (
+            retired / filename,
+            retired / ".source",
+            retired / ".starting",
+            retired / ".saving",
+        ):
             path.unlink(missing_ok=True)
         retired.rmdir()
     except OSError as error:
@@ -134,7 +176,7 @@ def finish(kind: str, name: str, *, save: bool) -> None:
     source, directory = _paths(kind, name)
     if not _has_runtime(directory):
         return
-    if save and kind in ("wg", "awg"):
+    if save and kind in ("wg", "awg") and not (directory / ".starting").exists():
         original, _ = _read(directory / ".source")
         if re.search(r"(?im)^\s*SaveConfig\s*=\s*true\s*(?:#.*)?$", original):
             saved, _ = _read(directory / source.name)
@@ -146,18 +188,47 @@ def finish(kind: str, name: str, *, save: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Fixed root numeric profile operations")
-    parser.add_argument("action", choices=("prepare", "current", "finish", "discard"))
+    parser.add_argument(
+        "action",
+        choices=(
+            "describe",
+            "prepare",
+            "current",
+            "finish",
+            "discard",
+            "starting",
+            "started",
+            "stopping",
+            "recover",
+        ),
+    )
     parser.add_argument("kind", choices=("wg", "awg", "ovpn"))
     parser.add_argument("name")
     args = parser.parse_args(argv)
     try:
-        if args.action == "prepare":
+        if args.action == "describe":
+            print(json.dumps(describe(args.kind, args.name)))
+        elif args.action == "prepare":
             data = sys.stdin.read(MAX_CONFIG + 1)
             if len(data) > MAX_CONFIG:
                 raise ValueError("Endpoint map is larger than 1 MiB")
-            print(prepare(args.kind, args.name, json.loads(data or "{}")))
+            snapshot = json.loads(data)
+            if (
+                not isinstance(snapshot, dict)
+                or set(snapshot) != {"addresses", "ipv4"}
+                or not isinstance(snapshot["ipv4"], list)
+            ):
+                raise ValueError("Invalid endpoint snapshot")
+            print(
+                prepare(args.kind, args.name, snapshot["addresses"], expected_ips=snapshot["ipv4"])
+            )
         elif args.action == "current":
             print(current(args.kind, args.name))
+        elif args.action in ("starting", "started", "stopping"):
+            mark(args.kind, args.name, args.action)
+        elif args.action == "recover":
+            if recover(args.kind, args.name):
+                print("recovered")
         else:
             finish(args.kind, args.name, save=args.action == "finish")
         return 0

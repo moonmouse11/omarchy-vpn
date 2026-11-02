@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import os
 import socket
+import struct
 import threading
 
 import pytest
@@ -34,14 +35,56 @@ def test_dns_socket_fixes_uplink_mark_and_destination_port(monkeypatch):
             calls.append(("close",))
 
     fake = Socket()
+    monkeypatch.setattr(mod.os, "setgroups", lambda groups: None)
     monkeypatch.setattr(mod.socket, "socket", lambda family, kind: fake)
-    assert mod.dns_socket("192.0.2.53", False, "eth0") is fake
+    assert mod.dns_socket("192.0.2.53", False, "eth0", os.getuid(), os.getgid()) is fake
     assert ("option", socket.SOL_SOCKET, socket.SO_BINDTODEVICE, b"eth0\0") in calls
     assert ("option", socket.SOL_SOCKET, socket.SO_MARK, mod.DNS_MARK) in calls
     assert ("connect", ("192.0.2.53", 53)) in calls
     for invalid in ("example.com", "127.0.0.1", "0.0.0.0", "224.0.0.1", "::1"):
         with pytest.raises(ValueError):
-            mod.dns_socket(invalid, False, "eth0")
+            mod.dns_socket(invalid, False, "eth0", os.getuid(), os.getgid())
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_dns_socket_belongs_to_caller_not_root(monkeypatch, fail):
+    mod = control()
+    uid, gid, groups = [0], [0], [0, 17]
+    created = []
+    monkeypatch.setattr(mod.os, "geteuid", lambda: uid[0])
+    monkeypatch.setattr(mod.os, "seteuid", lambda value: uid.__setitem__(0, value))
+    monkeypatch.setattr(mod.os, "getegid", lambda: gid[0])
+    monkeypatch.setattr(mod.os, "setegid", lambda value: gid.__setitem__(0, value))
+    monkeypatch.setattr(mod.os, "getgroups", lambda: list(groups))
+    monkeypatch.setattr(mod.os, "setgroups", lambda values: groups.__setitem__(slice(None), values))
+
+    class Socket:
+        def setsockopt(self, *args):
+            assert uid[0] == 0
+
+        def settimeout(self, value):
+            pass
+
+        def connect(self, address):
+            assert uid[0] == 0
+
+        def close(self):
+            pass
+
+    def create(*args):
+        created.append((uid[0], gid[0], list(groups)))
+        if fail:
+            raise OSError("socket creation failed")
+        return Socket()
+
+    monkeypatch.setattr(mod.socket, "socket", create)
+    if fail:
+        with pytest.raises(OSError, match="socket creation failed"):
+            mod.dns_socket("192.0.2.53", False, "eth0", 1000, 1001)
+    else:
+        mod.dns_socket("192.0.2.53", False, "eth0", 1000, 1001)
+    assert created == [(1000, 1001, [])]
+    assert (uid[0], gid[0], groups) == (0, 0, [0, 17])
 
 
 def test_endpoint_is_fixed_and_token_is_not_a_path():
@@ -61,12 +104,18 @@ def test_peer_must_be_sudo_caller():
         mod.run_session(channel, os.getuid() + 1, ["192.0.2.53"], "eth0")
 
 
-def test_only_predeclared_slot_and_udp_tcp_modes_are_accepted(monkeypatch):
+@pytest.mark.parametrize("gid", [os.getgid(), 2**31 + 7])
+def test_only_predeclared_slot_and_udp_tcp_modes_are_accepted(monkeypatch, gid):
     mod = control()
     calls = []
+    unpack = struct.unpack
+    peer = struct.pack("iII", os.getpid(), os.getuid(), gid)
+    monkeypatch.setattr(mod.struct, "unpack", lambda fmt, data: unpack(fmt, peer))
     dummy, other = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
 
-    def create(server, tcp, uplink):
+    def create(server, tcp, uplink, uid, gid):
+        assert uid == os.getuid()
+        assert gid == struct.unpack("iII", peer)[2]
         calls.append((server, tcp, uplink))
         return dummy.dup()
 

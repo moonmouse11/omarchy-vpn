@@ -9,6 +9,7 @@ import json
 import os
 import re
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -28,7 +29,7 @@ def endpoint(uid: int, token: str) -> Path:
     return Path(f"/run/user/{uid}/omarchy-vpn/dns-{token}.sock")
 
 
-def dns_socket(server: str, tcp: bool, uplink: str) -> socket.socket:
+def dns_socket(server: str, tcp: bool, uplink: str, uid: int, gid: int) -> socket.socket:
     address = ipaddress.ip_address(server)
     if (
         address.version != 4
@@ -37,8 +38,19 @@ def dns_socket(server: str, tcp: bool, uplink: str) -> socket.socket:
         or address.is_multicast
     ):
         raise ValueError("Invalid bootstrap DNS upstream")
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM if tcp else socket.SOCK_DGRAM)
+    sock = None
+    original_uid, original_gid, original_groups = os.geteuid(), os.getegid(), os.getgroups()
     try:
+        # Ordinary socket credentials; only binding and marking need root.
+        try:
+            os.setgroups([])
+            os.setegid(gid)
+            os.seteuid(uid)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM if tcp else socket.SOCK_DGRAM)
+        finally:
+            os.seteuid(original_uid)
+            os.setegid(original_gid)
+            os.setgroups(original_groups)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, uplink.encode() + b"\0")
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_MARK, DNS_MARK)
         sock.settimeout(0.5)
@@ -46,7 +58,8 @@ def dns_socket(server: str, tcp: bool, uplink: str) -> socket.socket:
         sock.settimeout(None)
         return sock
     except BaseException:
-        sock.close()
+        if sock is not None:
+            sock.close()
         raise
 
 
@@ -75,6 +88,7 @@ def run_session(channel: socket.socket, uid: int, upstreams: list[str], uplink: 
     if channel.family != socket.AF_UNIX or channel.type != socket.SOCK_SEQPACKET:
         raise ValueError("Invalid DNS bootstrap channel")
     require_peer_uid(channel, uid)
+    _, _, gid = struct.unpack("iII", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
     deadline = time.monotonic() + SESSION_TIMEOUT
     channel.settimeout(SESSION_TIMEOUT)
     channel.sendall(json.dumps(upstreams, separators=(",", ":")).encode("ascii"))
@@ -86,7 +100,7 @@ def run_session(channel: socket.socket, uid: int, upstreams: list[str], uplink: 
                 return
             slot, tcp = request
             try:
-                with dns_socket(upstreams[slot], tcp, uplink) as sock:
+                with dns_socket(upstreams[slot], tcp, uplink, uid, gid) as sock:
                     if socket.send_fds(channel, [b"S"], [sock.fileno()]) != 1:
                         return
             except OSError, ValueError:
@@ -109,14 +123,19 @@ def main(argv: list[str] | None = None) -> int:
             channel.settimeout(5)
             channel.connect(str(address))
             require_peer_uid(channel, uid)
-            upstreams = [
-                value
-                for value in netresolvers.system_resolvers()
-                if ipaddress.ip_address(value).version == 4
-            ][:MAX_RESOLVERS]
-            if not upstreams:
-                raise OSError("No system IPv4 DNS upstream is available")
-            run_session(channel, uid, upstreams, uplink_interface())
+            try:
+                upstreams = [
+                    value
+                    for value in netresolvers.bootstrap_resolvers()
+                    if ipaddress.ip_address(value).version == 4
+                ][:MAX_RESOLVERS]
+                if not upstreams:
+                    raise OSError("No system IPv4 DNS upstream is available")
+                uplink = uplink_interface()
+            except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+                channel.sendall(json.dumps({"error": str(error)[:80]}).encode())
+                raise
+            run_session(channel, uid, upstreams, uplink)
         return 0
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         print(f"DNS bootstrap helper: {error}", file=sys.stderr)

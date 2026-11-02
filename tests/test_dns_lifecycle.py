@@ -79,3 +79,12 @@ def test_non_socket_descriptor_is_closed_and_channel_poisoned(monkeypatch):
     finally:
         os.close(read_fd)
         os.close(write_fd)
+
+
+def test_authenticated_helper_policy_error_is_preserved(monkeypatch):
+    monkeypatch.setattr(bootstrap, "require_peer_uid", lambda channel, uid: None)
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    with left, right:
+        right.sendall(b'{"error":"required TLS; refusing plaintext bootstrap"}')
+        with pytest.raises(OSError, match="required TLS"):
+            bootstrap._upstreams(left, time.monotonic() + 1)

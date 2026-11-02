@@ -20,6 +20,85 @@ def test_private_profile_runtime_is_available():
     runtime()
 
 
+def test_prepare_rejects_changed_literal_endpoint_before_native_start(files):
+    mod, source = files
+    source.write_text(WG.replace("192.0.2.2", "192.0.2.3"))
+    with pytest.raises(ValueError, match="changed"):
+        mod.prepare(
+            "wg",
+            "office",
+            {"vpn.example": "192.0.2.1"},
+            expected_ips=["192.0.2.1", "192.0.2.2"],
+        )
+    assert "192.0.2.3" in source.read_text()
+    assert not mod.RUNTIME.exists()
+
+
+def test_literal_profile_is_also_private_for_failed_up_cleanup(files):
+    mod, source = files
+    original = WG.replace("vpn.example", "192.0.2.1")
+    source.write_text(original)
+    path = mod.prepare("wg", "office", {})
+    assert path != source
+    path.write_text("partial native state")
+    mod.finish("wg", "office", save=False)
+    assert source.read_text() == original
+
+
+def test_cancelled_start_cannot_save_partial_state(files):
+    mod, source = files
+    path = mod.prepare("wg", "office", {"vpn.example": "192.0.2.1"})
+    mod.mark("wg", "office", "starting")
+    path.write_text("partial native state")
+    mod.mark("wg", "office", "stopping")
+    mod.finish("wg", "office", save=True)
+    assert source.read_text() == WG
+
+
+def test_recover_prepared_profile_does_not_overwrite_external_edit(files):
+    mod, source = files
+    mod.prepare("wg", "office", {"vpn.example": "192.0.2.1"})
+    source.write_text(WG + "# user's newer setting\n")
+    mod.recover("wg", "office")
+    assert source.read_text().endswith("# user's newer setting\n")
+
+
+def test_recover_interrupted_native_save_keeps_its_changes(files):
+    mod, source = files
+    path = mod.prepare("wg", "office", {"vpn.example": "192.0.2.1"})
+    mod.mark("wg", "office", "starting")
+    mod.mark("wg", "office", "started")
+    mod.mark("wg", "office", "stopping")
+    path.write_text(path.read_text().replace("51820", "51821"))
+    mod.recover("wg", "office")
+    assert "vpn.example:51821" in source.read_text()
+    assert not path.parent.exists()
+
+
+def test_profile_metadata_never_exports_secrets(files):
+    mod, source = files
+    source.write_text(WG + "\n[Peer]\nPublicKey = second\nEndpoint = 192.0.2.9:51820\n")
+    assert mod.describe("wg", "office") == {
+        "hosts": ["vpn.example"],
+        "ipv4": ["192.0.2.2", "192.0.2.9"],
+        "random_hostname": False,
+    }
+
+
+def test_openvpn_metadata_skips_inline_secrets(files):
+    mod, source = files
+    source.write_text(
+        "client\nremote VPN.Example 1194\nremote-random-hostname\n"
+        "<key>\nremote secret.example 1234\n</key>\n"
+        "<connection>\nremote 192.0.2.8 443\n</connection>\n"
+    )
+    assert mod.describe("ovpn", "office") == {
+        "hosts": ["vpn.example"],
+        "ipv4": ["192.0.2.8"],
+        "random_hostname": True,
+    }
+
+
 @pytest.fixture
 def files(monkeypatch, tmp_path):
     mod = runtime()
@@ -35,7 +114,11 @@ def files(monkeypatch, tmp_path):
 
 def test_cli_prepare_current_and_finish_preserve_source_settings(files, monkeypatch, capsys):
     mod, source = files
-    monkeypatch.setattr(mod.sys, "stdin", StringIO('{"vpn.example":"192.0.2.1"}'))
+    monkeypatch.setattr(
+        mod.sys,
+        "stdin",
+        StringIO('{"addresses":{"vpn.example":"192.0.2.1"},"ipv4":["192.0.2.1","192.0.2.2"]}'),
+    )
     assert mod.main(["prepare", "wg", "office"]) == 0
     path = capsys.readouterr().out.strip()
     assert path.endswith("/wg-office/office.conf")

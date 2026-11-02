@@ -58,16 +58,6 @@ def _describe(e: Exception) -> str:
     return str(e) or type(e).__name__
 
 
-# Public anycast resolvers — their egress can sit in any country near the
-# tunnel exit, so answering from one of these is never a leak on its own.
-NEUTRAL_ASNS = {
-    13335,  # Cloudflare (1.1.1.1)
-    15169,  # Google (8.8.8.8)
-    19281,  # Quad9 (9.9.9.9)
-    36692,  # Cisco OpenDNS
-}
-
-
 def _get_test_id() -> str:
     with urllib.request.urlopen(f"https://{API}/id", timeout=REQUEST_TIMEOUT) as resp:
         return resp.read().decode().strip()
@@ -98,18 +88,12 @@ def asn_number(asn: str | None) -> int | None:
 
 
 def server_tags(server: dict, ip_country: str, ip_asn: int | None) -> list[str]:
-    """Own leak heuristic for one resolver, independent of bash.ws's verdict
-    (which knows nothing about which VPN is up). A resolver is trusted when
-    it's a public anycast service (NEUTRAL_ASNS) or shares the exit IP's
-    ASN (the VPN provider's own DNS). Otherwise: 'ASN' — not the VPN's and
-    not public; 'GEO' — sits in a different country than the exit IP. Each
-    rule stays quiet when the data it needs is missing, so a sparse bash.ws
-    reply never produces a false alarm."""
+    """Mismatch indicators, not proof of the query's path. Network identity
+    never suppresses a country mismatch; missing facts produce no indicator,
+    but callers must not interpret that absence as a successful check."""
     asn = asn_number(server.get("asn"))
-    if asn is not None and (asn in NEUTRAL_ASNS or asn == ip_asn):
-        return []
     tags = []
-    if asn is not None and ip_asn is not None:
+    if asn is not None and ip_asn is not None and asn != ip_asn:
         tags.append("ASN")
     country = (server.get("country") or "").upper()
     if country and ip_country and country != ip_country:

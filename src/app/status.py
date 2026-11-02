@@ -5,6 +5,7 @@ import json
 
 import config
 import delayping
+import dnsroutes
 import happmeta
 import ipinfo
 import ipv6guard
@@ -143,12 +144,20 @@ def _exit_badge(conn: VPNConnection, max_age: int) -> dict:
 
 
 def _dns_badge(conn: VPNConnection) -> dict:
+    if hint := dnsroutes.warning(conn.interface):
+        return _badge("dns", "DNS warning", "unknown", hint)
     record = _read_dns_verdict(conn.name)
     if record is None or record.get("leaked") is None:
-        return _badge("dns", "DNS: untested", "unknown", "Run the DNS leak test for this server")
+        summary = str(record.get("summary") or "") if record else ""
+        return _badge(
+            "dns",
+            "DNS warning" if summary else "DNS: untested",
+            "unknown",
+            summary or "Run the DNS leak test for this server",
+        )
     if record["leaked"]:
         return _badge("dns", "DNS leaks", "bad", str(record.get("summary") or ""))
-    return _badge("dns", "DNS private", "ok", str(record.get("summary") or ""))
+    return _badge("dns", "DNS checked", "ok", str(record.get("summary") or ""))
 
 
 PROTECTION_CHECKS = ("exit", "dns", "ipv6")

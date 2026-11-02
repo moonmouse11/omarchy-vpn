@@ -407,6 +407,15 @@ cmd_ipv6_boot() {
     run "$SYSTEMCTL" daemon-reload
 }
 
+if [[ ${1:-} == dns-bootstrap ]]; then
+    (( $# == 2 )) && [[ $2 =~ ^[0-9a-f]{32}$ ]] || die "invalid DNS bootstrap session"
+    if [[ -n ${DRY_RUN:-} ]]; then
+        run /usr/local/bin/omarchy-vpn-dns-bootstrap "$2"
+    else
+        exec /usr/local/bin/omarchy-vpn-dns-bootstrap "$2"
+    fi
+    exit 0
+fi
 if [[ ${1:-} == incy-network ]]; then
     (( $# == 3 )) && [[ $2 == connect || $2 == probe ]] && [[ $3 =~ ^[0-9a-f]{32}$ ]] \
         || die "invalid INCY network session"

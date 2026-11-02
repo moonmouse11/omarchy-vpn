@@ -428,7 +428,7 @@ def test_system_resolvers_behind_the_systemd_stub(monkeypatch, tmp_path):
     ran = []
     monkeypatch.setattr(killswitch.subprocess, "run", lambda cmd, **kw: ran.append(cmd) or Out())
     assert killswitch.system_resolvers() == ["1.1.1.1", "2606:4700:4700::1111", "192.168.1.1"]
-    assert ran == [["resolvectl", "dns"]]
+    assert ran == [["/usr/bin/resolvectl", "dns"]]
 
 
 def test_system_resolvers_wrapped_resolvectl_line(monkeypatch, tmp_path):

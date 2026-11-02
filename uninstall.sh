@@ -18,7 +18,7 @@ omarchy plugin disable "$PLUGIN_ID" || true
 omarchy-shell -q shell rescanPlugins || true
 rm -rf "$HOME/.local/share/omarchy-vpn"
 sed -i '/^-- >>> omarchy-vpn$/,/^-- <<< omarchy-vpn$/d' "$HOME/.config/hypr/bindings.lua" 2>/dev/null || true
-sudo rm -f /usr/local/bin/happ-killswitch /usr/local/bin/openvpn-dns-updown /usr/local/bin/omarchy-vpn-helper /usr/local/bin/omarchy-vpn-incy-network
+sudo rm -f /usr/local/bin/happ-killswitch /usr/local/bin/openvpn-dns-updown /usr/local/bin/omarchy-vpn-helper /usr/local/bin/omarchy-vpn-incy-network /usr/local/bin/omarchy-vpn-dns-bootstrap
 sudo rm -rf /usr/local/lib/omarchy-vpn
 rm -f "$HOME/.config/happ-killswitch.conf"
 sudo rm -f /etc/sudoers.d/vpn-manager

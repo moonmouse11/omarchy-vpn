@@ -139,14 +139,14 @@ def test_asn_number_parsing():
     assert dnsleak.asn_number(None) is None
 
 
-def test_server_tags_public_resolver_trusted_even_abroad():
+def test_server_tags_known_company_does_not_prove_safe_routing():
     server = {"ip": "198.51.100.40", "country": "nl", "asn": "AS13335 CloudFlare Inc"}
-    assert dnsleak.server_tags(server, ip_country="DE", ip_asn=24940) == []
+    assert dnsleak.server_tags(server, ip_country="DE", ip_asn=24940) == ["ASN", "GEO"]
 
 
-def test_server_tags_vpn_providers_own_resolver_trusted():
+def test_server_tags_same_network_does_not_hide_country_mismatch():
     server = {"ip": "5.6.7.8", "country": "fi", "asn": "AS24940 Hetzner"}
-    assert dnsleak.server_tags(server, ip_country="DE", ip_asn=24940) == []
+    assert dnsleak.server_tags(server, ip_country="DE", ip_asn=24940) == ["GEO"]
 
 
 def test_server_tags_foreign_asn_same_country():

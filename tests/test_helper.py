@@ -335,6 +335,19 @@ def test_incy_network_executes_only_fixed_entry(tree):
     assert "probe" in result.stdout
 
 
+def test_dns_bootstrap_uses_only_fixed_entry(tree):
+    result = tree("dns-bootstrap", "a" * 32)
+    assert result.returncode == 0, result.stderr
+    assert "/usr/local/bin/omarchy-vpn-dns-bootstrap" in result.stdout
+
+
+@pytest.mark.parametrize("args", [(), ("../path",), ("A" * 32,), ("a" * 32, "extra")])
+def test_dns_bootstrap_rejects_paths_and_extra_arguments(tree, args):
+    result = tree("dns-bootstrap", *args)
+    assert result.returncode != 0
+    assert "invalid DNS bootstrap session" in result.stderr
+
+
 def test_legacy_incy_run_cannot_execute_a_user_binary(tree):
     home = tree.dirs["run"] / "home"
     state = home / ".local/state/vpn-manager"

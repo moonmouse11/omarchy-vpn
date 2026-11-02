@@ -22,7 +22,6 @@ Three modes (persisted in the user config):
 import contextlib
 import ipaddress
 import json
-import re
 import socket
 import subprocess
 import threading
@@ -32,6 +31,7 @@ from pathlib import Path
 import config
 import fsutil
 import logutil
+import netresolvers
 from providers.base import ActionResult
 
 SCRIPT = "/usr/local/bin/happ-killswitch"
@@ -190,48 +190,11 @@ def resume_for_happ(
 
 
 RESOLV_CONF = Path("/etc/resolv.conf")
-_RESOLVECTL_ADDR = re.compile(r"(?<![\w:.])([0-9A-Fa-f:.]+)(?:%\S+)?(?:#\S+)?")
 
 
 def system_resolvers() -> list[str]:
-    """The resolvers the system sends DNS to — the connect-time exception
-    in the kill switch (enable(dns=...)) opens port 53 to these only.
-
-    resolv.conf's nameservers, unless it points at a local stub
-    (systemd-resolved's 127.0.0.53): then its upstreams from `resolvectl
-    dns` ("Link 3 (wlp5s0): 192.168.1.1", "Global: 1.1.1.1#cloudflare-dns.com")."""
-    found: list[str] = []
-    stub = False
-    try:
-        lines = RESOLV_CONF.read_text().splitlines()
-    except OSError:
-        lines = []
-    for line in lines:
-        parts = line.split()
-        if len(parts) >= 2 and parts[0] == "nameserver":
-            addr = _ip(parts[1].split("%")[0])
-            if addr is None:
-                continue
-            if addr.is_loopback:
-                stub = True
-            else:
-                found.append(str(addr))
-    if stub:
-        try:
-            out = subprocess.run(
-                ["resolvectl", "dns"], capture_output=True, text=True, timeout=5, check=False
-            ).stdout
-        except OSError, subprocess.SubprocessError:
-            out = ""
-        for line in out.splitlines():
-            # a wrapped server list continues on an unlabelled, indented line
-            servers = line if line[:1].isspace() else line.partition(":")[2]
-            for token in servers.split():
-                match = _RESOLVECTL_ADDR.fullmatch(token)
-                addr = _ip(match.group(1)) if match else None
-                if addr is not None and not addr.is_loopback:
-                    found.append(str(addr))
-    return list(dict.fromkeys(found))
+    """Numeric system upstreams; keep the facade path patchable for tests."""
+    return netresolvers.system_resolvers(RESOLV_CONF)
 
 
 def _ip(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:

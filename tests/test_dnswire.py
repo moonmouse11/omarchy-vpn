@@ -11,13 +11,15 @@ HOST = "vpn.example"
 
 
 def test_dns_wire_codec_is_available():
-    assert importlib.util.find_spec("dnswire") is not None
+    assert importlib.util.find_spec("vpn_dns.wire") is not None
 
 
 @pytest.fixture
 def wire():
-    assert importlib.util.find_spec("dnswire") is not None, "endpoint DNS wire codec is missing"
-    return importlib.import_module("dnswire")
+    assert importlib.util.find_spec("vpn_dns.wire") is not None, (
+        "endpoint DNS wire codec is missing"
+    )
+    return importlib.import_module("vpn_dns.wire")
 
 
 def name(value):

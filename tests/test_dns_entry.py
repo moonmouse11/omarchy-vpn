@@ -14,7 +14,7 @@ def test_dns_entry_is_isolated_and_uses_fixed_installed_root():
     text = ENTRY.read_text()
     assert text.startswith("#!/usr/bin/python3 -I\n")
     assert 'sys.path.insert(0, "/usr/local/lib/omarchy-vpn")' in text
-    assert "from dnscontrol import main" in text
+    assert "from vpn_dns.control import main" in text
 
 
 def test_dns_entry_ignores_hostile_cwd_and_pythonpath(monkeypatch, tmp_path):
@@ -23,10 +23,13 @@ def test_dns_entry_ignores_hostile_cwd_and_pythonpath(monkeypatch, tmp_path):
     trusted, hostile = tmp_path / "trusted", tmp_path / "hostile"
     trusted.mkdir()
     hostile.mkdir()
-    (trusted / "dnscontrol.py").write_text(
+    (trusted / "vpn_dns").mkdir()
+    (trusted / "vpn_dns" / "__init__.py").write_text("")
+    (trusted / "vpn_dns" / "control.py").write_text(
         "def main():\n    print('trusted DNS helper')\n    return 23\n"
     )
-    (hostile / "dnscontrol.py").write_text("raise RuntimeError('untrusted module')\n")
+    (hostile / "vpn_dns").mkdir()
+    (hostile / "vpn_dns" / "__init__.py").write_text("raise RuntimeError('untrusted module')\n")
     (hostile / "sitecustomize.py").write_text("raise RuntimeError('untrusted site')\n")
     entry = tmp_path / "entry"
     entry.write_text(

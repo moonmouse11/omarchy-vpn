@@ -14,8 +14,8 @@ import sys
 import time
 from pathlib import Path
 
-import netresolvers
 from incy.privileged import caller_uid, require_peer_uid, shutdown_on_signal, uplink_interface
+from vpn_dns import resolvers as netresolvers
 
 DNS_MARK = 0x6B75
 MAX_RESOLVERS = 16

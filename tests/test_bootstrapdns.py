@@ -35,8 +35,8 @@ class ReplySocket:
 
 
 def bootstrap():
-    assert importlib.util.find_spec("bootstrapdns") is not None, "scoped DNS client is missing"
-    return importlib.import_module("bootstrapdns")
+    assert importlib.util.find_spec("vpn_dns.bootstrap") is not None, "scoped DNS client is missing"
+    return importlib.import_module("vpn_dns.bootstrap")
 
 
 def test_explicit_denial_keeps_channel_paired_and_received_socket_is_cloexec():

@@ -31,8 +31,8 @@ from pathlib import Path
 import config
 import fsutil
 import logutil
-import netresolvers
 from providers.base import ActionResult
+from vpn_dns import resolvers as netresolvers
 
 SCRIPT = "/usr/local/bin/happ-killswitch"
 

@@ -22,10 +22,10 @@ Endpoint = 192.0.2.2:51821
 
 
 def profiles():
-    assert importlib.util.find_spec("dnsprofiles") is not None, (
+    assert importlib.util.find_spec("vpn_dns.profiles") is not None, (
         "runtime profile preparation is missing"
     )
-    return importlib.import_module("dnsprofiles")
+    return importlib.import_module("vpn_dns.profiles")
 
 
 def test_runtime_replaces_only_hostname_endpoints():

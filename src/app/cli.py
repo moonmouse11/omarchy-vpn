@@ -5,7 +5,6 @@ import json
 import os
 import sys
 
-import dnsroutes
 import happmeta
 import ipinfo
 import logutil
@@ -38,6 +37,7 @@ from providers.base import (
 from providers.happ import run_keeper as run_happ_keeper
 from providers.incy import run_keeper as run_incy_keeper
 from providers.keys import run_keeper as run_keys_keeper
+from vpn_dns import routes as dnsroutes
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 

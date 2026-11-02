@@ -41,7 +41,7 @@ def test_sparse_metadata_cannot_earn_an_all_clear(country, asn, server):
     ],
 )
 def test_verified_dns_endpoint_names_are_metadata_only(address, name):
-    from dnsidentity import resolver_name
+    from vpn_dns.identity import resolver_name
 
     assert resolver_name(address) == name
     assert vm.dnsleak.server_tags(

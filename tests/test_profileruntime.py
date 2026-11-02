@@ -10,10 +10,10 @@ from test_dnsprofiles import WG
 
 
 def runtime():
-    assert importlib.util.find_spec("profileruntime") is not None, (
+    assert importlib.util.find_spec("vpn_dns.runtime") is not None, (
         "private runtime storage is missing"
     )
-    return importlib.import_module("profileruntime")
+    return importlib.import_module("vpn_dns.runtime")
 
 
 def test_private_profile_runtime_is_available():

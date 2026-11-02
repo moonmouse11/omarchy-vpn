@@ -5,6 +5,6 @@ import sys
 
 sys.path.insert(0, "/usr/local/lib/omarchy-vpn")
 
-from dnscontrol import main
+from vpn_dns.control import main
 
 sys.exit(main())

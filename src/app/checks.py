@@ -9,9 +9,7 @@ from pathlib import Path
 from typing import NoReturn
 
 import config
-import dnsidentity
 import dnsleak
-import dnsroutes
 import fsutil
 import ipinfo
 import ipv6guard
@@ -27,6 +25,8 @@ from providers.base import (
     ActionResult,
     VPNConnection,
 )
+from vpn_dns import identity as dnsidentity
+from vpn_dns import routes as dnsroutes
 
 
 def _dns_leak_server_row(server: dict, ip_country: str = "", ip_asn: int | None = None) -> str:

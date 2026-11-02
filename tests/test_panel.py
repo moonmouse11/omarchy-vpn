@@ -5,10 +5,10 @@ import time
 import pytest
 
 import config
-import dnsroutes
 import killswitch
 import vpn_manager
 from providers.base import ActionResult, VPNConnection
+from vpn_dns import routes as dnsroutes
 
 DE_SERVER = VPNConnection(
     name="🇩🇪 Germany 1",

@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import dnsroutes
 import fsutil
 from providers.base import VPNConnection
+from vpn_dns import routes as dnsroutes
 
 
 @pytest.fixture

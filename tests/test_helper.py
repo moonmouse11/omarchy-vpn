@@ -484,3 +484,23 @@ def test_src_runs_sudo_only_through_the_narrow_entry_points():
         if '"sudo"' in line and not any(a in line for a in allowed)
     ]
     assert offenders == []
+
+
+def test_failed_quick_up_preserves_exit_code(tree, tmp_path):
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    for name, body in {
+        "ip": "exit 1",
+        "sysctl": "echo 0",
+        "wg-quick": "exit 23",
+        "awg-quick": "exit 23",
+    }.items():
+        executable = binaries / name
+        executable.write_text(f"#!/bin/sh\n{body}\n")
+        executable.chmod(0o755)
+    for kind in ("wg", "awg"):
+        (tree.dirs[kind] / "home.conf").write_text(WG)
+        result = tree(
+            "up", kind, "home", extra_env={"DRY_RUN": "", "PATH": f"{binaries}:/usr/bin:/bin"}
+        )
+        assert result.returncode == 23, result.stderr

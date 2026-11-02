@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-import dnsprofiles
+from vpn_dns import profiles as dnsprofiles
 
 DIRECTORIES = {
     "wg": Path("/etc/wireguard"),

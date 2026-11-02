@@ -188,7 +188,7 @@ SWAPPING_SUDO = """#!/bin/bash
 if [ "$1" = -v ]; then
     echo "echo swapped" > "$REPO/scripts/omarchy-vpn-helper"
     echo "raise RuntimeError('swapped root module')" > "$REPO/src/incy/privileged.py"
-    echo "raise RuntimeError('swapped DNS root module')" > "$REPO/src/dnscontrol.py"
+    echo "raise RuntimeError('swapped DNS root module')" > "$REPO/src/vpn_dns/control.py"
     exit 0
 fi
 args=(); skip=
@@ -210,7 +210,7 @@ HELPERS = (
     "omarchy-vpn-incy-network",
     "omarchy-vpn-dns-bootstrap",
 )
-FLAT_ROOT_MODULES = ("dnscontrol.py", "netresolvers.py", "dnsprofiles.py", "profileruntime.py")
+DNS_ROOT_MODULES = ("__init__.py", "control.py", "resolvers.py", "profiles.py", "runtime.py")
 ROOT_MODULES = ("__init__.py", "broker.py", "network.py", "privileged.py")
 
 
@@ -225,8 +225,11 @@ def _install_from_checkout(monkeypatch, tmp_path, missing=()):
         (repo / "src" / "incy" / name).write_text(
             (INSTALL.parent / "src" / "incy" / name).read_text()
         )
-    for name in set(FLAT_ROOT_MODULES) - set(missing):
-        (repo / "src" / name).write_text((INSTALL.parent / "src" / name).read_text())
+    (repo / "src" / "vpn_dns").mkdir()
+    for name in set(DNS_ROOT_MODULES) - set(missing):
+        (repo / "src" / "vpn_dns" / name).write_text(
+            (INSTALL.parent / "src" / "vpn_dns" / name).read_text()
+        )
     (repo / "manifest.json").write_text("{}")
     (repo / "Widget.qml").write_text("")
     (repo / "install.sh").write_text(INSTALL.read_text())
@@ -270,9 +273,11 @@ def test_root_package_is_captured_before_sudo(monkeypatch, tmp_path):
 def test_dns_root_modules_are_captured_before_sudo(monkeypatch, tmp_path):
     result, repo, root = _install_from_checkout(monkeypatch, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "swapped DNS root module" in (repo / "src" / "dnscontrol.py").read_text()
-    for name in FLAT_ROOT_MODULES:
-        assert (root / "lib" / name).read_text() == (INSTALL.parent / "src" / name).read_text()
+    assert "swapped DNS root module" in (repo / "src" / "vpn_dns" / "control.py").read_text()
+    for name in DNS_ROOT_MODULES:
+        assert (root / "lib" / "vpn_dns" / name).read_text() == (
+            INSTALL.parent / "src" / "vpn_dns" / name
+        ).read_text()
 
 
 def test_a_missing_root_module_stops_setup_before_sudo(monkeypatch, tmp_path):

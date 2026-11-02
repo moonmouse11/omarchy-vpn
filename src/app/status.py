@@ -5,7 +5,6 @@ import json
 
 import config
 import delayping
-import dnsroutes
 import happmeta
 import ipinfo
 import ipv6guard
@@ -23,6 +22,7 @@ from app.switch import (
     _vm,
 )
 from providers.base import VPNConnection
+from vpn_dns import routes as dnsroutes
 
 
 def _iface_rate(iface: str | None) -> str | None:

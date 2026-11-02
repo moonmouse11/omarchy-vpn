@@ -18,11 +18,11 @@ import time
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-import dnswire
 import lazyimports  # noqa: F401 — registers concurrent.futures lazily
-from dnscontrol import endpoint
 from incy.privileged import require_peer_uid
 from incy.worker import require_unprivileged
+from vpn_dns import wire as dnswire
+from vpn_dns.control import endpoint
 
 if TYPE_CHECKING:
     import concurrent.futures

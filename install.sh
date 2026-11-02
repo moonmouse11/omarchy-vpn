@@ -56,7 +56,7 @@ done
 # Root gets ONLY these stdlib-only modules; keep worker/launcher/config/assets user-side.
 # network.protect_socket is root-side; network.prepare_config's app imports must stay lazy.
 declare -A ROOT_MODULE ROOT_MODULE_SHA
-for name in incy/__init__.py incy/broker.py incy/network.py incy/privileged.py dnscontrol.py netresolvers.py dnsprofiles.py profileruntime.py; do
+for name in incy/__init__.py incy/broker.py incy/network.py incy/privileged.py vpn_dns/__init__.py vpn_dns/control.py vpn_dns/resolvers.py vpn_dns/profiles.py vpn_dns/runtime.py; do
     ROOT_MODULE[$name]=$(cat "$REPO_DIR/src/$name" && printf .)
     ROOT_MODULE[$name]=${ROOT_MODULE[$name]%.}
     ROOT_MODULE_SHA[$name]=$(printf %s "${ROOT_MODULE[$name]}" | sha256sum | cut -d' ' -f1)
@@ -118,7 +118,7 @@ SUDOERS_FILE="/etc/sudoers.d/vpn-manager"
 # openvpn runs as root, so its --up/--down child needs no entry of its own.
 # the helper first: a rule pointing at a missing (or old) helper breaks connects
 # Python -I imports only this root-owned package, never the user's backend.
-sudo install -d -o root -g root -m 755 /usr/local/lib/omarchy-vpn /usr/local/lib/omarchy-vpn/incy
+sudo install -d -o root -g root -m 755 /usr/local/lib/omarchy-vpn /usr/local/lib/omarchy-vpn/incy /usr/local/lib/omarchy-vpn/vpn_dns
 for name in "${!ROOT_MODULE[@]}"; do
     target="/usr/local/lib/omarchy-vpn/$name"
     printf %s "${ROOT_MODULE[$name]}" | sudo install -o root -g root -m 644 /dev/stdin "$target"

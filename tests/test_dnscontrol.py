@@ -10,8 +10,10 @@ import pytest
 
 
 def control():
-    assert importlib.util.find_spec("dnscontrol") is not None, "fixed DNS socket broker is missing"
-    return importlib.import_module("dnscontrol")
+    assert importlib.util.find_spec("vpn_dns.control") is not None, (
+        "fixed DNS socket broker is missing"
+    )
+    return importlib.import_module("vpn_dns.control")
 
 
 def test_dns_socket_fixes_uplink_mark_and_destination_port(monkeypatch):

@@ -238,8 +238,9 @@ wg_quick_up() {
             run sysctl -q -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 || true
         fi
         return 0
+    else
+        rc=$?
     fi
-    rc=$?
     restore_wg_conf
     trap - EXIT
     if [[ $ipv6_was_off == 1 ]]; then

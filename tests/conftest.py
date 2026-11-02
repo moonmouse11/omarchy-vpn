@@ -63,9 +63,9 @@ def _no_real_panel_caches(monkeypatch, tmp_path):
     """--status now builds the bar panel too, which keeps a kill-switch
     state cache and reads the last DNS-test verdict under ~/.cache — never
     the real ones from a test run."""
-    import dnsroutes
     import killswitch
     import vpn_manager
+    from vpn_dns import routes as dnsroutes
 
     monkeypatch.setattr(dnsroutes, "CACHE", tmp_path / "dns-route.json")
     monkeypatch.setattr(killswitch, "STATE_CACHE", tmp_path / "killswitch-state.json")

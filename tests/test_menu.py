@@ -98,7 +98,7 @@ def test_killswitch_all_mode_arms_wg(monkeypatch, tmp_path):
     result = vpn_manager.guarded_connect(wg, wg.connections()[0])
     assert result.success
     assert wg.connected == ["nl"]
-    assert calls == [{"extra_ips": ["1.2.3.4"], "ifaces": ["nl", "tun*"], "dns": []}]
+    assert calls == [{"extra_ips": ["1.2.3.4"], "ifaces": ["nl", "tun*"], "dns": [], "fresh": True}]
 
 
 def test_killswitch_connect_opens_dns_only_for_the_connect(monkeypatch, tmp_path):

@@ -63,6 +63,29 @@ def test_snapshot_reaches_native_and_exact_firewall_ips(numeric_switch, monkeypa
     assert connection.endpoint_ipv4 is None
 
 
+def test_incy_guard_snapshot_never_merges_detected_ips(monkeypatch):
+    from types import SimpleNamespace
+
+    seen = []
+    monkeypatch.setattr(
+        vm.killswitch, "enable", lambda **kw: seen.append(kw) or ActionResult(True, "ok")
+    )
+    switch._killswitch_apply(SimpleNamespace(name="INCY"), ["192.0.2.1"], ["incy-xray"], [])
+    assert seen[0].get("fresh") is True
+
+
+def test_failed_firewall_never_bootstraps_or_connects(numeric_switch, monkeypatch):
+    provider, connection, seen, _ = numeric_switch
+    monkeypatch.setattr(vm.killswitch, "enable", lambda **kw: ActionResult(False, "nft rejected"))
+    monkeypatch.setattr(
+        snapshot, "resolve_profile", lambda *a: pytest.fail("bootstrap before firewall")
+    )
+    result = switch._guarded_connect(provider, connection)
+    assert not result.success
+    assert "nft rejected" in result.message
+    assert seen == []
+
+
 def test_failed_bootstrap_never_connects_and_closes_dns(numeric_switch, monkeypatch):
     provider, connection, seen, rules = numeric_switch
 

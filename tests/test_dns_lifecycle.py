@@ -1,8 +1,10 @@
 """Bootstrap startup and cancellation cannot leave listeners or received FDs open."""
 
+import contextlib
 import io
 import os
 import socket
+import threading
 import time
 from types import SimpleNamespace
 
@@ -79,6 +81,36 @@ def test_non_socket_descriptor_is_closed_and_channel_poisoned(monkeypatch):
     finally:
         os.close(read_fd)
         os.close(write_fd)
+
+
+def test_cancellation_closes_session_before_waiting_for_workers(monkeypatch):
+    class Cancelled(BaseException):
+        pass
+
+    entered, closed = threading.Event(), threading.Event()
+    observations = []
+
+    class Client:
+        def query(self, host):
+            entered.set()
+            observations.append(closed.wait(1))
+
+    @contextlib.contextmanager
+    def session(deadline):
+        try:
+            yield Client()
+        finally:
+            closed.set()
+
+    def cancel(futures):
+        assert entered.wait(1)
+        raise Cancelled
+
+    monkeypatch.setattr(bootstrap, "_session", session)
+    monkeypatch.setattr(bootstrap.concurrent.futures, "as_completed", cancel)
+    with pytest.raises(Cancelled):
+        bootstrap.resolve(["vpn.example"])
+    assert observations == [True], "worker pool waited before session teardown"
 
 
 def test_authenticated_helper_policy_error_is_preserved(monkeypatch):

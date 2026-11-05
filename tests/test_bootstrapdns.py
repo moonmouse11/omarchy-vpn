@@ -1,5 +1,6 @@
 """Unprivileged endpoint resolver never opens an ordinary DNS socket."""
 
+import contextlib
 import importlib
 import importlib.util
 import os
@@ -7,6 +8,7 @@ import socket
 import struct
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -74,6 +76,39 @@ def test_literals_do_not_launch_privileged_helper(monkeypatch):
     mod = bootstrap()
     monkeypatch.setattr(mod, "_session", lambda *args: pytest.fail("literal launched helper"))
     assert mod.resolve(["192.0.2.1"]) == {"192.0.2.1": "192.0.2.1"}
+
+
+def test_ipv4_hosts_overrides_do_not_query_dns(monkeypatch, tmp_path):
+    mod = bootstrap()
+    hosts = tmp_path / "hosts"
+    hosts.write_bytes(
+        b"# legacy comment: \xff\n::1 ipv6-only\ninvalid ignored\n"
+        b"192.0.2.44 VPN.EXAMPLE alias # comment\n"
+        b"192.0.2.45 vpn.example\n0.0.0.0 blocked.example\n"
+    )
+    monkeypatch.setattr(mod, "HOSTS_FILE", hosts, raising=False)
+    monkeypatch.setattr(mod, "_session", lambda *a: pytest.fail("hosts override queried DNS"))
+    assert mod.resolve(["vpn.example", "ALIAS.", "blocked.example"]) == {
+        "vpn.example": "192.0.2.44",
+        "ALIAS.": "192.0.2.44",
+        "blocked.example": "0.0.0.0",
+    }
+
+
+@pytest.mark.parametrize("contents", [None, "::1 vpn.example\ninvalid vpn.example\n"])
+def test_missing_or_non_ipv4_hosts_uses_configured_dns(monkeypatch, tmp_path, contents):
+    mod = bootstrap()
+    hosts = tmp_path / "hosts"
+    if contents is not None:
+        hosts.write_text(contents)
+    monkeypatch.setattr(mod, "HOSTS_FILE", hosts)
+
+    @contextlib.contextmanager
+    def session(deadline):
+        yield SimpleNamespace(query=lambda host: "192.0.2.8")
+
+    monkeypatch.setattr(mod, "_session", session)
+    assert mod.resolve(["vpn.example"]) == {"vpn.example": "192.0.2.8"}
 
 
 def test_truncated_udp_retries_same_question_over_tcp_and_closes_both(monkeypatch):

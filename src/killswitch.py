@@ -22,9 +22,7 @@ Three modes (persisted in the user config):
 import contextlib
 import ipaddress
 import json
-import socket
 import subprocess
-import threading
 import time
 from pathlib import Path
 
@@ -97,9 +95,8 @@ def enable(
     hysteria never show up) and tell the script not to merge the saved conf
     (whatever server was detected last time).
 
-    dns: resolvers allowed on port 53 — only while a connect resolves its
-    endpoints (system_resolvers()); without it DNS leaves only through the
-    tunnel, the xray mark or the LAN.
+    dns: upstreams allowed only for dedicated marked bootstrap sockets on
+    TCP/UDP :53. Never permits ordinary app/shared-resolved DNS or DoT.
 
     Every load also passes system_resolvers() as --happd-dns: port 53 to them
     for happd's cgroup only. xray (run by happd) resolves a hostname server
@@ -174,11 +171,8 @@ def resume_for_happ(
     connect), so the caller passes it explicitly. Returns None when there
     is nothing to do."""
     if extra_ips is not None:
-        # rebuild the rules around the known server addresses; a non-empty
-        # list is the complete set, so skip detect/saved IPs (fresh)
-        kwargs: dict = {"extra_ips": extra_ips, "dns": dns}
-        if extra_ips:
-            kwargs["fresh"] = True
+        # Even an empty snapshot is complete: never scrape unrelated TCP sessions.
+        kwargs: dict = {"extra_ips": extra_ips, "dns": dns, "fresh": True}
         if is_enabled() or mode() in ("happ", "all"):
             return enable(**kwargs)
         return None
@@ -215,45 +209,37 @@ def resolve_endpoint_ips(
 ) -> list[str]:
     """IPv4 addresses for (name, host, port) targets, sorted, deduplicated.
 
-    All hosts are looked up in parallel within `timeout`. A switch away from
-    a dead server resolves through that dead tunnel (the system resolver's
-    route goes into it): glibc then hung ~2 min per host, one after another,
-    and held the switch for 15 minutes (2026-10-13). A host that doesn't
-    answer in time falls back to its last known address (RESOLVED_CACHE), so
-    the whitelist still has it; one never resolved is skipped with a log
-    line — a dead endpoint must not abort the whole whitelist. IPv6 endpoints
-    are skipped (the nft ruleset only has `ip daddr` v4 matches; a v6 literal
-    would fail the whole ruleset load).
-
-    Lookup threads are daemons: getaddrinfo can't be cancelled, and a stuck
-    one must not hold the process open after the switch is done."""
+    Dedicated marked/uplink-bound DNS sockets avoid libc and a dead current
+    tunnel. The bootstrap client owns the global timeout and parallel queries.
+    Missing answers fall back to last-known IPv4 values (RESOLVED_CACHE);
+    never-resolved names and IPv6 literals are skipped, not guessed."""
     hosts: dict[str, str] = {}
     for name, host, _port in targets:
         hosts.setdefault(host, name)
     if cached_only:
-        # no lookups: IP literals plus the last known addresses (opening the
-        # connect-time DNS hole must not wait on DNS the old rules block)
+        # No lookups before the marked bootstrap allowance has been installed.
         known = _read_resolved()
         found = {str(a) for h in hosts if (a := _ip(h)) is not None and a.version == 4}
         return sorted(found | {known[h] for h in hosts if h in known})
-    answers: dict[str, str | OSError] = {}
+    from vpn_dns import bootstrap, wire  # noqa: PLC0415 — not part of periodic status imports
 
-    def lookup(host: str) -> None:
+    literals = {h: str(a) for h in hosts if (a := _ip(h)) is not None and a.version == 4}
+    names = []
+    for host in hosts:
+        if _ip(host) is not None:
+            continue
         try:
-            infos = socket.getaddrinfo(host, None, socket.AF_INET)
-        except OSError as e:
-            answers[host] = e
-            return
-        if infos:
-            answers[host] = str(infos[0][4][0])
-
-    threads = [threading.Thread(target=lookup, args=(h,), daemon=True) for h in hosts]
-    for t in threads:
-        t.start()
-    deadline = time.monotonic() + timeout
-    for t in threads:
-        t.join(max(0.0, deadline - time.monotonic()))
-    answers = dict(answers)  # late answers from stuck threads don't count
+            wire.canonical(host)
+        except ValueError:
+            logutil.log("killswitch: invalid endpoint hostname skipped")
+        else:
+            names.append(host)
+    answers = dict(literals)
+    try:
+        if names:
+            answers.update(bootstrap.resolve(names, timeout=timeout))
+    except (OSError, ValueError) as error:
+        logutil.log(f"killswitch: endpoint bootstrap unavailable: {error}")
 
     known = _read_resolved()
     ips: set[str] = set()
@@ -265,7 +251,9 @@ def resolve_endpoint_ips(
             if answer != host:
                 fresh[host] = answer
             continue
-        why = answer if isinstance(answer, OSError) else f"no answer in {timeout:g} s"
+        if (literal := _ip(host)) is not None and literal.version != 4:
+            continue
+        why = f"no bootstrap answer in {timeout:g} s"
         if host in known:
             ips.add(known[host])
             logutil.log(f"killswitch: {host} ({name}): {why}; using last known {known[host]}")

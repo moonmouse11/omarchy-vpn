@@ -16,6 +16,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import lazyimports  # noqa: F401 — registers concurrent.futures lazily
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     import concurrent.futures
 
 HELPER = "/usr/local/bin/omarchy-vpn-helper"
+HOSTS_FILE = Path("/etc/hosts")
 
 
 class SocketRefused(OSError):
@@ -204,7 +206,11 @@ def _session(deadline: float) -> Iterator[Client]:
                 stderr=subprocess.PIPE,
             )
             with _accept(listener, proc, deadline) as channel:
-                yield Client(channel, _upstreams(channel, deadline), deadline)
+                try:
+                    yield Client(channel, _upstreams(channel, deadline), deadline)
+                finally:
+                    with contextlib.suppress(OSError):
+                        channel.shutdown(socket.SHUT_RDWR)
     finally:
         if bound:
             with contextlib.suppress(OSError):
@@ -214,6 +220,30 @@ def _session(deadline: float) -> Iterator[Client]:
                 proc.wait(timeout=2)
             if proc.stderr:
                 proc.stderr.close()
+
+
+def _hosts_overrides(wanted: set[str]) -> dict[str, str]:
+    try:
+        lines = HOSTS_FILE.read_text(errors="replace").splitlines()
+    except OSError:
+        return {}
+    found: dict[str, str] = {}
+    for line in lines:
+        parts = line.partition("#")[0].split()
+        if len(parts) < 2:
+            continue
+        aliases = {alias.lower().rstrip(".") for alias in parts[1:]} & wanted
+        if not aliases:
+            continue
+        try:
+            address = str(ipaddress.IPv4Address(parts[0]))
+        except ValueError:
+            continue
+        for alias in aliases:
+            found.setdefault(alias, address)
+        if found.keys() >= wanted:
+            break
+    return found
 
 
 def resolve(hosts: list[str], timeout: float = 4.0) -> dict[str, str]:
@@ -229,10 +259,16 @@ def resolve(hosts: list[str], timeout: float = 4.0) -> dict[str, str]:
             if address.version == 4:
                 result[host] = str(address)
     if names:
+        overrides = _hosts_overrides({dnswire.canonical(host) for host in names})
+        for host in names:
+            if (override := overrides.get(dnswire.canonical(host))) is not None:
+                result[host] = override
+        names = [host for host in names if host not in result]
+    if names:
         deadline = time.monotonic() + timeout
         with (
-            _session(deadline) as client,
             concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool,
+            _session(deadline) as client,
         ):
             futures = {pool.submit(client.query, host): host for host in names}
             for future in concurrent.futures.as_completed(futures):

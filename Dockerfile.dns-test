@@ -1,0 +1,13 @@
+# Explicit native DNS/nft checks; only disposable Docker network namespaces.
+FROM python:3.14-slim
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 nftables sudo \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/local/bin/python3 /usr/bin/python3
+COPY src/incy/__init__.py src/incy/broker.py src/incy/network.py src/incy/privileged.py /usr/local/lib/omarchy-vpn/incy/
+COPY src/vpn_dns/__init__.py src/vpn_dns/control.py src/vpn_dns/resolvers.py src/vpn_dns/profiles.py src/vpn_dns/runtime.py /usr/local/lib/omarchy-vpn/vpn_dns/
+COPY scripts/omarchy-vpn-helper scripts/omarchy-vpn-dns-bootstrap /usr/local/bin/
+RUN chmod 755 /usr/local/bin/omarchy-vpn-* \
+    && printf 'nobody ALL=(root) NOPASSWD: /usr/local/bin/omarchy-vpn-helper\n' > /etc/sudoers.d/dns-test \
+    && chmod 440 /etc/sudoers.d/dns-test
+ENTRYPOINT ["python3", "/repo/tests/dns_policy_check.py"]

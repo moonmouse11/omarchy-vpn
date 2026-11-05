@@ -339,22 +339,18 @@ def _killswitch_targets(
 def _killswitch_apply(provider, ips: list[str], ifaces: list[str], dns: list[str]):
     if provider.name == "Happ":
         return killswitch.resume_for_happ(extra_ips=ips, dns=dns)
-    if getattr(provider, "helper_kind", "") in ("wg", "awg", "ovpn"):
-        # No detect()/saved IP merge: the whitelist must be the selected snapshot.
-        return killswitch.enable(extra_ips=ips, ifaces=ifaces, dns=dns, fresh=True)
-    return killswitch.enable(extra_ips=ips, ifaces=ifaces, dns=dns)
+    # No detect()/saved IP merge: the whitelist must be the selected snapshot.
+    return killswitch.enable(extra_ips=ips, ifaces=ifaces, dns=dns, fresh=True)
 
 
 def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
     """Connect with killswitch interplay.
 
-    Under the kill switch (_killswitch_wanted) the rules go in twice. Before
-    the connect: the server's addresses plus port 53 to the system resolvers
-    — the one hole, so endpoint hostnames resolve (ours, and wg-quick's
-    Endpoint). After it: the same rules without that hole, so DNS leaves only
-    through the tunnel, xray's mark or the LAN. The hole is closed in a
-    `finally`: an early return or an exception must never leave it open.
-    Other providers (NetworkManager) suspend an enabled kill switch.
+    Arm cached addresses and a dedicated marked bootstrap allowance first;
+    resolve through uplink-bound sockets, then apply the selected addresses.
+    Ordinary apps/shared-resolved never get a connect-time DNS exception.
+    Finally remove bootstrap permission; native profiles contain numeric
+    endpoints. NetworkManager still suspends an enabled kill switch.
     """
     cfg = config.load_config()
     enabled = killswitch.is_enabled()
@@ -371,11 +367,15 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
     try:
         if wanted:
             resolvers = killswitch.system_resolvers()
-            if enabled and resolvers:
-                # Open bootstrap DNS with cached IPs first; native profiles never resolve again.
+            if resolvers:
+                # Arm first, including a previously disabled switch; DNS uses only marked sockets.
                 ips, ifaces = _killswitch_targets(provider, connection, cached_only=True)
                 ks_result = _killswitch_apply(provider, ips, ifaces, resolvers)
                 hole_open = ks_result is not None and ks_result.success
+                if not hole_open:
+                    return ActionResult(
+                        False, ks_result.message if ks_result else "Could not arm killswitch"
+                    )
             fresh, ifaces = _killswitch_targets(provider, connection, cached_only=numeric)
             if ks_result is None or not ks_result.success or set(fresh) != set(ips):
                 ips = fresh
@@ -383,6 +383,8 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
                 hole_open = hole_open or bool(resolvers and ks_result and ks_result.success)
         elif enabled:
             ks_result = killswitch.suspend_for(provider.name)
+        if ks_result is not None and not ks_result.success:
+            return ActionResult(False, ks_result.message)
         # one tunnel at a time: tear down anything else that is up before
         # connecting (two VPNs fight over the default route and traffic
         # splits unpredictably). Same-provider server switching is handled
@@ -417,8 +419,8 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
         tuns_before = _tun_interfaces()
         result = provider.connect(connection)
         if hole_open and result.success and provider.name == "OpenVPN":
-            # `openvpn --daemon` returns before it resolves `remote`: keep the
-            # DNS hole until its tun device exists (or the wait runs out)
+            # Preserve OpenVPN readiness timing; its runtime remotes are numeric,
+            # and this allowance grants nothing to ordinary/native DNS sockets.
             _wait_for_new_tun(tuns_before, getattr(_vm(), "OPENVPN_TUN_WAIT", OPENVPN_TUN_WAIT))
     finally:
         connection.endpoint_addresses = None
@@ -459,7 +461,7 @@ INCY_APP_CONNECTED = (
     "The INCY app holds the connection — disconnect it in INCY first (same one-tunnel rule as Happ)"
 )
 SYS_NET = Path("/sys/class/net")
-OPENVPN_TUN_WAIT = 20.0  # s the connect-time DNS hole stays open for OpenVPN
+OPENVPN_TUN_WAIT = 20.0  # s to wait for OpenVPN's daemon-created TUN
 
 
 def _tun_interfaces() -> set[str]:
@@ -475,14 +477,14 @@ def _wait_for_new_tun(before: set[str], timeout: float) -> bool:
     deadline = vm_time.monotonic() + timeout
     while not tun_ifaces() - before:
         if vm_time.monotonic() >= deadline:
-            logutil.log(f"openvpn: no tun device after {timeout:g} s, closing the DNS hole anyway")
+            logutil.log(f"openvpn: no tun device after {timeout:g} s, ending bootstrap allowance")
             return False
         vm_time.sleep(0.5)
     return True
 
 
 def _close_dns_hole(provider, ips: list[str], ifaces: list[str], connected: bool, cfg):
-    """After a connect: the strict rules, without the connect-time DNS hole.
+    """After a connect: strict rules without the marked bootstrap allowance.
     A failed connect with Lockdown off drops the rules instead — unless
     something still looks up, then the strict rules all the same."""
     if not connected and not cfg.killswitch_lockdown and _release_killswitch_if_unlocked(cfg):

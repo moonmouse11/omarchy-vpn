@@ -136,7 +136,8 @@ def test_truncated_udp_retries_same_question_over_tcp_and_closes_both(monkeypatc
     assert calls == [(0, False), (0, True)]
     assert udp.sent == question
     assert tcp.sent == struct.pack("!H", len(question)) + question
-    assert udp.closed and tcp.closed
+    assert udp.closed
+    assert tcp.closed
 
 
 @pytest.mark.parametrize("rcode", [1, 2, 4, 5])
@@ -178,7 +179,8 @@ def test_nodata_and_nxdomain_do_not_query_secondary(monkeypatch, rcode):
     client = mod.Client(None, ["192.0.2.53", "192.0.2.54"], time.monotonic() + 1)
 
     def reply(slot, tcp):
-        assert slot == 0 and not tcp, "terminal negative must not bypass the configured resolver"
+        assert slot == 0, "terminal negative must not bypass the configured resolver"
+        assert not tcp, "terminal negative must not retry over TCP"
         return ReplySocket(negative)
 
     monkeypatch.setattr(client, "_socket", reply)

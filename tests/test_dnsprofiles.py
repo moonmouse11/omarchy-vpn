@@ -62,6 +62,14 @@ def test_hostname_peer_without_public_key_is_rejected_before_runtime_copy():
         mod.numeric_config("wg", text, {"vpn.example": "192.0.2.1"})
 
 
+@pytest.mark.parametrize("port", ["\uff11\uff12\uff13", "\u0661\u0662\u0663"])
+def test_wireguard_non_ascii_port_does_not_become_a_bootstrap_endpoint(port):
+    mod = profiles()
+    original = f"[Peer]\nPublicKey = first\nEndpoint = vpn.example:{port}\n"
+    with pytest.raises(ValueError, match="match"):
+        mod.numeric_config("wg", original, {"vpn.example": "192.0.2.1"})
+
+
 def test_wireguard_endpoint_whitespace_and_late_public_key_are_preserved():
     mod = profiles()
     text = "[Peer]\nEndpoint = vpn.example : 51820 # endpoint\nPublicKey = first\n"

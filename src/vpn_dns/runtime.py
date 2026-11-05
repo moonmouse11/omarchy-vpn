@@ -21,10 +21,13 @@ DIRECTORIES = {
 }
 RUNTIME = Path("/run/omarchy-vpn-profiles")
 MAX_CONFIG = 1048576
+SOURCE_SNAPSHOT = ".source"
+STARTING_MARK = ".starting"
+SAVING_MARK = ".saving"
 
 
 def _paths(kind: str, name: str) -> tuple[Path, Path]:
-    if kind not in DIRECTORIES or re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.=+-]{0,63}", name) is None:
+    if kind not in DIRECTORIES or re.fullmatch(r"(?a:\w[\w.=+-]{0,63})", name) is None:
         raise ValueError("Invalid profile identity")
     if kind != "ovpn" and len(name) > 15:
         raise ValueError("WireGuard names are at most 15 characters")
@@ -96,10 +99,10 @@ def prepare(
     _safe_dir(RUNTIME)
     directory.mkdir(mode=0o700)  # Never replace an active/recoverable session.
     try:
-        _atomic_text(directory / ".source", original)
+        _atomic_text(directory / SOURCE_SNAPSHOT, original)
         _atomic_text(directory / source.name, numeric)
     except BaseException:
-        for path in (directory / ".source", directory / source.name):
+        for path in (directory / SOURCE_SNAPSHOT, directory / source.name):
             with contextlib.suppress(OSError):
                 path.unlink()
         with contextlib.suppress(OSError):
@@ -132,18 +135,18 @@ def mark(kind: str, name: str, action: str) -> None:
     if not _has_runtime(directory):
         return
     if action == "starting":
-        _atomic_text(directory / ".starting", "")
+        _atomic_text(directory / STARTING_MARK, "")
     elif action == "started":
-        (directory / ".starting").unlink(missing_ok=True)
-    elif action == "stopping" and not (directory / ".starting").exists():
-        _atomic_text(directory / ".saving", "")
+        (directory / STARTING_MARK).unlink(missing_ok=True)
+    elif action == "stopping" and not (directory / STARTING_MARK).exists():
+        _atomic_text(directory / SAVING_MARK, "")
 
 
 def recover(kind: str, name: str) -> bool:
     _, directory = _paths(kind, name)
     if not _has_runtime(directory):
         return False
-    finish(kind, name, save=(directory / ".saving").exists())
+    finish(kind, name, save=(directory / SAVING_MARK).exists())
     return True
 
 
@@ -159,9 +162,9 @@ def _retire(directory: Path, filename: str) -> None:
     try:
         for path in (
             retired / filename,
-            retired / ".source",
-            retired / ".starting",
-            retired / ".saving",
+            retired / SOURCE_SNAPSHOT,
+            retired / STARTING_MARK,
+            retired / SAVING_MARK,
         ):
             path.unlink(missing_ok=True)
         retired.rmdir()
@@ -176,8 +179,8 @@ def finish(kind: str, name: str, *, save: bool) -> None:
     source, directory = _paths(kind, name)
     if not _has_runtime(directory):
         return
-    if save and kind in ("wg", "awg") and not (directory / ".starting").exists():
-        original, _ = _read(directory / ".source")
+    if save and kind in ("wg", "awg") and not (directory / STARTING_MARK).exists():
+        original, _ = _read(directory / SOURCE_SNAPSHOT)
         if re.search(r"(?im)^\s*SaveConfig\s*=\s*true\s*(?:#.*)?$", original):
             saved, _ = _read(directory / source.name)
             current_text, info = _read(source)

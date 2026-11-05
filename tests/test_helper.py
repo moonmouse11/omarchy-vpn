@@ -560,7 +560,8 @@ def test_delete_serializes_and_discards_old_runtime_before_reimport(
             try:
                 with pytest.raises(subprocess.TimeoutExpired):
                     proc.wait(timeout=0.2)
-                assert conf.exists() and path.exists()
+                assert conf.exists()
+                assert path.exists()
             finally:
                 fcntl.flock(held, fcntl.LOCK_UN)
             _, error = proc.communicate(timeout=8)

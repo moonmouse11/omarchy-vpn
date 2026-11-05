@@ -95,7 +95,8 @@ def test_failed_save_recovery_refuses_replacement_credentials(
     with pytest.raises(ValueError, match="changed"):
         mod.recover(kind, "office")
     assert source.read_text() == newer
-    assert path.exists() and (path.parent / ".saving").exists()
+    assert path.exists()
+    assert (path.parent / ".saving").exists()
     assert "51822" in path.read_text()
 
 
@@ -240,7 +241,16 @@ def test_saveconfig_off_never_rewrites_source(files):
 
 
 @pytest.mark.parametrize(
-    "kind,name", [("bad", "office"), ("wg", "../other"), ("wg", "-option"), ("wg", "a" * 16)]
+    "kind,name",
+    [
+        ("bad", "office"),
+        ("wg", "../other"),
+        ("wg", "-option"),
+        ("wg", "a" * 16),
+        ("wg", "é"),
+        ("wg", "a\u0661"),
+        ("ovpn", "office²"),
+    ],
 )
 def test_paths_and_options_cannot_select_profiles(files, kind, name):
     mod, source = files
@@ -254,11 +264,10 @@ def test_dangling_runtime_link_is_not_treated_as_absent(files, tmp_path, action)
     mod, _ = files
     mod.RUNTIME.mkdir(mode=0o700)
     (mod.RUNTIME / "wg-office").symlink_to(tmp_path / "missing")
+    operation = getattr(mod, action)
+    kwargs = {"save": False} if action == "finish" else {}
     with pytest.raises(PermissionError):
-        if action == "current":
-            mod.current("wg", "office")
-        else:
-            mod.finish("wg", "office", save=False)
+        operation("wg", "office", **kwargs)
 
 
 def test_successful_save_with_extra_runtime_file_does_not_block_reconnect(files):
@@ -286,7 +295,8 @@ def test_failed_save_retains_private_recovery_state(files, monkeypatch):
     with pytest.raises(OSError, match="disk full"):
         mod.finish("wg", "office", save=True)
     assert source.read_text() == WG
-    assert path.exists() and (path.parent / ".source").exists()
+    assert path.exists()
+    assert (path.parent / ".source").exists()
 
 
 def test_symlink_profile_and_unsafe_runtime_are_refused(files, tmp_path):

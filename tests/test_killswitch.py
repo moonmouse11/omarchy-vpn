@@ -171,52 +171,57 @@ def test_resume_for_happ_enables_in_all_mode(monkeypatch, tmp_path):
 
 
 def test_resolve_endpoint_ips(monkeypatch):
-    import socket
+    from vpn_dns import bootstrap
 
-    def fake_getaddrinfo(host, port, family):
-        if host == "dead.example":
-            raise OSError("NXDOMAIN")
-        if host == "v6-only.example":
-            return []  # no A record — the AF_INET query comes back empty
-        return [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))]
+    calls = []
 
-    monkeypatch.setattr(killswitch.socket, "getaddrinfo", fake_getaddrinfo)
+    def resolve(hosts, timeout):
+        calls.append((hosts, timeout))
+        return {host: "93.184.216.34" for host in hosts if host == "example.com"}
+
+    monkeypatch.setattr(bootstrap, "resolve", resolve)
     targets = [("nl", "example.com", 51820), ("de", "example.com", 51820), ("x", "dead.example", 1)]
-    assert killswitch.resolve_endpoint_ips(targets) == ["93.184.216.34"]  # dedup + skip dead
+    assert killswitch.resolve_endpoint_ips(targets) == ["93.184.216.34"]
+    assert calls == [(["example.com", "dead.example"], killswitch.RESOLVE_TIMEOUT)]
     assert killswitch.resolve_endpoint_ips([("v6", "v6-only.example", 1)]) == []
 
 
-def test_resolve_endpoint_ips_dead_dns_is_bounded_and_falls_back(monkeypatch):
-    """A switch away from a dead tunnel resolves through it: lookups hang.
-    The whole batch must give up within the timeout (it used to take ~2 min
-    per host, one after another) and use the last address that worked."""
-    import socket
-    import threading
-    import time
+def test_invalid_host_does_not_poison_other_endpoint_queries(monkeypatch):
+    from vpn_dns import bootstrap
 
-    monkeypatch.setattr(killswitch.logutil, "log", lambda msg: None)
-    dns_alive = True
-    release = threading.Event()
+    def resolve(hosts, timeout):
+        assert hosts == ["ok.example"]
+        return {"ok.example": "192.0.2.7"}
 
-    def fake_getaddrinfo(host, port, family):
-        if not dns_alive:
-            release.wait(5)  # stuck in the resolver
-            raise OSError("Temporary failure in name resolution")
-        return [(socket.AF_INET, 0, 0, "", ({"a.example": "1.1.1.1"}.get(host, "2.2.2.2"), 0))]
+    monkeypatch.setattr(bootstrap, "resolve", resolve)
+    assert killswitch.resolve_endpoint_ips([("bad", "bad name", 1), ("ok", "ok.example", 1)]) == [
+        "192.0.2.7"
+    ]
 
-    monkeypatch.setattr(killswitch.socket, "getaddrinfo", fake_getaddrinfo)
+
+@pytest.mark.parametrize("failure", [OSError("unavailable"), ValueError("invalid host")])
+def test_resolve_endpoint_ips_dead_dns_is_bounded_and_falls_back(monkeypatch, failure):
+    from vpn_dns import bootstrap
+
+    monkeypatch.setattr(
+        bootstrap,
+        "resolve",
+        lambda hosts, timeout: {"a.example": "1.1.1.1", "b.example": "2.2.2.2"},
+    )
     targets = [("a", "a.example", 1), ("b", "b.example", 1)]
-    assert killswitch.resolve_endpoint_ips(targets) == ["1.1.1.1", "2.2.2.2"]  # remembered
+    assert killswitch.resolve_endpoint_ips(targets) == ["1.1.1.1", "2.2.2.2"]
 
-    dns_alive = False
-    targets.append(("never", "never.example", 1))
-    started = time.monotonic()
-    try:
-        ips = killswitch.resolve_endpoint_ips(targets, timeout=0.3)
-    finally:
-        release.set()
-    assert time.monotonic() - started < 2  # parallel, bounded — not per host
-    assert ips == ["1.1.1.1", "2.2.2.2"]  # last known; the never-resolved host is skipped
+    def fail(hosts, timeout):
+        assert timeout == 0.3
+        raise failure
+
+    monkeypatch.setattr(bootstrap, "resolve", fail)
+    targets += [("never", "never.example", 1), ("literal", "192.0.2.8", 1)]
+    assert killswitch.resolve_endpoint_ips(targets, timeout=0.3) == [
+        "1.1.1.1",
+        "192.0.2.8",
+        "2.2.2.2",
+    ]
 
 
 def test_resume_for_happ_extra_ips_bypass_detect(monkeypatch, tmp_path):
@@ -280,8 +285,8 @@ def test_enable_fresh_skips_detect_and_saved_ips(monkeypatch):
     assert calls == [("on", "--no-conf", "1.2.3.4")]
 
 
-def test_resume_for_happ_unresolved_server_keeps_detect_path(monkeypatch, tmp_path):
-    # empty list = the caller couldn't resolve the server: nothing to be fresh with
+def test_resume_for_happ_empty_snapshot_never_scrapes_unrelated_sessions(monkeypatch, tmp_path):
+    # Empty is still an explicit snapshot; marked proxy sockets do not need an IP whitelist.
     monkeypatch.setattr(killswitch.config, "CONFIG_PATH", tmp_path / "config.json")
     calls = []
     monkeypatch.setattr(
@@ -289,7 +294,7 @@ def test_resume_for_happ_unresolved_server_keeps_detect_path(monkeypatch, tmp_pa
     )
     monkeypatch.setattr(killswitch, "is_enabled", lambda: True)
     killswitch.resume_for_happ(extra_ips=[])
-    assert calls == [{"extra_ips": [], "dns": None}]
+    assert calls == [{"extra_ips": [], "dns": None, "fresh": True}]
 
 
 def test_script_accepts_xray_mark_and_no_conf():
@@ -347,15 +352,26 @@ def test_ruleset_replaces_the_table_in_one_transaction(real_subprocess):
 
 
 def test_dns_leaves_only_to_the_given_resolvers(real_subprocess):
-    """No more port 53 to anywhere: only --dns resolvers (during a connect)."""
+    """Bootstrap never opens DNS to ordinary sockets or DoT/shared-resolved."""
     strict = _rules("198.51.100.30", "--no-conf")
     assert "dport 53 accept" not in strict
     hole = _rules("198.51.100.30", "--no-conf", "--dns", "192.0.2.53", "--dns", "2001:db8::53")
-    assert "ip daddr 192.0.2.53 udp dport 53 accept" in hole
-    assert "ip daddr 192.0.2.53 tcp dport { 53, 853 } accept" in hole
-    assert "ip6 daddr 2001:db8::53 udp dport 53 accept" in hole
-    # nothing else opens DNS (the other dport is DHCP's 67)
-    assert hole.count("dport 53 accept") + hole.count("dport { 53, 853 } accept") == 4
+    from vpn_dns.control import DNS_MARK
+
+    assert f"DNS_MARK={DNS_MARK:#x}\n" in _SCRIPT.read_text()
+    lines = [line.strip() for line in hole.splitlines() if "dport 53 accept" in line]
+    assert len(lines) == 4
+    assert all(line.startswith(f"meta mark {DNS_MARK:#x} ") for line in lines)
+    assert f"meta mark {DNS_MARK:#x} ip daddr 192.0.2.53 udp dport 53 accept" in lines
+    assert not any("853" in line for line in lines)
+    assert f"meta mark {DNS_MARK:#x} accept" not in hole
+    assert "dport { 53, 853 } accept" not in hole
+
+
+def test_explicit_empty_snapshot_can_arm_bootstrap(real_subprocess):
+    rules = _rules("--no-conf", "--dns", "192.0.2.53")
+    assert "meta mark 0x6b75 ip daddr 192.0.2.53 udp dport 53 accept" in rules
+    assert "policy drop" in rules
 
 
 def test_ruleset_rejects_what_is_not_an_address(real_subprocess):
@@ -428,7 +444,7 @@ def test_system_resolvers_behind_the_systemd_stub(monkeypatch, tmp_path):
     ran = []
     monkeypatch.setattr(killswitch.subprocess, "run", lambda cmd, **kw: ran.append(cmd) or Out())
     assert killswitch.system_resolvers() == ["1.1.1.1", "2606:4700:4700::1111", "192.168.1.1"]
-    assert ran == [["resolvectl", "dns"]]
+    assert ran == [["/usr/bin/resolvectl", "dns"]]
 
 
 def test_system_resolvers_wrapped_resolvectl_line(monkeypatch, tmp_path):
@@ -485,8 +501,10 @@ def test_ruleset_accepts_wg_quick_interface_names(real_subprocess):
 
 
 def test_resolve_cached_only_never_looks_up(monkeypatch):
+    from vpn_dns import bootstrap
+
     monkeypatch.setattr(
-        killswitch.socket, "getaddrinfo", lambda *a: (_ for _ in ()).throw(AssertionError("DNS"))
+        bootstrap, "resolve", lambda *a, **kw: pytest.fail("DNS on cache-only path")
     )
     killswitch.fsutil.write_json_atomic(killswitch.RESOLVED_CACHE, {"a.example": "192.0.2.1"})
     targets = [("a", "a.example", 1), ("b", "b.example", 1), ("c", "198.51.100.7", 1)]

@@ -65,7 +65,9 @@ def _no_real_panel_caches(monkeypatch, tmp_path):
     the real ones from a test run."""
     import killswitch
     import vpn_manager
+    from vpn_dns import routes as dnsroutes
 
+    monkeypatch.setattr(dnsroutes, "CACHE", tmp_path / "dns-route.json")
     monkeypatch.setattr(killswitch, "STATE_CACHE", tmp_path / "killswitch-state.json")
     monkeypatch.setattr(killswitch, "RESOLVED_CACHE", tmp_path / "resolved-ips.json")
     # no resolvers unless a test writes one: the host's/container's own

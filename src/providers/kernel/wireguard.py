@@ -1,3 +1,4 @@
+import json
 import subprocess
 from pathlib import Path
 
@@ -302,7 +303,20 @@ class WireGuardProvider(VPNProvider):
             else:
                 msg = f"{self.quick_bin} not found"
             return ActionResult(success=False, message=msg)
-        code, out = run_helper("up", self.helper_kind, connection.name)
+        if connection.endpoint_addresses is None:
+            code, out = run_helper("up", self.helper_kind, connection.name)
+        else:
+            code, out = run_helper(
+                "up-numeric",
+                self.helper_kind,
+                connection.name,
+                stdin=json.dumps(
+                    {
+                        "addresses": connection.endpoint_addresses,
+                        "ipv4": connection.endpoint_ipv4,
+                    }
+                ),
+            )
         if code != 0:
             return ActionResult(success=False, message=_quick_connect_error(out))
         return ActionResult(success=True, message=f"Connected: {connection.name}")

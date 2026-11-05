@@ -14,6 +14,7 @@ from app.checks import CHECK_TITLES, run_check, run_dns_autotest
 from app.helpers import _collect_ping_targets, notify, refresh_bar
 from app.patchables import patched as _patched
 from app.ping import _ping_scope_from_args, ping_now
+from app.registry import active_connections
 from app.servers import (
     _report,
     panel_connect,
@@ -36,6 +37,7 @@ from providers.base import (
 from providers.happ import run_keeper as run_happ_keeper
 from providers.incy import run_keeper as run_incy_keeper
 from providers.keys import run_keeper as run_keys_keeper
+from vpn_dns import routes as dnsroutes
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -93,6 +95,11 @@ def main() -> None:
         nargs="+",
         metavar="dns|ip|speed [TARGET]",
         help="Run a check for the app window's card (JSON lines); speed: all|NAME|URL",
+    )
+    group.add_argument(
+        "--dns-route-update",
+        action="store_true",
+        help="Refresh local DNS route observations (internal)",
     )
     group.add_argument(
         "--dns-autotest",
@@ -217,6 +224,8 @@ def main() -> None:
         if args.check[0] not in CHECK_TITLES or len(args.check) > 2:
             parser.error("--check takes dns|ip|speed [TARGET]")
         _report(_patched("run_check", run_check)(*args.check))
+    elif args.dns_route_update:
+        dnsroutes.update(active_connections())
     elif args.dns_autotest:
         run_dns_autotest()
     elif args.update_ip:

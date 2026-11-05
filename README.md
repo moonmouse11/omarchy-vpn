@@ -66,16 +66,41 @@ reminds you when you pick them.
 
 - Installs only the packages your picks need (`wireguard-tools`, `openvpn`, a `resolvconf`).
 - Adds root-owned helpers to `/usr/local/bin` (`omarchy-vpn-helper`, `happ-killswitch`,
-  `openvpn-dns-updown`, `omarchy-vpn-incy-network`) and the INCY helper's isolated Python package
-  to `/usr/local/lib/omarchy-vpn`. The sudoers rule (`/etc/sudoers.d/vpn-manager`) grants access
+  `openvpn-dns-updown`, `omarchy-vpn-incy-network`, `omarchy-vpn-dns-bootstrap`) and the isolated
+  INCY/DNS root modules to `/usr/local/lib/omarchy-vpn`. The sudoers rule (`/etc/sudoers.d/vpn-manager`) grants access
   only to `omarchy-vpn-helper`, `happ-killswitch` and the IPv6 guard's fixed `sysctl` calls.
-  OpenVPN invokes its DNS helper; the main helper invokes INCY's fixed network entry.
+  OpenVPN invokes its DNS helper; the main helper invokes the fixed INCY/DNS entries.
   Privileged helper sources are copied before the sudo prompt and re-hashed after installation.
   The main helper refuses VPN configs that would run commands as root.
 - Copies the app to `~/.local/share/omarchy-vpn` and adds the SUPER+Shift+V binding to
   `~/.config/hypr/bindings.lua`.
 - `/etc/resolv.conf` is left alone, unless you agree to switch it back to systemd-resolved
   when the installer asks.
+
+### Endpoint bootstrap compatibility
+
+The plugin resolves WireGuard, AmneziaWG and OpenVPN endpoint hostnames once, then passes the
+same IPv4 answers to the firewall and a private runtime profile. It does not replace the
+profile's DNS settings. On a plugin-managed disconnect, `SaveConfig=true` keeps native state
+changes while restoring the original hostname for matching WireGuard/AmneziaWG peers.
+External `wg-quick`/systemd operations retain their own native save behavior.
+
+Bootstrap uses UDP/TCP port 53 to configured upstreams, not a public fallback. IPv4 `/etc/hosts`
+overrides are preserved without a DNS query. Strict DNS-over-TLS and unrecognized local DNS
+proxies are refused rather than silently bypassed; no resolver settings are rewritten.
+The connect-time allowance requires the dedicated socket mark **and** a configured upstream on
+TCP/UDP **:53**: it does not open ordinary app/shared-resolved DNS, :853, another destination or a
+general mark bypass. Guarded firewall loads never scrape unrelated TCP sessions or merge saved
+IPs. Handled exits/cancellation close the DNS session and remove bootstrap permission; a failed
+firewall reload is reported. SIGKILL cannot run Python cleanup: owned FDs close and the next guarded
+load replaces the rules. This is not a sandbox against another process with the same UID, which
+already has access to the privileged kill-switch helper.
+
+`make test-dns-docker` checks actual nft packets, authenticated helper/client queries, TCP fallback,
+cancellation and permission removal from an existing socket under a dead TUN. It builds a separate
+Python 3.14 image and uses disposable namespaces, no host network/state mounts, a read-only
+repository and explicit capabilities (including NET_ADMIN/SYS_ADMIN and `/dev/net/tun`). The Python
+workflow runs it separately; this is not a live host VPN test.
 
 ### INCY Shadowsocks compatibility
 

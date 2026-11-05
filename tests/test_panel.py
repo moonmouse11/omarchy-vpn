@@ -8,6 +8,7 @@ import config
 import killswitch
 import vpn_manager
 from providers.base import ActionResult, VPNConnection
+from vpn_dns import routes as dnsroutes
 
 DE_SERVER = VPNConnection(
     name="🇩🇪 Germany 1",
@@ -29,6 +30,7 @@ def env(monkeypatch):
         "fresh": True,
         "app_owned": False,  # the plugin's keeper holds the Happ connection
     }
+    monkeypatch.setattr(dnsroutes, "warning", lambda interface: None)
     monkeypatch.setattr(vpn_manager.killswitch, "cached_is_enabled", lambda: state["ks_on"])
     monkeypatch.setattr(
         vpn_manager.happ_provider, "app_owns_connection", lambda: state["app_owned"]
@@ -145,7 +147,8 @@ def test_more_than_one_tunnel_counts_in_the_pill(env):
 @pytest.mark.parametrize(
     ("verdict", "badge"),
     [
-        ("DNS via VPN or public resolvers", ("DNS private", "ok")),
+        ("DNS test: no resolver mismatch detected", ("DNS checked", "ok")),
+        ("Warning: resolver network differs", ("DNS warning", "unknown")),
         ("Leaked: 2/5 DNS outside VPN/public resolvers", ("DNS leaks", "bad")),
         (None, ("DNS: untested", "unknown")),  # the test had nothing to judge by
     ],
@@ -155,8 +158,19 @@ def test_dns_badge_follows_the_last_test_for_this_server(env, verdict, badge):
     assert _badges(_panel([DE_SERVER]))["dns"] == badge
 
 
+def test_lan_dns_warning_prevents_protected_even_after_a_clean_test(env, monkeypatch):
+    vpn_manager._save_dns_verdict([DE_SERVER], "DNS test: no resolver mismatch detected")
+    monkeypatch.setattr(
+        dnsroutes, "warning", lambda interface: "Warning: configured LAN DNS 192.168.1.1"
+    )
+    panel = _panel([DE_SERVER])
+    assert _badges(panel)["dns"] == ("DNS warning", "unknown")
+    assert panel["state"] == "unverified"
+    assert "192.168.1.1" in next(b["hint"] for b in panel["badges"] if b["id"] == "dns")
+
+
 def test_dns_verdict_is_per_server_and_expires(env, monkeypatch):
-    vpn_manager._save_dns_verdict([DE_SERVER], "DNS via VPN or public resolvers")
+    vpn_manager._save_dns_verdict([DE_SERVER], "DNS test: no resolver mismatch detected")
     other = VPNConnection(name="🇩🇪 Germany 2", provider="Happ", active=True)
     assert _badges(_panel([other]))["dns"][1] == "unknown"
     later = time.time() + vpn_manager.DNS_VERDICT_MAX_AGE + 1
@@ -214,7 +228,7 @@ def test_panel_cli_actions(monkeypatch, argv, called):
 def test_protected_only_after_every_check_passed(env):
     """The lock is earned: exit, DNS and IPv6 all green. The kill switch is
     a preference, not a check — off doesn't withhold it."""
-    vpn_manager._save_dns_verdict([DE_SERVER], "DNS via VPN or public resolvers")
+    vpn_manager._save_dns_verdict([DE_SERVER], "DNS test: no resolver mismatch detected")
     panel = _panel([DE_SERVER])
     assert (panel["state"], panel["title"]) == ("protected", "Protected")
     env["fresh"] = False  # exit not looked up yet
@@ -284,15 +298,15 @@ def test_dns_autotest_stores_the_verdict_quietly(env, monkeypatch):
     vpn_manager.run_dns_autotest()
     assert sent == []  # a pass is silent
     assert refreshed == [1]
-    assert _badges(_panel([DE_SERVER]))["dns"] == ("DNS private", "ok")
+    assert _badges(_panel([DE_SERVER]))["dns"] == ("DNS checked", "ok")
 
 
-def test_dns_autotest_announces_a_leak(env, monkeypatch):
+def test_dns_autotest_announces_a_warning_not_a_proven_leak(env, monkeypatch):
     sent, _ = _autotest_env(monkeypatch, [DE_SERVER], _CLEAN)
     monkeypatch.setattr(vpn_manager.dnsleak, "server_tags", lambda s, c, a: ["GEO"])
     vpn_manager.run_dns_autotest()
-    assert sent and sent[0][0] == "DNS leak detected"
-    assert _badges(_panel([DE_SERVER]))["dns"] == ("DNS leaks", "bad")
+    assert sent and sent[0][0] == "DNS warning"
+    assert _badges(_panel([DE_SERVER]))["dns"] == ("DNS warning", "unknown")
 
 
 def test_dns_autotest_without_a_tunnel_or_on_failure_leaves_it_untested(env, monkeypatch):

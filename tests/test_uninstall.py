@@ -44,6 +44,8 @@ def test_uninstall_removes_root_incy_package(monkeypatch, tmp_path):
     package = root / "lib" / "omarchy-vpn" / "incy"
     helper.parent.mkdir(parents=True)
     helper.write_text("unused")
+    dns_helper = helper.parent / "omarchy-vpn-dns-bootstrap"
+    dns_helper.write_text("unused")
     package.mkdir(parents=True)
     (package / "privileged.py").write_text("unused")
     shims = tmp_path / "shims"
@@ -71,6 +73,7 @@ def test_uninstall_removes_root_incy_package(monkeypatch, tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert not helper.exists()
+    assert not dns_helper.exists()
     assert not package.parent.exists()
 
 

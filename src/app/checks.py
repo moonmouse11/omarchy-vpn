@@ -25,20 +25,23 @@ from providers.base import (
     ActionResult,
     VPNConnection,
 )
+from vpn_dns import identity as dnsidentity
+from vpn_dns import routes as dnsroutes
 
 
 def _dns_leak_server_row(server: dict, ip_country: str = "", ip_asn: int | None = None) -> str:
-    """One row per detected resolver. 'Leaked' when dnsleak.server_tags()
-    finds the resolver is neither the VPN's nor a public one (ASN) or sits in
-    another country than the exit IP (GEO) — wherever that country is."""
+    """Resolver identity and mismatch indicators, never packet-path proof."""
     country = (server.get("country") or "").upper()
     flag = ipinfo.flag_emoji(country)
     org = server.get("org") or server.get("asn") or ""
     label = f"{flag} {server.get('ip') or '?'}".strip()
+    service = dnsidentity.resolver_name(server.get("ip"))
+    if service and service not in org:
+        label += f" · {service}"
     if org:
         label += f" · {org}"
-    if dnsleak.server_tags(server, ip_country, ip_asn):
-        label += "  Leaked"
+    if tags := dnsleak.server_tags(server, ip_country, ip_asn):
+        label += f"  Warning: {', '.join(tags)}"
     return label
 
 
@@ -117,8 +120,17 @@ def _dns_leak_verdict_row(result: dict) -> str | None:
         return None
     flagged = sum(1 for s in servers if dnsleak.server_tags(s, ip_country, ip_asn))
     if flagged:
-        return f"Leaked: {flagged}/{len(servers)} DNS outside VPN/public resolvers"
-    return "DNS via VPN or public resolvers"
+        return (
+            f"Warning: {flagged}/{len(servers)} DNS differ from the exit country/network"
+            " — this does not prove a leak"
+        )
+    if (
+        not ip_country
+        or ip_asn is None
+        or any(not s.get("country") or dnsleak.asn_number(s.get("asn")) is None for s in servers)
+    ):
+        return None
+    return DNS_OK_SUMMARY
 
 
 def _failure_hint(reason: str) -> str:
@@ -136,6 +148,8 @@ def _failure_hint(reason: str) -> str:
     return ""
 
 
+DNS_VERDICT_VERSION = 2
+DNS_OK_SUMMARY = "DNS test: no resolver mismatch detected"
 DNS_VERDICT_CACHE = Path.home() / ".cache/vpn-manager/dns-leak.json"
 DNS_VERDICT_MAX_AGE = 24 * 3600  # a verdict outlives neither a day nor a server switch
 
@@ -149,10 +163,16 @@ def _dns_verdict_path() -> Path:
 def _save_dns_verdict(active: list[VPNConnection], verdict: str | None) -> None:
     """The last test's resolver verdict, for the panel's DNS badge — keyed
     to the connection it ran under; None (no data to judge) is kept too."""
+    leaked = None
+    if verdict and verdict.startswith("Leaked"):
+        leaked = True
+    elif verdict == DNS_OK_SUMMARY:
+        leaked = False
     record = {
+        "version": DNS_VERDICT_VERSION,
         "at": time.time(),
         "connection": active[0].name if active else None,
-        "leaked": None if verdict is None else verdict.startswith("Leaked"),
+        "leaked": leaked,
         "summary": verdict,
     }
     with contextlib.suppress(OSError):
@@ -164,9 +184,14 @@ def _read_dns_verdict(connection: str) -> dict | None:
         record = json.loads(_dns_verdict_path().read_text())
     except OSError, ValueError:
         return None
-    if not isinstance(record, dict) or record.get("connection") != connection:
+    if (
+        not isinstance(record, dict)
+        or record.get("version") != DNS_VERDICT_VERSION
+        or record.get("connection") != connection
+    ):
         return None
-    if time.time() - record.get("at", 0) > DNS_VERDICT_MAX_AGE:
+    at = record.get("at")
+    if not isinstance(at, (int, float)) or not 0 <= time.time() - at < DNS_VERDICT_MAX_AGE:
         return None
     return record
 
@@ -200,9 +225,12 @@ def run_dns_autotest() -> None:
         return
     verdict = _dns_leak_verdict_row(result)
     _save_dns_verdict(active, verdict)
+    dnsroutes.update(active)
+    verdict = dnsroutes.warning(active[0].interface) or verdict
     logutil.log(f"dns autotest: {active[0].name}: {verdict}")
-    if verdict and verdict.startswith("Leaked"):
-        notify("DNS leak detected", f"{active[0].label}\n{verdict}", urgent=True)
+    if verdict and verdict.startswith(("Leaked", "Warning:")):
+        title = "DNS leak detected" if verdict.startswith("Leaked") else "DNS warning"
+        notify(title, f"{active[0].label}\n{verdict}", urgent=verdict.startswith("Leaked"))
     refresh_bar()
 
 
@@ -307,9 +335,11 @@ def _dns_check(progress: _CheckProgress) -> dict:
         result = dnsleak.run(on_step=lambda n, label: progress.step(n, f"{label}…"))
     except dnsleak.LeakTestError as e:
         progress.fail(f"Test {e}{_failure_hint(e.reason)}")
+    active = active_connections()
+    dnsroutes.update(active)
+    route_hint = dnsroutes.warning(active[0].interface) if active else None
     progress.done("Done")
 
-    active = active_connections()
     ip_country, ip_asn = result["ip_country"], result.get("ip_asn")
     texts = []
     if result["ip"]:
@@ -324,18 +354,20 @@ def _dns_check(progress: _CheckProgress) -> dict:
     _save_dns_verdict(active, verdict)
     if verdict:
         texts.append(verdict)
+    if route_hint:
+        texts.append(route_hint)
     if result["conclusion"]:
         texts.append(f"bash.ws: {result['conclusion']}")
     rows = _check_rows(texts)
     bad = any(r["state"] == "bad" for r in rows)
     if bad:
         state = "bad"
-    elif verdict:
+    elif active and verdict and not verdict.startswith("Warning:") and not route_hint:
         state = "ok"
     else:
         state = "unknown"
     # lead with a verdict line (exit, IPv6, resolvers), not one resolver's row
-    text = next((r["text"] for r in rows if r["text"].startswith("Leaked")), verdict)
+    text = next((r["text"] for r in rows if r["text"].startswith("Leaked")), route_hint or verdict)
     return {
         "summary": {"state": state, "text": text or "No verdict: the exit IP is unknown"},
         "rows": rows,

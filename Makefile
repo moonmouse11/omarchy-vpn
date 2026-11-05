@@ -20,6 +20,18 @@ lint:
 test-docker:
 	docker run --rm --network none -v "$$PWD":/repo:ro -w /repo omarchy-vpn-test
 
+# Real DNS broker/nft checks: no host network or state mounts, no native VPN needed.
+test-dns-docker-build:
+	docker build -t omarchy-vpn-dns-test -f Dockerfile.dns-test .
+
+test-dns-docker: test-dns-docker-build
+	docker run --rm --hostname dns-test --add-host dns-test:127.0.0.1 \
+		--network none --dns 198.51.100.53 --read-only --cap-drop ALL --device /dev/net/tun \
+		--cap-add NET_ADMIN --cap-add SYS_ADMIN --cap-add NET_BIND_SERVICE \
+		--cap-add SETUID --cap-add SETGID --cap-add KILL --cap-add CHOWN --cap-add DAC_OVERRIDE \
+		--tmpfs /run:rw,mode=755 --tmpfs /tmp:rw,mode=1777 \
+		-v "$$PWD":/repo:ro omarchy-vpn-dns-test
+
 # Opt-in bundled Ferrum checks: point at an extracted official /opt/incy tree.
 # Root helpers and native core run only inside this disposable network namespace.
 test-incy-docker-build:
@@ -35,4 +47,4 @@ test-incy-docker: test-incy-docker-build
 		--device /dev/net/tun --tmpfs /run:rw,mode=755 --tmpfs /tmp:rw,mode=1777 \
 		-v "$$PWD":/repo:ro -v "$(INCY_TEST_ROOT)":/inspect:ro omarchy-vpn-incy-test
 
-.PHONY: install uninstall lint test-docker-build test-docker test-incy-docker-build test-incy-docker
+.PHONY: install uninstall lint test-docker-build test-docker test-dns-docker-build test-dns-docker test-incy-docker-build test-incy-docker

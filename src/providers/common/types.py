@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 type PingTarget = tuple[str, str, int] | tuple[str, str, int, bool]
 
@@ -17,6 +17,9 @@ class VPNConnection:
     # real identity — two providers commonly both ship a "🇩🇪 Germany".
     subscription_id: str | None = None
     subscription_name: str | None = None
+    # Per-connect bootstrap result, not connection identity or persisted configuration.
+    endpoint_addresses: dict[str, str] | None = field(default=None, repr=False, compare=False)
+    endpoint_ipv4: list[str] | None = field(default=None, repr=False, compare=False)
 
     @property
     def label(self) -> str:

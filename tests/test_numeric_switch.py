@@ -63,6 +63,18 @@ def test_snapshot_reaches_native_and_exact_firewall_ips(numeric_switch, monkeypa
     assert connection.endpoint_ipv4 is None
 
 
+def test_killswitch_interface_collection_accepts_extended_ping_targets(monkeypatch):
+    from types import SimpleNamespace
+
+    provider = SimpleNamespace(
+        name="WireGuard", ping_targets=lambda: [("office", "192.0.2.1", 51820, True)]
+    )
+    monkeypatch.setattr(vm, "ALL_PROVIDERS", [provider])
+    monkeypatch.setattr(vm.happmeta, "subscription_targets", list)
+    monkeypatch.setattr(vm.killswitch, "resolve_endpoint_ips", lambda *a, **kw: ["192.0.2.1"])
+    assert switch._killswitch_all_targets(cached_only=True) == (["192.0.2.1"], ["office"])
+
+
 def test_incy_guard_snapshot_never_merges_detected_ips(monkeypatch):
     from types import SimpleNamespace
 
@@ -72,6 +84,49 @@ def test_incy_guard_snapshot_never_merges_detected_ips(monkeypatch):
     )
     switch._killswitch_apply(SimpleNamespace(name="INCY"), ["192.0.2.1"], ["incy-xray"], [])
     assert seen[0].get("fresh") is True
+
+
+def test_arming_exception_still_removes_bootstrap_permission(numeric_switch, monkeypatch):
+    provider, connection, seen, rules = numeric_switch
+    calls = 0
+
+    def targets(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("target discovery failed")
+        return [], ["office"]
+
+    monkeypatch.setattr(vm, "_killswitch_all_targets", targets)
+    with pytest.raises(OSError, match="target discovery"):
+        switch._guarded_connect(provider, connection)
+    assert seen == []
+    assert [rule["dns"] for rule in rules] == [["192.0.2.53"], []]
+
+
+def test_cancel_after_openvpn_ack_keeps_strict_firewall(numeric_switch, monkeypatch):
+    provider, connection, _, rules = numeric_switch
+    provider.name = "OpenVPN"
+    provider.helper_kind = "ovpn"
+    connection.provider = "OpenVPN"
+    cfg = vm.config.load_config()
+    cfg.killswitch_lockdown = False
+    vm.config.save_config(cfg)
+    monkeypatch.setattr(
+        snapshot, "resolve_profile", lambda *a: ({"vpn.example": "192.0.2.1"}, ["192.0.2.1"])
+    )
+    monkeypatch.setattr(
+        vm.killswitch, "disable", lambda: pytest.fail("acknowledged start must keep strict rules")
+    )
+
+    def cancel(*args):
+        raise switch.SwitchCancelled
+
+    monkeypatch.setattr(switch, "_wait_for_new_tun", cancel)
+    with pytest.raises(switch.SwitchCancelled):
+        switch._guarded_connect(provider, connection)
+    assert rules[-1]["dns"] == []
+    assert rules[-1]["extra_ips"] == ["192.0.2.1"]
 
 
 def test_failed_firewall_never_bootstraps_or_connects(numeric_switch, monkeypatch):
@@ -100,6 +155,59 @@ def test_failed_bootstrap_never_connects_and_closes_dns(numeric_switch, monkeypa
     assert rules[-1]["dns"] == []
     assert connection.endpoint_addresses is None
     assert connection.endpoint_ipv4 is None
+
+
+@pytest.mark.parametrize("failure", ["bootstrap", "firewall", "cancel"])
+@pytest.mark.parametrize("still_active", [False, True])
+def test_failed_switch_reconciles_ipv6_but_cancellation_preserves_handover(
+    numeric_switch, monkeypatch, failure, still_active
+):
+    provider, connection, seen, _ = numeric_switch
+    cfg = vm.config.load_config()
+    cfg.killswitch_lockdown = False
+    vm.config.save_config(cfg)
+    active = [VPNConnection("old", "Happ", True)]
+    monkeypatch.setattr(switch, "active_connections", lambda **kw: active[:])
+    state = {"ipv6_disabled": True, "reconciled": False}
+
+    def guard(disabled):
+        state.update(ipv6_disabled=disabled, reconciled=True)
+        return ActionResult(True, "")
+
+    monkeypatch.setattr(vm.ipv6guard, "enable", lambda: guard(False))
+    monkeypatch.setattr(vm.ipv6guard, "disable", lambda: guard(True))
+    monkeypatch.setattr(vm.killswitch, "disable", lambda: ActionResult(True, "off"))
+
+    def disconnect(*, for_switch):
+        assert for_switch
+        if not still_active:
+            active.clear()
+        return ActionResult(True, "stopped")
+
+    monkeypatch.setattr(vm, "_disconnect_all", disconnect)
+
+    def resolve(*args):
+        assert state["ipv6_disabled"], "IPv6 opened during teardown"
+        if failure == "cancel":
+            raise switch.SwitchCancelled
+        if failure == "bootstrap":
+            raise OSError("no endpoint answer")
+        return {"vpn.example": "192.0.2.1"}, ["192.0.2.1"]
+
+    monkeypatch.setattr(snapshot, "resolve_profile", resolve)
+    monkeypatch.setattr(
+        vm.killswitch,
+        "enable",
+        lambda **kw: ActionResult(kw.get("extra_ips") != ["192.0.2.1"], "nft rejected"),
+    )
+    if failure == "cancel":
+        with pytest.raises(switch.SwitchCancelled):
+            switch._guarded_connect(provider, connection)
+        assert state == {"ipv6_disabled": True, "reconciled": False}
+    else:
+        assert not switch._guarded_connect(provider, connection).success
+        assert state == {"ipv6_disabled": still_active, "reconciled": True}
+    assert seen == []
 
 
 def test_cancelled_bootstrap_closes_dns(numeric_switch, monkeypatch):

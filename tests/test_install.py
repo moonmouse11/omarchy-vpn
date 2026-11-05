@@ -1,9 +1,12 @@
+import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import installwizard
+from app import cli
 
 # captured at import, before conftest's autouse fixtures fake subprocess.run
 # and set subprocess.Popen to None (see test_lazyimports.py)
@@ -97,7 +100,7 @@ def test_install_wizard_flag_takes_no_path(monkeypatch):
     seen = []
     monkeypatch.setattr("sys.argv", ["vpn_manager.py", "--install-wizard"])
     monkeypatch.setenv("OMARCHY_VPN_WIZARD_FD", "3")
-    monkeypatch.setattr(vpn_manager.os, "fstat", lambda fd: None)
+    monkeypatch.setattr(cli, "os", SimpleNamespace(environ=os.environ, fstat=lambda fd: None))
     monkeypatch.setattr(
         "installwizard.run", lambda prompter, out: seen.append(out) or 0, raising=True
     )
@@ -113,7 +116,7 @@ def test_install_wizard_without_fd_3_refuses_before_any_question(monkeypatch):
     monkeypatch.setattr("sys.argv", ["vpn_manager.py", "--install-wizard"])
     monkeypatch.setattr("installwizard.run", lambda *a: asked.append(a) or 0)
     monkeypatch.setenv("OMARCHY_VPN_WIZARD_FD", "3")
-    monkeypatch.setattr(vpn_manager.os, "fstat", _closed)
+    monkeypatch.setattr(cli, "os", SimpleNamespace(environ=os.environ, fstat=_closed))
     with pytest.raises(SystemExit) as e:
         vpn_manager.main()
     assert "3>" in str(e.value.code)  # how to run it, not a traceback
@@ -128,7 +131,7 @@ def test_install_wizard_ignores_an_fd_3_install_sh_did_not_open(monkeypatch):
     monkeypatch.setattr("sys.argv", ["vpn_manager.py", "--install-wizard"])
     monkeypatch.setattr("installwizard.run", lambda *a: asked.append(a) or 0)
     monkeypatch.delenv("OMARCHY_VPN_WIZARD_FD", raising=False)
-    monkeypatch.setattr(vpn_manager.os, "fstat", lambda fd: None)  # fd 3 open
+    monkeypatch.setattr(cli, "os", SimpleNamespace(environ=os.environ, fstat=lambda fd: None))
     with pytest.raises(SystemExit) as e:
         vpn_manager.main()
     assert "install.sh" in str(e.value.code)

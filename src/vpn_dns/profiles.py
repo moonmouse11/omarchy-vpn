@@ -8,10 +8,11 @@ from dataclasses import dataclass
 from itertools import pairwise
 
 _WG_HEADER = re.compile(r"\s*\[([^]]+)\]\s*(?:#.*)?$")
-_WG_HOST = re.compile(r"\s*Endpoint\s*=\s*(\[[^]]+\]|[^:\s]+)\s*:\s*[0-9]+", re.IGNORECASE)
+_WG_HOST = re.compile(r"\s*Endpoint\s*=\s*(\[[^]]+\]|[^:\s]+)\s*:\s*(?a:\d+)", re.IGNORECASE)
 _PUBLIC_KEY = re.compile(r"\s*PublicKey\s*=\s*([^#\s]+)", re.IGNORECASE)
-_REMOTE = re.compile(r"""\s*(?:setenv\s+opt\s+)?(?:--)?remote\s+("[^"\n]*"|'[^'\n]*'|[^\s#;]+)""")
-_RANDOM = re.compile(r"\s*(?:setenv\s+opt\s+)?(?:--)?remote-random-hostname\s*(?:[#;].*)?$")
+_REMOTE = re.compile(r"\s*(?:(?:--)?setenv\s+opt\s+)?(?:--)?remote\s+")
+_REMOTE_HOST = re.compile(r""""[^"\n]*"|'[^'\n]*'|[^\s#;]+""")
+_RANDOM = re.compile(r"\s*(?:(?:--)?setenv\s+opt\s+)?(?:--)?remote-random-hostname\s*(?:[#;].*)?$")
 _TAG = re.compile(r"\s*<(/?)([a-zA-Z0-9_-]+)>\s*(?:[#;].*)?$")
 
 
@@ -81,6 +82,29 @@ def _wg_endpoints(lines: list[str]) -> list[Endpoint]:
     return found
 
 
+def _ovpn_directive(line: str) -> bool:
+    tokens = line.split()
+    if not tokens or tokens[0].startswith(("#", ";")):
+        return False
+    options = tokens[:1]
+    if tokens[0].removeprefix("--") == "setenv":
+        options = tokens[:3] if len(tokens) > 1 and tokens[1] == "opt" else tokens[:2]
+    # Native quoting/escaping of option names must not hide a hostname from this parser.
+    if any(char in token for token in options for char in "\"'\\"):
+        raise ValueError("Unsupported OpenVPN directive syntax; use plain option names")
+    return True
+
+
+def _ovpn_remote(line: str, index: int) -> Endpoint | None:
+    directive = _REMOTE.match(line)
+    if directive is None:
+        return None
+    host = _REMOTE_HOST.match(line, directive.end())
+    if host is None:
+        return None
+    return Endpoint(index, host.start(), host.end(), host[0].strip("\"'"))
+
+
 def _ovpn_endpoints(lines: list[str]) -> tuple[list[Endpoint], list[int]]:
     found = []
     random_lines = []
@@ -91,10 +115,12 @@ def _ovpn_endpoints(lines: list[str]) -> tuple[list[Endpoint], list[int]]:
             if tag and tag[1] == "/" and tag[2].lower() == inline:
                 inline = ""
             continue
+        if not _ovpn_directive(line):
+            continue
         if tag and not tag[1] and tag[2].lower() != "connection":
             inline = tag[2].lower()
-        elif match := _REMOTE.match(line):
-            found.append(Endpoint(i, match.start(1), match.end(1), match[1].strip("\"'")))
+        elif remote := _ovpn_remote(line, i):
+            found.append(remote)
         elif _RANDOM.fullmatch(line.strip()):
             random_lines.append(i)
     if inline:

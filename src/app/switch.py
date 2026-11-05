@@ -16,6 +16,7 @@ from app.helpers import notify
 from app.registry import _provider_pool, active_connections
 from providers.base import (
     ActionResult,
+    PingTarget,
     VPNConnection,
     run_helper,
     terminate_registered_subprocesses,
@@ -343,113 +344,142 @@ def _killswitch_apply(provider, ips: list[str], ifaces: list[str], dns: list[str
     return killswitch.enable(extra_ips=ips, ifaces=ifaces, dns=dns, fresh=True)
 
 
-def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
-    """Connect with killswitch interplay.
+class _ConnectFirewall:
+    """Keep the armed snapshot and bootstrap permission available to finally cleanup."""
 
-    Arm cached addresses and a dedicated marked bootstrap allowance first;
-    resolve through uplink-bound sockets, then apply the selected addresses.
+    def __init__(self, provider):
+        self.provider = provider
+        self.enabled = killswitch.is_enabled()
+        self.wanted = _killswitch_wanted(provider, self.enabled)
+        self.ips: list[str] = []
+        self.ifaces: list[str] = []
+        self.resolvers: list[str] = []
+        self.result: ActionResult | None = None
+        self.bootstrap_open = False
+
+    def _apply(self) -> None:
+        self.result = _killswitch_apply(self.provider, self.ips, self.ifaces, self.resolvers)
+        self.bootstrap_open = self.bootstrap_open or bool(
+            self.resolvers and self.result and self.result.success
+        )
+
+    def arm(self, connection: VPNConnection, numeric: bool) -> ActionResult | None:
+        if not self.wanted:
+            if self.enabled:
+                self.result = killswitch.suspend_for(self.provider.name)
+            return self.result
+        self.resolvers = killswitch.system_resolvers()
+        if self.resolvers:
+            # Arm before lookups; only the dedicated marked sockets may use bootstrap DNS.
+            self.ips, self.ifaces = _killswitch_targets(self.provider, connection, cached_only=True)
+            self._apply()
+            if not self.bootstrap_open:
+                return ActionResult(
+                    False, self.result.message if self.result else "Could not arm killswitch"
+                )
+        fresh, self.ifaces = _killswitch_targets(self.provider, connection, cached_only=numeric)
+        if self.result is None or not self.result.success or set(fresh) != set(self.ips):
+            self.ips = fresh
+            self._apply()
+        return self.result
+
+    def select_numeric(self, connection: VPNConnection, kind: str) -> bool:
+        self.ips = connection.endpoint_ipv4 or []
+        self.ifaces = ["tun*"] if kind == "ovpn" else [connection.interface or connection.name]
+        if not self.wanted:
+            return True
+        self._apply()
+        return self.result is not None and self.result.success
+
+    def close(self, connected: bool, cfg) -> ActionResult | None:
+        if self.bootstrap_open:
+            closed = _close_dns_hole(self.provider, self.ips, self.ifaces, connected, cfg)
+            if closed is not None:
+                self.result = closed
+        return self.result
+
+
+def _disconnect_other_connections(provider, connection: VPNConnection) -> ActionResult | None:
+    # Same-provider server replacement belongs to the provider; other tunnels fight over routing.
+    others = [
+        c
+        for c in active_connections(providers=list(_provider_pool()))
+        if not (c.provider == provider.name and c.name == connection.name)
+    ]
+    if not others:
+        return None
+    down = _disconnect_all(for_switch=True)  # already under SWITCH_LOCK
+    if not down.success:
+        _sync_ipv6_guard()  # the teardown may have dropped everything anyway
+    return down
+
+
+def _prepare_connection(
+    provider, connection: VPNConnection, firewall: _ConnectFirewall
+) -> ActionResult | None:
+    kind = getattr(provider, "helper_kind", "")
+    if kind in ("wg", "awg", "ovpn"):
+        try:
+            addresses, selected_ips = snapshot.resolve_profile(kind, connection.name)
+        except (OSError, ValueError) as error:
+            _sync_ipv6_guard()
+            return ActionResult(False, f"Endpoint bootstrap failed: {error}")
+        connection.endpoint_addresses = addresses
+        connection.endpoint_ipv4 = selected_ips
+        if not firewall.select_numeric(connection, kind):
+            _sync_ipv6_guard()
+            return ActionResult(False, "Could not install endpoint firewall rules")
+    return None
+
+
+def _after_connect(result: ActionResult, cfg) -> None:
+    if result.success and cfg.dns_autotest:
+        from app.checks import request_dns_autotest  # noqa: PLC0415 — break import cycle
+
+        _vm_fn("request_dns_autotest", request_dns_autotest)()
+    # Happ acknowledges before its TUN exists: success, not a stale active probe, earns the guard.
+    if result.success and cfg.ipv6_guard:
+        _apply_ipv6_guard(ipv6guard.disable())
+    else:
+        _sync_ipv6_guard()
+
+
+def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
+    """Arm, tear down, bootstrap and start; always retire the bootstrap permission.
+
     Ordinary apps/shared-resolved never get a connect-time DNS exception.
-    Finally remove bootstrap permission; native profiles contain numeric
-    endpoints. NetworkManager still suspends an enabled kill switch.
+    Native profiles use the same numeric snapshot as the firewall.
+    NetworkManager still suspends an enabled kill switch.
     """
     cfg = config.load_config()
-    enabled = killswitch.is_enabled()
-    wanted = _killswitch_wanted(provider, enabled)
-    ks_result = None
-    ips: list[str] = []
-    ifaces: list[str] = []
-    hole_open = False
-    numeric_kind = getattr(provider, "helper_kind", "")
-    numeric = numeric_kind in ("wg", "awg", "ovpn")
+    firewall = _ConnectFirewall(provider)
     connection.endpoint_addresses = None
     connection.endpoint_ipv4 = None
     result = ActionResult(False, "")
     try:
-        if wanted:
-            resolvers = killswitch.system_resolvers()
-            if resolvers:
-                # Arm first, including a previously disabled switch; DNS uses only marked sockets.
-                ips, ifaces = _killswitch_targets(provider, connection, cached_only=True)
-                ks_result = _killswitch_apply(provider, ips, ifaces, resolvers)
-                hole_open = ks_result is not None and ks_result.success
-                if not hole_open:
-                    return ActionResult(
-                        False, ks_result.message if ks_result else "Could not arm killswitch"
-                    )
-            fresh, ifaces = _killswitch_targets(provider, connection, cached_only=numeric)
-            if ks_result is None or not ks_result.success or set(fresh) != set(ips):
-                ips = fresh
-                ks_result = _killswitch_apply(provider, ips, ifaces, resolvers)
-                hole_open = hole_open or bool(resolvers and ks_result and ks_result.success)
-        elif enabled:
-            ks_result = killswitch.suspend_for(provider.name)
-        if ks_result is not None and not ks_result.success:
-            return ActionResult(False, ks_result.message)
-        # one tunnel at a time: tear down anything else that is up before
-        # connecting (two VPNs fight over the default route and traffic
-        # splits unpredictably). Same-provider server switching is handled
-        # inside the providers themselves (Happ/Keys stop their previous xray).
-        others = [
-            c
-            for c in active_connections(providers=list(_provider_pool()))
-            if not (c.provider == provider.name and c.name == connection.name)
-        ]
-        if others:
-            down = _disconnect_all(for_switch=True)  # already under SWITCH_LOCK
-            if not down.success:
-                _sync_ipv6_guard()  # the teardown may have dropped everything anyway
-                return down
-        if numeric:
-            try:
-                addresses, selected_ips = snapshot.resolve_profile(numeric_kind, connection.name)
-            except (OSError, ValueError) as error:
-                result = ActionResult(False, f"Endpoint bootstrap failed: {error}")
-                return result
-            connection.endpoint_addresses = addresses
-            connection.endpoint_ipv4 = selected_ips
-            ips = selected_ips
-            ifaces = (
-                [connection.interface or connection.name] if numeric_kind != "ovpn" else ["tun*"]
-            )
-            if wanted:
-                ks_result = _killswitch_apply(provider, ips, ifaces, resolvers)
-                if ks_result is None or not ks_result.success:
-                    result = ActionResult(False, "Could not install endpoint firewall rules")
-                    return result
+        numeric = getattr(provider, "helper_kind", "") in ("wg", "awg", "ovpn")
+        armed = firewall.arm(connection, numeric)
+        if armed is not None and not armed.success:
+            return ActionResult(False, armed.message)
+        down = _disconnect_other_connections(provider, connection)
+        if down is not None and not down.success:
+            return down
+        prepared = _prepare_connection(provider, connection, firewall)
+        if prepared is not None:
+            result = prepared
+            return result
         tuns_before = _tun_interfaces()
         result = provider.connect(connection)
-        if hole_open and result.success and provider.name == "OpenVPN":
-            # Preserve OpenVPN readiness timing; its runtime remotes are numeric,
-            # and this allowance grants nothing to ordinary/native DNS sockets.
+        if firewall.bootstrap_open and result.success and provider.name == "OpenVPN":
+            # Numeric remotes do not need DNS here; preserve the existing TUN readiness timing.
             _wait_for_new_tun(tuns_before, getattr(_vm(), "OPENVPN_TUN_WAIT", OPENVPN_TUN_WAIT))
     finally:
         connection.endpoint_addresses = None
         connection.endpoint_ipv4 = None
-        if hole_open:
-            closed = _close_dns_hole(provider, ips, ifaces, result.success, cfg)
-            if closed is not None:
-                ks_result = closed
+        ks_result = firewall.close(result.success, cfg)
     if ks_result and not ks_result.success:
         notify("Killswitch — warning", ks_result.message)
-    if result.success:
-        if cfg.dns_autotest:
-            from app.checks import request_dns_autotest  # noqa: PLC0415 — break import cycle
-
-            autotest = getattr(_vm(), "request_dns_autotest", None)
-            if autotest is not None and autotest is not request_dns_autotest:
-                autotest()
-            else:
-                request_dns_autotest()
-        # don't re-probe: Happ reports success on happd's start ack, before
-        # xray has created its TUN (and happd's process list may be the
-        # cached pre-switch one) — a probe then sees nothing up and turned
-        # IPv6 ON under a live tunnel. Success is proof enough.
-        if cfg.ipv6_guard:
-            _apply_ipv6_guard(ipv6guard.disable())
-        else:
-            _sync_ipv6_guard()
-    else:
-        _sync_ipv6_guard()
+    _after_connect(result, cfg)
     return result
 
 
@@ -595,6 +625,12 @@ def disconnect_all() -> ActionResult:
         return _cancelled("disconnecting everything")
 
 
+def _disconnect_connection(provider, connection: VPNConnection) -> bool:
+    result = provider.disconnect(connection)
+    # A failed reply may still mean stopped, e.g. one Happ stop ends every happd process.
+    return result.success or not any(c.active for c in provider.connections())
+
+
 def _disconnect_all(for_switch: bool = False) -> ActionResult:
     """for_switch: a connect is tearing the old tunnel down — leave IPv6 off;
     the connect's own result decides (else IPv6 came back on between the old
@@ -608,12 +644,7 @@ def _disconnect_all(for_switch: bool = False) -> ActionResult:
         for conn in provider.connections():
             if not conn.active:
                 continue
-            result = provider.disconnect(conn)
-            if result.success:
-                stopped.append(f"{provider.name}: {conn.name}")
-            elif not any(c.active for c in provider.connections()):
-                # reported failure, but nothing is up anymore — e.g. one
-                # Happ disconnect stops every happd process at once
+            if _disconnect_connection(provider, conn):
                 stopped.append(f"{provider.name}: {conn.name}")
             else:
                 failed.append(f"{provider.name}: {conn.name}")
@@ -623,6 +654,23 @@ def _disconnect_all(for_switch: bool = False) -> ActionResult:
         return ActionResult(False, "Failed: " + ", ".join(failed))
     message = ", ".join(stopped) if stopped else "nothing was active"
     return ActionResult(True, f"Disconnected: {message}")
+
+
+def _provider_tunnel_ifaces(provider, targets: list[PingTarget]) -> list[str]:
+    if provider.name in ("WireGuard", "AmneziaWG"):
+        # IFNAMSIZ includes NUL; longer profile names cannot be interfaces and nft rejects them.
+        names = [target[0] for target in targets]
+        for name in names:
+            if len(name) > 15:
+                logutil.log(f"killswitch: iface name too long, skipped: {name}")
+        return [name for name in names if len(name) <= 15]
+    if not targets:
+        return []
+    if provider.name == "OpenVPN":
+        return ["tun*"]
+    if isinstance(provider, KeysProvider):
+        return [provider.tunnel_iface]
+    return []
 
 
 def _killswitch_all_targets(cached_only: bool = False) -> tuple[list[str], list[str]]:
@@ -646,22 +694,7 @@ def _killswitch_all_targets(cached_only: bool = False) -> tuple[list[str], list[
             logutil.log(f"killswitch targets: {provider.name} skipped: {e!r}")
             continue
         targets += [(t[0], t[1], t[2]) for t in pt]
-        if provider.name in ("WireGuard", "AmneziaWG"):
-            # wg-quick/awg-quick name the interface after the profile, and
-            # the kernel caps interface names at 15 chars (IFNAMSIZ=16 with
-            # NUL) — longer names can never exist as wg/awg interfaces (such
-            # profiles are unused or driven by NetworkManager, which has
-            # no such limit) and nft rejects the whole ruleset for them.
-            ifaces += [t[0] for t in pt if len(t[0]) <= 15]
-            for t in pt:
-                n = t[0]
-                if len(n) > 15:
-                    logutil.log(f"killswitch: iface name too long, skipped: {n}")
-        elif provider.name == "OpenVPN":
-            if pt:
-                ifaces.append("tun*")  # OpenVPN tunnel interfaces
-        elif isinstance(provider, KeysProvider) and pt:
-            ifaces.append(provider.tunnel_iface)
+        ifaces += _provider_tunnel_ifaces(provider, pt)
     targets += happmeta.subscription_targets()  # refreshes must survive the killswitch
     return killswitch.resolve_endpoint_ips(targets, cached_only=cached_only), sorted(set(ifaces))
 

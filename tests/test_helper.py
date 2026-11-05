@@ -2,9 +2,12 @@
 AmneziaWG/OpenVPN. Run for real (bash), against a temp tree: the directory
 overrides and DRY_RUN (print, don't run) work only outside sudo."""
 
+import fcntl
 import os
 import pwd
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -510,6 +513,86 @@ def test_profile_info_uses_only_fixed_isolated_root_module(tree):
     assert "describe wg home" in result.stdout
     assert tree("profile-info", "wg", "../secret").returncode != 0
     assert tree("profile-info", "wg", "home", "extra").returncode != 0
+
+
+@pytest.mark.parametrize("kind", ["wg", "awg", "ovpn"])
+def test_delete_serializes_and_discards_old_runtime_before_reimport(
+    tree, tmp_path, monkeypatch, kind
+):
+    from test_dnsprofiles import WG as SAVE_WG
+
+    from vpn_dns import runtime
+
+    conf = tree.dirs[kind] / "home.conf"
+    original = "client\nremote vpn.example 1194\n" if kind == "ovpn" else SAVE_WG
+    conf.write_text(original)
+    monkeypatch.setattr(runtime, "DIRECTORIES", {kind: tree.dirs[kind]})
+    monkeypatch.setattr(runtime, "RUNTIME", tmp_path / "runtime")
+    path = runtime.prepare(kind, "home", {"vpn.example": "192.0.2.1"})
+    runtime.mark(kind, "home", "stopping")
+    code = (
+        f"import sys; sys.path.insert(0, {str(SRC)!r}); from vpn_dns import runtime; "
+        "from pathlib import Path; "
+        f"runtime.DIRECTORIES = {{{kind!r}: Path({str(conf.parent)!r})}}; "
+        f"runtime.RUNTIME = Path({str(runtime.RUNTIME)!r}); sys.exit(runtime.main())"
+    )
+    lock = tmp_path / "lock"
+    script = tmp_path / "helper"
+    script.write_text(
+        HELPER.read_text()
+        .replace("/run/omarchy-vpn-profile.lock", str(lock))
+        .replace(
+            "profile_runtime() {",
+            "profile_runtime() {\n    "
+            + shlex.join([sys.executable, "-I", "-c", code])
+            + ' "$@"\n    return $?\n',
+        )
+    )
+    with lock.open("w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with _REAL_POPEN(
+            ["bash", str(script), "rm", kind, "home"],
+            env={"PATH": "/usr/bin:/bin", f"{kind.upper()}_DIR": str(conf.parent)},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ) as proc:
+            try:
+                with pytest.raises(subprocess.TimeoutExpired):
+                    proc.wait(timeout=0.2)
+                assert conf.exists()
+                assert path.exists()
+            finally:
+                fcntl.flock(held, fcntl.LOCK_UN)
+            _, error = proc.communicate(timeout=8)
+            assert proc.returncode == 0, error
+    assert not conf.exists()
+    assert not path.parent.exists()
+    conf.write_text(original.replace("private", "replacement"))
+    assert not runtime.recover(kind, "home")
+    assert conf.read_text() == original.replace("private", "replacement")
+
+
+@pytest.mark.parametrize("kind", ["wg", "awg", "ovpn"])
+def test_delete_refuses_active_profile_before_discard(tree, tmp_path, kind):
+    conf = tree.dirs[kind] / "home.conf"
+    conf.write_text(WG)
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    ip = binaries / "ip"
+    ip.write_text('#!/bin/sh\necho " wireguard"\nexit 0\n')
+    ip.chmod(0o755)
+    (tree.dirs["run"] / "client-home.pid").write_text("1234")
+    result = tree(
+        "rm",
+        kind,
+        "home",
+        script=_helper_without_runtime(tmp_path),
+        extra_env={"DRY_RUN": "", "PATH": f"{binaries}:/usr/bin:/bin"},
+    )
+    assert result.returncode != 0
+    assert "stop the profile" in result.stderr
+    assert conf.read_text() == WG
 
 
 def test_failed_quick_up_preserves_exit_code(tree, tmp_path):

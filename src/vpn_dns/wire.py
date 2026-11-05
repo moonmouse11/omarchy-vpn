@@ -70,6 +70,12 @@ def _name(packet: bytes, offset: int) -> tuple[str, int]:
     raise ValueError("Invalid DNS name bounds")
 
 
+def _address(packet: bytes, offset: int, end: int) -> str:
+    if end - offset != 4:
+        raise ValueError("Invalid DNS A length")
+    return str(ipaddress.IPv4Address(packet[offset:end]))
+
+
 def _records(packet: bytes, offset: int, count: int) -> tuple[dict[str, str], dict[str, str]]:
     addresses: dict[str, str] = {}
     aliases: dict[str, str] = {}
@@ -83,9 +89,7 @@ def _records(packet: bytes, offset: int, count: int) -> tuple[dict[str, str], di
         if end > len(packet):
             raise ValueError("Truncated DNS resource data")
         if family == 1 and kind == 1:
-            if size != 4:
-                raise ValueError("Invalid DNS A length")
-            addresses.setdefault(owner, str(ipaddress.IPv4Address(packet[offset:end])))
+            addresses.setdefault(owner, _address(packet, offset, end))
         elif family == 1 and kind == 5:
             target, consumed = _name(packet, offset)
             if consumed != end:
@@ -107,8 +111,11 @@ def answer(packet: bytes, host: str, identifier: int) -> str | None:
         raise ValueError("Unmatched DNS response question")
     if flags & 0x200:
         raise Truncated("DNS UDP response truncated")
-    if flags & 0xF:
+    rcode = flags & 0xF
+    if rcode == 3:  # NXDOMAIN is terminal; server failures may use another configured upstream.
         return None
+    if rcode:
+        raise ValueError(f"DNS server returned error {rcode}")
     if count > 256:
         raise ValueError("Too many endpoint DNS answers")
     addresses, aliases = _records(packet, offset + 4, count)

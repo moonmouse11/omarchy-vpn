@@ -75,6 +75,46 @@ def test_recover_interrupted_native_save_keeps_its_changes(files):
     assert not path.parent.exists()
 
 
+@pytest.mark.parametrize("kind", ["wg", "awg"])
+@pytest.mark.parametrize("replacement", ["edit", "reimport"])
+def test_failed_save_recovery_refuses_replacement_credentials(
+    files, monkeypatch, kind, replacement
+):
+    mod, source = files
+    path = mod.prepare(kind, "office", {"vpn.example": "192.0.2.1"})
+    mod.mark(kind, "office", "stopping")
+    path.write_text(path.read_text().replace("51820", "51822"))
+    with monkeypatch.context() as patch:
+        patch.setattr(mod, "_atomic_text", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
+        with pytest.raises(OSError, match="disk full"):
+            mod.finish(kind, "office", save=True)
+    if replacement == "reimport":
+        source.unlink()
+    newer = WG.replace("PrivateKey = private", "PrivateKey = replacement")
+    source.write_text(newer)
+    with pytest.raises(ValueError, match="changed"):
+        mod.recover(kind, "office")
+    assert source.read_text() == newer
+    assert path.exists()
+    assert (path.parent / ".saving").exists()
+    assert "51822" in path.read_text()
+
+
+def test_recovery_accepts_already_applied_save_after_retirement_failure(files, monkeypatch):
+    mod, source = files
+    path = mod.prepare("wg", "office", {"vpn.example": "192.0.2.1"})
+    mod.mark("wg", "office", "stopping")
+    path.write_text(path.read_text().replace("51820", "51822"))
+    with monkeypatch.context() as patch:
+        patch.setattr(mod, "_retire", lambda *a: (_ for _ in ()).throw(OSError("rename failed")))
+        with pytest.raises(OSError, match="rename failed"):
+            mod.finish("wg", "office", save=True)
+    assert "vpn.example:51822" in source.read_text()
+    assert mod.recover("wg", "office")
+    assert "vpn.example:51822" in source.read_text()
+    assert not path.parent.exists()
+
+
 def test_profile_metadata_never_exports_secrets(files):
     mod, source = files
     source.write_text(WG + "\n[Peer]\nPublicKey = second\nEndpoint = 192.0.2.9:51820\n")
@@ -83,6 +123,15 @@ def test_profile_metadata_never_exports_secrets(files):
         "ipv4": ["192.0.2.2", "192.0.2.9"],
         "random_hostname": False,
     }
+
+
+def test_openvpn_quoted_remote_is_rejected_before_runtime_creation(files):
+    mod, source = files
+    source.write_text('client\n"remote" vpn.example 1194\n')
+    with pytest.raises(ValueError, match="directive syntax"):
+        mod.prepare("ovpn", "office", {}, expected_ips=[])
+    assert not mod.RUNTIME.exists()
+    assert source.read_text() == 'client\n"remote" vpn.example 1194\n'
 
 
 def test_openvpn_metadata_skips_inline_secrets(files):
@@ -192,7 +241,16 @@ def test_saveconfig_off_never_rewrites_source(files):
 
 
 @pytest.mark.parametrize(
-    "kind,name", [("bad", "office"), ("wg", "../other"), ("wg", "-option"), ("wg", "a" * 16)]
+    "kind,name",
+    [
+        ("bad", "office"),
+        ("wg", "../other"),
+        ("wg", "-option"),
+        ("wg", "a" * 16),
+        ("wg", "é"),
+        ("wg", "a\u0661"),
+        ("ovpn", "office²"),
+    ],
 )
 def test_paths_and_options_cannot_select_profiles(files, kind, name):
     mod, source = files
@@ -206,11 +264,10 @@ def test_dangling_runtime_link_is_not_treated_as_absent(files, tmp_path, action)
     mod, _ = files
     mod.RUNTIME.mkdir(mode=0o700)
     (mod.RUNTIME / "wg-office").symlink_to(tmp_path / "missing")
+    operation = getattr(mod, action)
+    kwargs = {"save": False} if action == "finish" else {}
     with pytest.raises(PermissionError):
-        if action == "current":
-            mod.current("wg", "office")
-        else:
-            mod.finish("wg", "office", save=False)
+        operation("wg", "office", **kwargs)
 
 
 def test_successful_save_with_extra_runtime_file_does_not_block_reconnect(files):
@@ -238,7 +295,8 @@ def test_failed_save_retains_private_recovery_state(files, monkeypatch):
     with pytest.raises(OSError, match="disk full"):
         mod.finish("wg", "office", save=True)
     assert source.read_text() == WG
-    assert path.exists() and (path.parent / ".source").exists()
+    assert path.exists()
+    assert (path.parent / ".source").exists()
 
 
 def test_symlink_profile_and_unsafe_runtime_are_refused(files, tmp_path):

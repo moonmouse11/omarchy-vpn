@@ -83,9 +83,17 @@ The plugin resolves WireGuard, AmneziaWG and OpenVPN endpoint hostnames once, th
 same IPv4 answers to the firewall and a private runtime profile. It does not replace the
 profile's DNS settings. On a plugin-managed disconnect, `SaveConfig=true` keeps native state
 changes while restoring the original hostname for matching WireGuard/AmneziaWG peers.
-External `wg-quick`/systemd operations retain their own native save behavior.
+External `wg-quick`/systemd operations retain their own native save behavior. If the source profile
+changes before a pending save is recovered, recovery refuses to overwrite it and retains the private
+runtime for manual reconciliation. Explicitly deleting an inactive profile discards its old runtime,
+so reimporting the same name cannot restore old credentials.
 
-Bootstrap uses UDP/TCP port 53 to configured upstreams, not a public fallback. IPv4 `/etc/hosts`
+OpenVPN option names must be plain (for example, `remote`, not `"remote"` or an escaped spelling).
+Unsupported directive syntax is rejected before native startup; quoted hostname arguments and
+ordinary trusted hooks/settings remain supported.
+
+Bootstrap uses UDP/TCP port 53 to configured upstreams, not a public fallback. Server errors such as
+SERVFAIL/REFUSED try the next configured upstream within the same deadline; NXDOMAIN stays terminal. IPv4 `/etc/hosts`
 overrides are preserved without a DNS query. Strict DNS-over-TLS and unrecognized local DNS
 proxies are refused rather than silently bypassed; no resolver settings are rewritten.
 The connect-time allowance requires the dedicated socket mark **and** a configured upstream on

@@ -93,6 +93,53 @@ def test_saveconfig_restores_hostnames_by_public_key_and_keeps_state_updates():
     assert "Endpoint = 192.0.2.2:51821" in restored
 
 
+@pytest.mark.parametrize(
+    "directive",
+    [
+        '"remote" vpn.example 1194',
+        "'remote' vpn.example 1194",
+        r"re\mote vpn.example 1194",
+        '"--remote" vpn.example 1194',
+        'setenv opt "remote" vpn.example 1194',
+        'setenv "opt" remote vpn.example 1194',
+        '"setenv" opt remote vpn.example 1194',
+        '"remote-random-hostname"',
+        r"remote-random-hostnam\e",
+    ],
+)
+def test_openvpn_unsupported_directive_spelling_cannot_escape_numeric_rewrite(directive):
+    mod = profiles()
+    original = f"client\n{directive}\n"
+    with pytest.raises(ValueError, match="directive syntax"):
+        mod.describe("ovpn", original)
+    with pytest.raises(ValueError, match="directive syntax"):
+        mod.numeric_config("ovpn", original, {})
+
+
+@pytest.mark.parametrize(
+    "directive",
+    [
+        "remote",
+        "--remote",
+        "setenv opt remote",
+        "setenv opt --remote",
+        "--setenv opt remote",
+        "--setenv opt --remote",
+    ],
+)
+def test_openvpn_plain_option_forms_are_numeric_and_trusted_settings_remain(directive):
+    mod = profiles()
+    original = (
+        f"client\n<connection>\n{directive} vpn.example 1194\n</connection>\n"
+        'up "/etc/trusted hook"\nsetenv MY_VALUE "keep this"\n'
+        '<key>\n"remote" secret.example 1194\n</key>\n# "remote" comment\n'
+    )
+    assert mod.describe("ovpn", original)["hosts"] == ["vpn.example"]
+    assert mod.numeric_config("ovpn", original, {"vpn.example": "192.0.2.7"}) == original.replace(
+        "vpn.example", "192.0.2.7"
+    )
+
+
 def test_openvpn_multiple_remotes_blocks_and_random_hostname_are_numeric():
     mod = profiles()
     original = (

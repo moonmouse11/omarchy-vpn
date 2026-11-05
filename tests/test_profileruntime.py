@@ -75,6 +75,45 @@ def test_recover_interrupted_native_save_keeps_its_changes(files):
     assert not path.parent.exists()
 
 
+@pytest.mark.parametrize("kind", ["wg", "awg"])
+@pytest.mark.parametrize("replacement", ["edit", "reimport"])
+def test_failed_save_recovery_refuses_replacement_credentials(
+    files, monkeypatch, kind, replacement
+):
+    mod, source = files
+    path = mod.prepare(kind, "office", {"vpn.example": "192.0.2.1"})
+    mod.mark(kind, "office", "stopping")
+    path.write_text(path.read_text().replace("51820", "51822"))
+    with monkeypatch.context() as patch:
+        patch.setattr(mod, "_atomic_text", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
+        with pytest.raises(OSError, match="disk full"):
+            mod.finish(kind, "office", save=True)
+    if replacement == "reimport":
+        source.unlink()
+    newer = WG.replace("PrivateKey = private", "PrivateKey = replacement")
+    source.write_text(newer)
+    with pytest.raises(ValueError, match="changed"):
+        mod.recover(kind, "office")
+    assert source.read_text() == newer
+    assert path.exists() and (path.parent / ".saving").exists()
+    assert "51822" in path.read_text()
+
+
+def test_recovery_accepts_already_applied_save_after_retirement_failure(files, monkeypatch):
+    mod, source = files
+    path = mod.prepare("wg", "office", {"vpn.example": "192.0.2.1"})
+    mod.mark("wg", "office", "stopping")
+    path.write_text(path.read_text().replace("51820", "51822"))
+    with monkeypatch.context() as patch:
+        patch.setattr(mod, "_retire", lambda *a: (_ for _ in ()).throw(OSError("rename failed")))
+        with pytest.raises(OSError, match="rename failed"):
+            mod.finish("wg", "office", save=True)
+    assert "vpn.example:51822" in source.read_text()
+    assert mod.recover("wg", "office")
+    assert "vpn.example:51822" in source.read_text()
+    assert not path.parent.exists()
+
+
 def test_profile_metadata_never_exports_secrets(files):
     mod, source = files
     source.write_text(WG + "\n[Peer]\nPublicKey = second\nEndpoint = 192.0.2.9:51820\n")
@@ -83,6 +122,15 @@ def test_profile_metadata_never_exports_secrets(files):
         "ipv4": ["192.0.2.2", "192.0.2.9"],
         "random_hostname": False,
     }
+
+
+def test_openvpn_quoted_remote_is_rejected_before_runtime_creation(files):
+    mod, source = files
+    source.write_text('client\n"remote" vpn.example 1194\n')
+    with pytest.raises(ValueError, match="directive syntax"):
+        mod.prepare("ovpn", "office", {}, expected_ips=[])
+    assert not mod.RUNTIME.exists()
+    assert source.read_text() == 'client\n"remote" vpn.example 1194\n'
 
 
 def test_openvpn_metadata_skips_inline_secrets(files):

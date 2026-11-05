@@ -102,6 +102,59 @@ def test_failed_bootstrap_never_connects_and_closes_dns(numeric_switch, monkeypa
     assert connection.endpoint_ipv4 is None
 
 
+@pytest.mark.parametrize("failure", ["bootstrap", "firewall", "cancel"])
+@pytest.mark.parametrize("still_active", [False, True])
+def test_failed_switch_reconciles_ipv6_but_cancellation_preserves_handover(
+    numeric_switch, monkeypatch, failure, still_active
+):
+    provider, connection, seen, _ = numeric_switch
+    cfg = vm.config.load_config()
+    cfg.killswitch_lockdown = False
+    vm.config.save_config(cfg)
+    active = [VPNConnection("old", "Happ", True)]
+    monkeypatch.setattr(switch, "active_connections", lambda **kw: active[:])
+    state = {"ipv6_disabled": True, "reconciled": False}
+
+    def guard(disabled):
+        state.update(ipv6_disabled=disabled, reconciled=True)
+        return ActionResult(True, "")
+
+    monkeypatch.setattr(vm.ipv6guard, "enable", lambda: guard(False))
+    monkeypatch.setattr(vm.ipv6guard, "disable", lambda: guard(True))
+    monkeypatch.setattr(vm.killswitch, "disable", lambda: ActionResult(True, "off"))
+
+    def disconnect(*, for_switch):
+        assert for_switch
+        if not still_active:
+            active.clear()
+        return ActionResult(True, "stopped")
+
+    monkeypatch.setattr(vm, "_disconnect_all", disconnect)
+
+    def resolve(*args):
+        assert state["ipv6_disabled"], "IPv6 opened during teardown"
+        if failure == "cancel":
+            raise switch.SwitchCancelled
+        if failure == "bootstrap":
+            raise OSError("no endpoint answer")
+        return {"vpn.example": "192.0.2.1"}, ["192.0.2.1"]
+
+    monkeypatch.setattr(snapshot, "resolve_profile", resolve)
+    monkeypatch.setattr(
+        vm.killswitch,
+        "enable",
+        lambda **kw: ActionResult(kw.get("extra_ips") != ["192.0.2.1"], "nft rejected"),
+    )
+    if failure == "cancel":
+        with pytest.raises(switch.SwitchCancelled):
+            switch._guarded_connect(provider, connection)
+        assert state == {"ipv6_disabled": True, "reconciled": False}
+    else:
+        assert not switch._guarded_connect(provider, connection).success
+        assert state == {"ipv6_disabled": still_active, "reconciled": True}
+    assert seen == []
+
+
 def test_cancelled_bootstrap_closes_dns(numeric_switch, monkeypatch):
     provider, connection, seen, rules = numeric_switch
 

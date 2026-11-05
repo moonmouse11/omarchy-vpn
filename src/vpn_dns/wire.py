@@ -107,8 +107,11 @@ def answer(packet: bytes, host: str, identifier: int) -> str | None:
         raise ValueError("Unmatched DNS response question")
     if flags & 0x200:
         raise Truncated("DNS UDP response truncated")
-    if flags & 0xF:
+    rcode = flags & 0xF
+    if rcode == 3:  # NXDOMAIN is terminal; server failures may use another configured upstream.
         return None
+    if rcode:
+        raise ValueError(f"DNS server returned error {rcode}")
     if count > 256:
         raise ValueError("Too many endpoint DNS answers")
     addresses, aliases = _records(packet, offset + 4, count)

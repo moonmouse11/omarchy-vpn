@@ -389,6 +389,17 @@ cmd_import() {
 
 cmd_rm() {
     local conf
+    if [[ -z ${DRY_RUN:-} ]]; then
+        if [[ $1 == ovpn ]]; then
+            [[ ! -f $PID_DIR/client-$2.pid ]] || die "stop the profile before deleting it"
+        else
+            ! existing_tunnel "$1" "$2" || die "stop the profile before deleting it"
+        fi
+        # Old overlength WG names cannot have a numeric runtime, but remain deletable.
+        if [[ $1 == ovpn || ${#2} -le 15 ]]; then
+            profile_runtime discard "$1" "$2" || return
+        fi
+    fi
     if [[ $1 == ovpn ]]; then
         conf=$(need_conf ovpn "$2")
         run rm -f "$conf"
@@ -519,7 +530,7 @@ check_name "$name"
     || die "invalid profile name: ${name@Q} (WireGuard names are at most 15 characters)"
 # Serialize native work past the lifetime of a superseded user switch process.
 # Native commands close fd 9 so a daemon or background hook cannot retain this lock.
-if [[ -z ${DRY_RUN:-} && ( $verb == up || $verb == up-numeric || $verb == down ) ]]; then
+if [[ -z ${DRY_RUN:-} && ( $verb == up || $verb == up-numeric || $verb == down || $verb == rm || $verb == import ) ]]; then
     umask 077
     exec 9>/run/omarchy-vpn-profile.lock
     flock -w 5 9 || die "another profile operation is still stopping"

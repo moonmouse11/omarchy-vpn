@@ -68,11 +68,14 @@ def test_bad_handshake_closes_received_fds(mode, payload, count):
 
     client, server = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     with client, server:
-        before = len(list(Path("/proc/self/fd").iterdir()))
+        before = set(Path("/proc/self/fd").iterdir())
         socket.send_fds(server, [payload], [server.fileno()] * count)
         with pytest.raises(OSError):
             launcher.receive_tun(client, mode)
-        assert len(list(Path("/proc/self/fd").iterdir())) == before
+        # GC may close unrelated sockets; only newly leaked descriptors are a failure.
+        assert set(Path("/proc/self/fd").iterdir()) <= before
+        client.getpeername()
+        server.getpeername()
 
 
 def test_send_config_is_bounded_and_readiness_has_no_secret(monkeypatch, core_library):

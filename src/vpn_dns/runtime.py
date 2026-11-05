@@ -180,8 +180,13 @@ def finish(kind: str, name: str, *, save: bool) -> None:
         original, _ = _read(directory / ".source")
         if re.search(r"(?im)^\s*SaveConfig\s*=\s*true\s*(?:#.*)?$", original):
             saved, _ = _read(directory / source.name)
-            _, info = _read(source)
-            _atomic_text(source, dnsprofiles.restore_hostnames(saved, original), info)
+            current_text, info = _read(source)
+            restored = dnsprofiles.restore_hostnames(saved, original)
+            # A retry may see our completed save, but must never replace newer credentials.
+            if current_text not in (original, restored):
+                raise ValueError("Source profile changed; private recovery data retained")
+            if current_text != restored:
+                _atomic_text(source, restored, info)
     # Failed saves retain the private snapshot for recovery instead of losing user state.
     _retire(directory, source.name)
 

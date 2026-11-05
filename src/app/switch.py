@@ -404,6 +404,7 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
                 addresses, selected_ips = snapshot.resolve_profile(numeric_kind, connection.name)
             except (OSError, ValueError) as error:
                 result = ActionResult(False, f"Endpoint bootstrap failed: {error}")
+                _sync_ipv6_guard()
                 return result
             connection.endpoint_addresses = addresses
             connection.endpoint_ipv4 = selected_ips
@@ -415,6 +416,7 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
                 ks_result = _killswitch_apply(provider, ips, ifaces, resolvers)
                 if ks_result is None or not ks_result.success:
                     result = ActionResult(False, "Could not install endpoint firewall rules")
+                    _sync_ipv6_guard()
                     return result
         tuns_before = _tun_interfaces()
         result = provider.connect(connection)

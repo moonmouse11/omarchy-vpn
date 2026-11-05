@@ -10,8 +10,10 @@ from itertools import pairwise
 _WG_HEADER = re.compile(r"\s*\[([^]]+)\]\s*(?:#.*)?$")
 _WG_HOST = re.compile(r"\s*Endpoint\s*=\s*(\[[^]]+\]|[^:\s]+)\s*:\s*[0-9]+", re.IGNORECASE)
 _PUBLIC_KEY = re.compile(r"\s*PublicKey\s*=\s*([^#\s]+)", re.IGNORECASE)
-_REMOTE = re.compile(r"""\s*(?:setenv\s+opt\s+)?(?:--)?remote\s+("[^"\n]*"|'[^'\n]*'|[^\s#;]+)""")
-_RANDOM = re.compile(r"\s*(?:setenv\s+opt\s+)?(?:--)?remote-random-hostname\s*(?:[#;].*)?$")
+_REMOTE = re.compile(
+    r"""\s*(?:(?:--)?setenv\s+opt\s+)?(?:--)?remote\s+("[^"\n]*"|'[^'\n]*'|[^\s#;]+)"""
+)
+_RANDOM = re.compile(r"\s*(?:(?:--)?setenv\s+opt\s+)?(?:--)?remote-random-hostname\s*(?:[#;].*)?$")
 _TAG = re.compile(r"\s*<(/?)([a-zA-Z0-9_-]+)>\s*(?:[#;].*)?$")
 
 
@@ -91,6 +93,15 @@ def _ovpn_endpoints(lines: list[str]) -> tuple[list[Endpoint], list[int]]:
             if tag and tag[1] == "/" and tag[2].lower() == inline:
                 inline = ""
             continue
+        tokens = line.split()
+        if not tokens or tokens[0].startswith(("#", ";")):
+            continue
+        options = tokens[:1]
+        if tokens[0].removeprefix("--") == "setenv":
+            options = tokens[:3] if len(tokens) > 1 and tokens[1] == "opt" else tokens[:2]
+        # Native quoting/escaping of option names must not hide a hostname from this parser.
+        if any(char in token for token in options for char in "\"'\\"):
+            raise ValueError("Unsupported OpenVPN directive syntax; use plain option names")
         if tag and not tag[1] and tag[2].lower() != "connection":
             inline = tag[2].lower()
         elif match := _REMOTE.match(line):

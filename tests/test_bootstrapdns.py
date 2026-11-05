@@ -139,6 +139,80 @@ def test_truncated_udp_retries_same_question_over_tcp_and_closes_both(monkeypatc
     assert udp.closed and tcp.closed
 
 
+@pytest.mark.parametrize("rcode", [1, 2, 4, 5])
+@pytest.mark.parametrize("tcp", [False, True])
+def test_server_error_tries_healthy_configured_secondary(monkeypatch, rcode, tcp):
+    mod = bootstrap()
+    monkeypatch.setattr(mod.secrets, "randbits", lambda bits: 0x1234)
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a: pytest.fail("libc DNS called"))
+    question = mod.dnswire.query("vpn.example", 0x1234)
+    error = question[:2] + struct.pack("!5H", 0x8180 | rcode, 1, 0, 0, 0) + question[12:]
+    truncated = question[:2] + struct.pack("!5H", 0x8380, 1, 0, 0, 0) + question[12:]
+    healthy = (
+        question[:2]
+        + struct.pack("!5H", 0x8180, 1, 1, 0, 0)
+        + question[12:]
+        + b"\xc0\x0c"
+        + struct.pack("!HHIH", 1, 1, 30, 4)
+        + b"\xc0\x00\x02\x07"
+    )
+    client = mod.Client(None, ["192.0.2.53", "192.0.2.54"], time.monotonic() + 1)
+    calls = []
+
+    def reply(slot, is_tcp):
+        calls.append((slot, is_tcp))
+        data = healthy if slot == 1 else (truncated if tcp and not is_tcp else error)
+        return ReplySocket(struct.pack("!H", len(data)) + data if is_tcp else data)
+
+    monkeypatch.setattr(client, "_socket", reply)
+    assert client.query("vpn.example") == "192.0.2.7"
+    assert calls == ([(0, False), (0, True), (1, False)] if tcp else [(0, False), (1, False)])
+
+
+@pytest.mark.parametrize("rcode", [0, 3])
+def test_nodata_and_nxdomain_do_not_query_secondary(monkeypatch, rcode):
+    mod = bootstrap()
+    monkeypatch.setattr(mod.secrets, "randbits", lambda bits: 0x1234)
+    question = mod.dnswire.query("vpn.example", 0x1234)
+    negative = question[:2] + struct.pack("!5H", 0x8180 | rcode, 1, 0, 0, 0) + question[12:]
+    client = mod.Client(None, ["192.0.2.53", "192.0.2.54"], time.monotonic() + 1)
+
+    def reply(slot, tcp):
+        assert slot == 0 and not tcp, "terminal negative must not bypass the configured resolver"
+        return ReplySocket(negative)
+
+    monkeypatch.setattr(client, "_socket", reply)
+    assert client.query("vpn.example") is None
+
+
+@pytest.mark.parametrize("expire", [False, True])
+def test_all_server_errors_remain_bounded_by_original_deadline(monkeypatch, expire):
+    mod = bootstrap()
+    monkeypatch.setattr(mod.secrets, "randbits", lambda bits: 0x1234)
+    question = mod.dnswire.query("vpn.example", 0x1234)
+    error = question[:2] + struct.pack("!5H", 0x8182, 1, 0, 0, 0) + question[12:]
+    client = mod.Client(None, ["192.0.2.53", "192.0.2.54"], time.monotonic() + 1)
+    calls = []
+
+    def reply(slot, tcp):
+        calls.append(slot)
+        if expire:
+            assert slot == 0, "deadline was reset during failover"
+        stream = ReplySocket(error)
+        if expire:
+
+            def expired_reply(size):
+                client.deadline = time.monotonic() - 1
+                return error
+
+            monkeypatch.setattr(stream, "recv", expired_reply)
+        return stream
+
+    monkeypatch.setattr(client, "_socket", reply)
+    assert client.query("vpn.example") is None
+    assert calls == ([0] if expire else [0, 1])
+
+
 def test_missing_answer_and_exhausted_deadline_do_not_fall_back_to_libc(monkeypatch):
     mod = bootstrap()
     monkeypatch.setattr(mod.secrets, "randbits", lambda bits: 0x1234)

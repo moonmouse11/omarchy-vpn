@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Upgrade notes for 0.4.0
+## [0.4.0] - Unreleased
+
+### Upgrade notes
 
 Run **Update setup** in the panel (or `make install`) after updating. This release changes the
 root-owned helpers, trusted Python modules and backend layout; updating the plugin clone alone
@@ -231,6 +233,7 @@ First release: a fork of [waybar-vpn-manager](https://github.com/moonmouse11/way
 0.3.0 (archived), renamed ahead of the Omarchy 4 port.
 
 [Unreleased]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.2...HEAD
+[0.4.0]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.2...release/0.4.0
 [0.3.2]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.2.0...v0.3.0

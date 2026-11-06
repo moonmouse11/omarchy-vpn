@@ -181,6 +181,86 @@ def numeric_config(kind: str, text: str, mapping: dict[str, str]) -> str:
     return "".join(lines)
 
 
+def _ipv6_addresses(text: str) -> dict[ipaddress.IPv6Interface, str]:
+    addresses = {}
+    section = ""
+    for line in text.splitlines():
+        compact, _ = _wg_line(line)
+        if header := _WG_HEADER.fullmatch(compact):
+            section = header[1].lower()
+        key, _, value = compact.partition("=")
+        if section == "interface" and key.lower() == "address":
+            for item in value.split(","):
+                address = ipaddress.ip_interface(item)
+                if isinstance(address, ipaddress.IPv6Interface):
+                    addresses[address] = item
+    return addresses
+
+
+def restore_ipv6_addresses(saved: str, original: str) -> str:
+    """Restore guard-removed addresses without undoing native IPv4/IPv6 additions."""
+    current = _ipv6_addresses(saved)
+    missing = [
+        value for address, value in _ipv6_addresses(original).items() if address not in current
+    ]
+    if not missing:
+        return saved
+    lines = saved.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        compact, _ = _wg_line(line)
+        if compact.lower() == "[interface]":
+            lines[i] = line.rstrip("\r\n") + "\nAddress = " + ", ".join(missing) + "\n"
+            return "".join(lines)
+    raise ValueError("Saved profile is missing its Interface section; recovery data retained")
+
+
+def _peer_allowedips(lines: list[str]) -> dict[str, tuple[int, int | None, list[str]]]:
+    compact = [_wg_line(line)[0] for line in lines]
+    headers = [
+        (i, m[1].lower()) for i, line in enumerate(compact) if (m := _WG_HEADER.fullmatch(line))
+    ]
+    headers.append((len(lines), ""))
+    peers = {}
+    for (start, section), (end, _) in pairwise(headers):
+        if section != "peer":
+            continue
+        peer = next(
+            (m[1] for line in compact[start + 1 : end] if (m := _PUBLIC_KEY.match(line))), ""
+        )
+        if not peer:
+            continue
+        allowed = [i for i in range(start + 1, end) if compact[i].lower().startswith("allowedips=")]
+        values = [item for i in allowed for item in compact[i].partition("=")[2].split(",") if item]
+        peers[peer] = (end, allowed[0] if allowed else None, values)
+    return peers
+
+
+def restore_ipv6_allowedips(saved: str, original: str) -> str:
+    """Undo our startup route stripping, not native IPv4 edits or peer removal."""
+    originals = _peer_allowedips(original.splitlines(keepends=True))
+    lines = saved.splitlines(keepends=True)
+    for peer, (end, index, values) in _peer_allowedips(lines).items():
+        current = {ipaddress.ip_network(value, strict=False) for value in values}
+        missing = [
+            value
+            for value in originals.get(peer, (0, None, []))[2]
+            if isinstance(route := ipaddress.ip_network(value, strict=False), ipaddress.IPv6Network)
+            and route not in current
+        ]
+        if not missing:
+            continue
+        if index is None:
+            lines[end - 1] = (
+                lines[end - 1].rstrip("\r\n") + "\nAllowedIPs = " + ", ".join(missing) + "\n"
+            )
+        else:
+            value, marker, comment = lines[index].partition("#")
+            lines[index] = (
+                value.rstrip() + ", " + ", ".join(missing) + (" #" + comment if marker else "\n")
+            )
+    return "".join(lines)
+
+
 def restore_hostnames(saved: str, original: str) -> str:
     """Retain SaveConfig's other state/port edits, matching peers by PublicKey, not order."""
     originals = {

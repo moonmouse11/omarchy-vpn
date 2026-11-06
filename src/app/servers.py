@@ -193,6 +193,18 @@ def _server_group(
 HAPP_NO_HEADERS_TITLE = "⚠ No servers: the provider sent none (README: Happ setup)"
 
 
+def _subscription_groups(groups: dict[str, list[dict]]):
+    """Display titles may match; each action group must own exactly one subscription."""
+    for title, entries in groups.items():
+        subscriptions: dict[str, list[dict]] = {}
+        for entry in entries:
+            subscriptions.setdefault(entry.get("provider_id") or "", []).append(entry)
+        if not entries:
+            subscriptions[""] = []
+        for sub_id, rows in subscriptions.items():
+            yield title, sub_id, rows
+
+
 def server_list() -> dict:
     """--servers: the panel's list — every visible provider's connections,
     Happ split per subscription — with ping and protocol. Cache reads only
@@ -224,8 +236,7 @@ def server_list() -> dict:
                 _servers, happ_groups = happ_server_groups(provider)
             else:
                 _servers, happ_groups = groups_fn(provider)
-            for pname, entries in happ_groups.items():
-                sub_id = entries[0].get("provider_id") or ""
+            for pname, sub_id, entries in _subscription_groups(happ_groups):
                 groups.append(
                     _server_group(
                         f"happ:{sub_id}:{pname}", "Happ", pname, entries, sub_id, pinging=pinging
@@ -249,8 +260,7 @@ def server_list() -> dict:
             from providers.incy import incy_server_groups  # noqa: PLC0415 — optional provider
 
             _servers, incy_groups = incy_server_groups(provider)
-            for pname, entries in incy_groups.items():
-                sub_id = entries[0].get("provider_id") or "" if entries else ""
+            for pname, sub_id, entries in _subscription_groups(incy_groups):
                 groups.append(
                     _server_group(
                         f"incy:{sub_id}:{pname}", "INCY", pname, entries, sub_id, pinging=pinging

@@ -443,6 +443,23 @@ def test_ipv6_boot_drops_in_for_autostarted_profiles_only(tree, tmp_path):
     assert not (systemd / "wg-quick@work.service.d").exists()  # no autostart, no drop-in
 
 
+def test_openvpn_boot_uses_the_existing_helper_and_cleans_all_managed_dropins(tree, tmp_path):
+    tree("import", "ovpn", "nl", stdin="client\ndev tun\nremote 1.1.1.1 1194\n")
+    env = _enabled_units(tree, tmp_path, "openvpn-client@nl")
+    assert tree("ipv6-boot", "on", extra_env=env).returncode == 0
+    directory = tree.dirs["systemd"] / "openvpn-client@nl.service.d"
+    service = directory / "omarchy-vpn.conf"
+    guard = directory / "omarchy-vpn-ipv6.conf"
+    assert "Type=forking" in service.read_text()
+    assert "ExecStart=/usr/local/bin/omarchy-vpn-helper up ovpn %i" in service.read_text()
+    assert "PIDFile=/run/openvpn/client-%i.pid" in service.read_text()
+    assert "disable_ipv6=1" in guard.read_text()
+    tree("ipv6-boot", "off", extra_env=env)
+    assert service.exists() and not guard.exists()
+    tree("ipv6-boot", "off", "--uninstall", extra_env=env)
+    assert not service.exists() and not guard.exists()
+
+
 def test_ipv6_boot_off_and_deleted_profiles_lose_their_drop_ins(tree, tmp_path):
     tree("import", "wg", "home", stdin=WG)
     tree("import", "wg", "gone", stdin=WG)
@@ -468,7 +485,19 @@ def test_rm_deletes_an_openvpn_profile(tree):
     tree("import", "ovpn", "nl", stdin="client\ndev tun\nremote 1.1.1.1 1194\n")
     conf = tree.dirs["ovpn"] / "nl.conf"
     assert conf.exists()
-    assert tree("rm", "ovpn", "nl").stdout == f"rm -f {conf}\n"
+    output = tree("rm", "ovpn", "nl").stdout
+    assert output.startswith(f"rm -f {conf} ")
+    assert "openvpn-client@nl.service.d/omarchy-vpn.conf" in output
+    assert output.endswith("systemctl daemon-reload\n")
+
+
+def test_openvpn_down_stops_an_active_systemd_unit_without_a_pid(tree, tmp_path):
+    fake = tmp_path / "systemctl"
+    fake.write_text('#!/bin/sh\n[ "$*" = "is-active --quiet openvpn-client@nl" ]\n')
+    fake.chmod(0o755)
+    result = tree("down", "ovpn", "nl", extra_env={"SYSTEMCTL": str(fake)})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"{fake} stop openvpn-client@nl"
 
 
 def test_openvpn_autostart_enables_and_disables(tree):
@@ -537,6 +566,9 @@ def test_delete_serializes_and_discards_old_runtime_before_reimport(
         f"runtime.RUNTIME = Path({str(runtime.RUNTIME)!r}); sys.exit(runtime.main())"
     )
     lock = tmp_path / "lock"
+    systemctl = tmp_path / "systemctl"
+    systemctl.write_text('#!/bin/sh\n[ "$1" = daemon-reload ]\n')
+    systemctl.chmod(0o755)
     script = tmp_path / "helper"
     script.write_text(
         HELPER.read_text()
@@ -552,7 +584,12 @@ def test_delete_serializes_and_discards_old_runtime_before_reimport(
         fcntl.flock(held, fcntl.LOCK_EX)
         with _REAL_POPEN(
             ["bash", str(script), "rm", kind, "home"],
-            env={"PATH": "/usr/bin:/bin", f"{kind.upper()}_DIR": str(conf.parent)},
+            env={
+                "PATH": "/usr/bin:/bin",
+                f"{kind.upper()}_DIR": str(conf.parent),
+                "SYSTEMCTL": str(systemctl),
+                "SYSTEMD_DIR": str(tree.dirs["systemd"]),
+            },
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

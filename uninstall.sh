@@ -12,6 +12,9 @@ if sudo nft list table inet happ-ks >/dev/null 2>&1; then
     echo "kill switch rules still active — nothing removed" >&2
     exit 1
 fi
+# Remove our persistent boot guard while its trusted cleanup helper still exists.
+# Older installed helpers understand off and ignore the additional cleanup flag.
+[[ ! -x /usr/local/bin/omarchy-vpn-helper ]] || sudo /usr/local/bin/omarchy-vpn-helper ipv6-boot off --uninstall
 omarchy plugin disable "$PLUGIN_ID" || true
 # a clone from `omarchy plugin add` is removed with `omarchy plugin remove`
 [[ "$REPO_DIR" -ef "$PLUGIN_DIR" ]] || rm -rf "$PLUGIN_DIR"

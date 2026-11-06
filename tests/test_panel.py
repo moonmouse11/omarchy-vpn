@@ -7,6 +7,7 @@ import pytest
 import config
 import killswitch
 import vpn_manager
+from ipinfo import is_fresh as exit_is_fresh
 from providers.base import ActionResult, VPNConnection
 from vpn_dns import routes as dnsroutes
 
@@ -156,6 +157,27 @@ def test_more_than_one_tunnel_counts_in_the_pill(env):
 def test_dns_badge_follows_the_last_test_for_this_server(env, verdict, badge):
     vpn_manager._save_dns_verdict([DE_SERVER], verdict)
     assert _badges(_panel([DE_SERVER]))["dns"] == badge
+
+
+@pytest.mark.parametrize("provider,sub_id", [("Happ", "other"), ("INCY", "1")])
+def test_same_name_in_another_subscription_or_provider_is_not_dns_checked(env, provider, sub_id):
+    vpn_manager._save_dns_verdict([DE_SERVER], "DNS test: no resolver mismatch detected")
+    other = VPNConnection(
+        DE_SERVER.name, provider, True, subscription_id=sub_id, interface=DE_SERVER.interface
+    )
+    assert _badges(_panel([other]))["dns"][1] == "unknown"
+    assert _panel([other])["state"] == "unverified"
+
+
+def test_exit_badge_uses_full_identity_and_rejects_legacy_cache(env, monkeypatch):
+    monkeypatch.setattr(vpn_manager.ipinfo, "is_fresh", exit_is_fresh)
+    env["exit"].update(version=2, fetched_at=time.time(), connection=DE_SERVER.protection_key)
+    assert _badges(_panel([DE_SERVER]))["exit"][1] == "ok"
+    other = VPNConnection(DE_SERVER.name, "Happ", True, subscription_id="other")
+    assert _badges(_panel([other]))["exit"][1] == "unknown"
+    env["exit"]["connection"] = DE_SERVER.name
+    env["exit"].pop("version")
+    assert _badges(_panel([DE_SERVER]))["exit"][1] == "unknown"
 
 
 def test_lan_dns_warning_prevents_protected_even_after_a_clean_test(env, monkeypatch):

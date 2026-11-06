@@ -63,6 +63,47 @@ def test_snapshot_reaches_native_and_exact_firewall_ips(numeric_switch, monkeypa
     assert connection.endpoint_ipv4 is None
 
 
+def test_resolver_scope_is_refreshed_after_teardown_before_bootstrap(numeric_switch, monkeypatch):
+    provider, connection, seen, rules = numeric_switch
+    resolvers = ["192.0.2.53"]
+    monkeypatch.setattr(vm.killswitch, "system_resolvers", lambda: list(resolvers))
+
+    def teardown(*args):
+        resolvers[:] = ["192.0.2.54"]
+        return ActionResult(True, "stopped")
+
+    def resolve(*args):
+        assert rules[-1]["dns"] == resolvers
+        return {"vpn.example": "192.0.2.1"}, ["192.0.2.1"]
+
+    monkeypatch.setattr(switch, "_disconnect_other_connections", teardown)
+    monkeypatch.setattr(snapshot, "resolve_profile", resolve)
+    assert switch._guarded_connect(provider, connection).success
+    assert seen == [{"vpn.example": "192.0.2.1"}]
+    assert rules[-1]["dns"] == []
+
+
+def test_failed_resolver_refresh_aborts_before_dns_and_native_start(numeric_switch, monkeypatch):
+    provider, connection, seen, rules = numeric_switch
+    resolvers = ["192.0.2.53"]
+    monkeypatch.setattr(vm.killswitch, "system_resolvers", lambda: list(resolvers))
+
+    def teardown(*args):
+        resolvers[:] = ["192.0.2.54"]
+        return ActionResult(True, "stopped")
+
+    def enable(**kwargs):
+        rules.append(kwargs)
+        return ActionResult(kwargs["dns"] != ["192.0.2.54"], "reload failed")
+
+    monkeypatch.setattr(switch, "_disconnect_other_connections", teardown)
+    monkeypatch.setattr(vm.killswitch, "enable", enable)
+    monkeypatch.setattr(snapshot, "resolve_profile", lambda *a: pytest.fail("DNS before arming"))
+    assert not switch._guarded_connect(provider, connection).success
+    assert seen == []
+    assert rules[-1]["dns"] == []
+
+
 def test_killswitch_interface_collection_accepts_extended_ping_targets(monkeypatch):
     from types import SimpleNamespace
 

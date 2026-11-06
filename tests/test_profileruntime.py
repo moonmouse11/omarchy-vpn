@@ -158,6 +158,9 @@ def files(monkeypatch, tmp_path):
     source.chmod(0o640)
     monkeypatch.setattr(mod, "DIRECTORIES", {"wg": config, "awg": config, "ovpn": config})
     monkeypatch.setattr(mod, "RUNTIME", tmp_path / "runtime")
+    ipv6_disabled = tmp_path / "ipv6-disabled"
+    ipv6_disabled.write_text("0\n")
+    monkeypatch.setattr(mod, "IPV6_DISABLED", ipv6_disabled, raising=False)
     return mod, source
 
 
@@ -209,6 +212,94 @@ def test_finish_preserves_saveconfig_changes_dns_hostname_and_permissions(files,
     assert "DNS = 10.0.0.53" in source.read_text()
     assert stat.S_IMODE(source.stat().st_mode) == 0o640
     assert not path.parent.exists()
+
+
+@pytest.mark.parametrize("kind", ["wg", "awg"])
+@pytest.mark.parametrize("disabled", [False, True])
+def test_saveconfig_restores_only_stripped_ipv6_peer_routes(files, kind, disabled):
+    mod, source = files
+    original = WG.replace("AllowedIPs = 0.0.0.0/0", "AllowedIPs = 0.0.0.0/0, ::/0")
+    source.write_text(original)
+    path = mod.prepare(kind, "office", {"vpn.example": "192.0.2.1"})
+    mod.IPV6_DISABLED.write_text("1\n" if disabled else "0\n")
+    mod.mark(kind, "office", "stopping")
+    path.write_text(path.read_text().replace("0.0.0.0/0, ::/0", "10.0.0.0/8, fd99::/64"))
+    mod.recover(kind, "office")
+    saved = source.read_text()
+    assert "AllowedIPs = 10.0.0.0/8, fd99::/64, ::/0" in saved
+    assert "0.0.0.0/0" not in saved  # native IPv4 removals remain authoritative
+    assert "vpn.example:51820" in saved
+
+
+@pytest.mark.parametrize("kind", ["wg", "awg"])
+@pytest.mark.parametrize("disabled", [False, True])
+def test_saveconfig_preserves_guard_removed_ipv6_but_keeps_native_ipv4_updates(
+    files, kind, disabled
+):
+    mod, source = files
+    original = WG.replace("Address = 10.0.0.2/32", "Address = 10.0.0.2/32, fd42:abcd::2/128")
+    source.write_text(original)
+    path = mod.prepare(kind, "office", {"vpn.example": "192.0.2.1"})
+    mod.IPV6_DISABLED.write_text("1\n" if disabled else "0\n")
+    mod.mark(kind, "office", "stopping")
+    path.write_text(
+        path.read_text()
+        .replace("10.0.0.2/32, fd42:abcd::2/128", "10.0.0.8/32")
+        .replace("51820", "51822")
+    )
+    mod.finish(kind, "office", save=True)
+    saved = source.read_text()
+    assert ("fd42:abcd::2/128" in saved) == disabled
+    assert "Address = 10.0.0.8/32" in saved
+    assert "vpn.example:51822" in saved
+    assert not path.parent.exists()
+
+
+@pytest.mark.parametrize("kind", ["wg", "awg"])
+def test_ipv6_save_recovery_uses_stop_snapshot_after_guard_changes(files, monkeypatch, kind):
+    mod, source = files
+    original = WG.replace("Address = 10.0.0.2/32", "Address = 10.0.0.2/32, fd42:abcd::2/128")
+    source.write_text(original)
+    path = mod.prepare(kind, "office", {"vpn.example": "192.0.2.1"})
+    mod.IPV6_DISABLED.write_text("1\n")
+    mod.mark(kind, "office", "stopping")
+    path.write_text(path.read_text().replace(", fd42:abcd::2/128", ""))
+    with monkeypatch.context() as patch:
+        patch.setattr(mod, "_atomic_text", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
+        with pytest.raises(OSError, match="disk full"):
+            mod.finish(kind, "office", save=True)
+    mod.IPV6_DISABLED.write_text("0\n")
+    assert mod.recover(kind, "office")
+    assert "fd42:abcd::2/128" in source.read_text()
+    assert "vpn.example:51820" in source.read_text()
+    assert not path.parent.exists()
+
+
+def test_guard_save_keeps_equivalent_and_new_native_ipv6_addresses(files):
+    mod, source = files
+    source.write_text(WG.replace("10.0.0.2/32", "10.0.0.2/32, fd42:abcd::2/128"))
+    path = mod.prepare("wg", "office", {"vpn.example": "192.0.2.1"})
+    mod.IPV6_DISABLED.write_text("1\n")
+    mod.mark("wg", "office", "stopping")
+    saved = path.read_text().replace("fd42:abcd::2/128", "fd42:abcd:0:0:0:0:0:2/128, fd42::9/64")
+    path.write_text(saved)
+    mod.finish("wg", "office", save=True)
+    assert source.read_text() == saved.replace("192.0.2.1:51820", "vpn.example:51820")
+
+
+def test_guard_ipv6_restoration_cannot_overwrite_new_credentials(files):
+    mod, source = files
+    source.write_text(WG.replace("10.0.0.2/32", "10.0.0.2/32, fd42:abcd::2/128"))
+    path = mod.prepare("wg", "office", {"vpn.example": "192.0.2.1"})
+    mod.IPV6_DISABLED.write_text("1\n")
+    mod.mark("wg", "office", "stopping")
+    path.write_text(path.read_text().replace(", fd42:abcd::2/128", ""))
+    newer = source.read_text().replace("PrivateKey = private", "PrivateKey = replacement")
+    source.write_text(newer)
+    with pytest.raises(ValueError, match="changed"):
+        mod.finish("wg", "office", save=True)
+    assert source.read_text() == newer
+    assert path.exists()
 
 
 def test_failed_connect_discards_runtime_without_saving(files):

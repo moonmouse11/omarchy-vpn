@@ -9,6 +9,25 @@ def _conn():
     return VPNConnection(name="nl", provider="OpenVPN", active=False)
 
 
+def test_standard_systemd_tunnel_is_visible_without_a_helper_pid(monkeypatch, tmp_path):
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "nl.conf").write_text("client\ndev tun\n")
+    monkeypatch.setattr(openvpn, "OVPN_DIR", configs)
+    monkeypatch.setattr(openvpn, "PID_DIR", tmp_path / "no-pids")
+    calls = []
+
+    def run(command):
+        calls.append(command)
+        return 0, "openvpn-client@nl.service loaded active running OpenVPN tunnel for nl"
+
+    monkeypatch.setattr(openvpn, "_run", run)
+    provider = OpenVPNProvider()
+    assert [c.name for c in provider.active_connections()] == ["nl"]
+    assert provider.connections()[0].active
+    assert len(calls) == 2  # one batch query per enumeration, not one per profile
+
+
 def test_connect_and_disconnect_go_through_the_helper(monkeypatch):
     """Profile names only: the helper finds the config and the PID file and
     runs openvpn with its fixed flags (openvpn-dns-updown, see test_helper)."""

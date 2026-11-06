@@ -38,6 +38,7 @@ PROC_DIR=${PROC_DIR:-/proc}
 SYSTEMD_DIR=${SYSTEMD_DIR:-/etc/systemd/system}
 SYSTEMCTL=${SYSTEMCTL:-systemctl}
 DROPIN=omarchy-vpn-ipv6.conf
+OVPN_DROPIN=omarchy-vpn.conf
 DNS_UPDOWN=/usr/local/bin/openvpn-dns-updown
 MAX_IMPORT=1048576  # 1 MiB — a config, not a disk filler
 
@@ -268,23 +269,34 @@ wg_quick_up() {
     return "$rc"
 }
 
+ovpn_service_active() {
+    "$SYSTEMCTL" is-active --quiet "openvpn-client@$1" 2>/dev/null
+}
+
 cmd_up() {
     local conf=${3:-}
     if [[ -z $conf && -z ${DRY_RUN:-} ]]; then
         if [[ $1 != ovpn ]] && existing_tunnel "$1" "$2"; then
             cmd_down "$1" "$2" || return
-        elif [[ $1 == ovpn && -f $PID_DIR/client-$2.pid ]]; then
+        elif [[ $1 == ovpn ]] && { [[ -f $PID_DIR/client-$2.pid ]] || ovpn_service_active "$2"; }; then
             cmd_down "$1" "$2" || return
         fi
     fi
     [[ -n $conf ]] || conf=$(need_conf "$1" "$2")
     if [[ $1 == ovpn ]]; then
-        run mkdir -p "$PID_DIR"
+        # Desktop status reads only PID metadata, never the private runtime profile.
+        run install -d -m 755 "$PID_DIR"
+        run install -m 644 /dev/null "$PID_DIR/client-$2.pid"
         # a ping-restart keeps the resolved server IP: under the kill switch
         # `remote` couldn't resolve again (DNS only through the tunnel)
+        local rc=0
         run openvpn --config "$conf" --daemon --writepid "$PID_DIR/client-$2.pid" \
             --script-security 2 --up "$DNS_UPDOWN up" --down "$DNS_UPDOWN down" \
-            --persist-remote-ip 9>&-
+            --persist-remote-ip 9>&- || rc=$?
+        if (( rc != 0 )) && [[ ! -s $PID_DIR/client-$2.pid ]]; then
+            run rm -f "$PID_DIR/client-$2.pid"
+        fi
+        return "$rc"
     else
         wg_quick_up "$1" "$2" "${3:-}"
     fi
@@ -298,7 +310,7 @@ cmd_up_numeric() {
     fi
     if [[ $kind != ovpn ]] && existing_tunnel "$kind" "$name"; then
         cmd_down "$kind" "$name" || return
-    elif [[ $kind == ovpn && -f $PID_DIR/client-$name.pid ]]; then
+    elif [[ $kind == ovpn ]] && { [[ -f $PID_DIR/client-$name.pid ]] || ovpn_service_active "$name"; }; then
         cmd_down "$kind" "$name" || return
     fi
     profile_runtime recover "$kind" "$name" >/dev/null || return
@@ -320,6 +332,11 @@ cmd_up_numeric() {
 
 cmd_down() {
     local target=$2 recovered
+    if [[ $1 == ovpn ]] && ovpn_service_active "$2"; then
+        # Stop the owning unit, not only its PID (Restart= could otherwise bring it back).
+        run "$SYSTEMCTL" stop "openvpn-client@$2" 9>&-
+        return
+    fi
     if [[ -z ${DRY_RUN:-} ]]; then
         if [[ $1 != ovpn ]] && ! existing_tunnel "$1" "$2"; then
             recovered=$(profile_runtime recover "$1" "$2") || return
@@ -391,7 +408,9 @@ cmd_rm() {
     local conf
     if [[ -z ${DRY_RUN:-} ]]; then
         if [[ $1 == ovpn ]]; then
-            [[ ! -f $PID_DIR/client-$2.pid ]] || die "stop the profile before deleting it"
+            if [[ -f $PID_DIR/client-$2.pid ]] || ovpn_service_active "$2"; then
+                die "stop the profile before deleting it"
+            fi
         else
             ! existing_tunnel "$1" "$2" || die "stop the profile before deleting it"
         fi
@@ -402,7 +421,9 @@ cmd_rm() {
     fi
     if [[ $1 == ovpn ]]; then
         conf=$(need_conf ovpn "$2")
-        run rm -f "$conf"
+        run rm -f "$conf" "$SYSTEMD_DIR/openvpn-client@$2.service.d/$DROPIN" \
+            "$SYSTEMD_DIR/openvpn-client@$2.service.d/$OVPN_DROPIN"
+        run "$SYSTEMCTL" daemon-reload
         return
     fi
     wg_only "$1" rm
@@ -456,23 +477,47 @@ cmd_audit() {
     done
 }
 
-# wg-quick@NAME starts at boot, before login — long before the bar's first
-# --status turns IPv6 off. A drop-in turns it off right before the tunnel comes
+# Autostart units run before login — long before the bar's first --status.
+# A drop-in turns IPv6 off right before the tunnel comes
 # up, for every profile with autostart on (on), or for none (off: ⚙ IPv6 guard
 # off). Never turned back on by systemd: another tunnel may be up by then; the
 # plugin's disconnect does that. Drop-ins of deleted profiles go either way.
 cmd_ipv6_boot() {
-    [[ ${1:-} == on || ${1:-} == off ]] || die "ipv6-boot takes on | off"
-    local kind dir conf name unit dropin
-    for kind in wg awg; do
+    [[ ${1:-} == on || ${1:-} == off ]] || die "ipv6-boot takes on | off [--uninstall]"
+    [[ -z ${2:-} || ( $1 == off && $2 == --uninstall ) ]] || die "invalid boot cleanup flag"
+    if [[ ${2:-} == --uninstall ]]; then
+        rm -f "$SYSTEMD_DIR"/{wg,awg}-quick@*.service.d/"$DROPIN" \
+            "$SYSTEMD_DIR"/openvpn-client@*.service.d/{"$DROPIN","$OVPN_DROPIN"}
+        run "$SYSTEMCTL" daemon-reload
+        return
+    fi
+    local kind dir conf name unit dropin enabled
+    for kind in wg awg ovpn; do
         dir=$(dir_of "$kind")
-        for conf in "$dir"/*.conf; do
+        for conf in "$dir"/*.conf "$dir"/*.ovpn; do
             [[ -f $conf ]] || continue
-            name=$(basename "$conf" .conf)
+            [[ $kind == ovpn || $conf != *.ovpn ]] || continue
+            name=${conf##*/}
+            name=${name%.*}
             [[ $name =~ ^[A-Za-z0-9_][A-Za-z0-9_.=+-]{0,63}$ ]] || continue
             unit="$kind-quick@$name"
+            [[ $kind != ovpn ]] || unit="openvpn-client@$name"
             dropin="$SYSTEMD_DIR/$unit.service.d/$DROPIN"
-            if [[ $1 == on ]] && "$SYSTEMCTL" is-enabled --quiet "$unit" 2>/dev/null; then
+            enabled=0
+            if "$SYSTEMCTL" is-enabled --quiet "$unit" 2>/dev/null; then enabled=1; fi
+            if [[ $kind == ovpn ]]; then
+                if [[ $enabled == 1 ]]; then
+                    mkdir -p "${dropin%/*}"
+                    # Reuse the fixed PID/DNS/native lifecycle, without a second root entry point.
+                    printf '%s\n' '[Service]' 'Type=forking' 'ExecStart=' \
+                        'ExecStart=/usr/local/bin/omarchy-vpn-helper up ovpn %i' \
+                        'PIDFile=/run/openvpn/client-%i.pid' \
+                        >"${dropin%/*}/$OVPN_DROPIN"
+                else
+                    rm -f "${dropin%/*}/$OVPN_DROPIN"
+                fi
+            fi
+            if [[ $1 == on && $enabled == 1 ]]; then
                 mkdir -p "${dropin%/*}"
                 printf '%s\n' "# omarchy-vpn: IPv6 off before the tunnel (none of its providers tunnel IPv6)" \
                     "[Service]" \
@@ -483,12 +528,17 @@ cmd_ipv6_boot() {
             fi
         done
     done
-    for dropin in "$SYSTEMD_DIR"/{wg,awg}-quick@*.service.d/"$DROPIN"; do
+    for dropin in "$SYSTEMD_DIR"/{wg,awg}-quick@*.service.d/"$DROPIN" \
+        "$SYSTEMD_DIR"/openvpn-client@*.service.d/{"$DROPIN","$OVPN_DROPIN"}; do
         [[ -f $dropin ]] || continue
         unit=${dropin#"$SYSTEMD_DIR"/}
         unit=${unit%%.service.d/*}
-        kind=${unit%%-quick@*}
-        [[ -f $(dir_of "$kind")/${unit#*@}.conf ]] || rm -f "$dropin"
+        if [[ $unit == openvpn-client@* ]]; then
+            [[ -n $(conf_of ovpn "${unit#*@}") ]] || rm -f "$dropin"
+        else
+            kind=${unit%%-quick@*}
+            [[ -f $(dir_of "$kind")/${unit#*@}.conf ]] || rm -f "$dropin"
+        fi
     done
     run "$SYSTEMCTL" daemon-reload
 }
@@ -513,7 +563,7 @@ if [[ ${1:-} == incy-network ]]; then
     exit 0
 fi
 if [[ ${1:-} == ipv6-boot ]]; then
-    cmd_ipv6_boot "${2:-}"
+    cmd_ipv6_boot "${2:-}" "${3:-}"
     exit 0
 fi
 if [[ ${1:-} == audit ]]; then

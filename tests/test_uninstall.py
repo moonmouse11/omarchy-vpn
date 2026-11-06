@@ -5,6 +5,8 @@ rules left behind block all traffic until a reboot."""
 import subprocess
 from pathlib import Path
 
+import pytest
+
 _REAL_RUN = subprocess.run
 _REAL_POPEN = subprocess.Popen
 
@@ -37,13 +39,27 @@ def test_uninstall_turns_the_kill_switch_off_before_removing_it():
     assert at("/usr/local/bin/omarchy-vpn-helper") < sudoers
 
 
-def test_uninstall_removes_root_incy_package(monkeypatch, tmp_path):
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+@pytest.mark.parametrize("legacy_helper", [False, True])
+def test_uninstall_removes_root_incy_package(monkeypatch, tmp_path, cleanup_fails, legacy_helper):
     monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
     root = tmp_path / "root"
     helper = root / "bin" / "omarchy-vpn-incy-network"
     package = root / "lib" / "omarchy-vpn" / "incy"
     helper.parent.mkdir(parents=True)
+    dropin = root / "systemd/wg-quick@office.service.d/omarchy-vpn-ipv6.conf"
+    dropin.parent.mkdir(parents=True)
+    dropin.write_text("managed boot guard")
     helper.write_text("unused")
+    boot_helper = helper.with_name("omarchy-vpn-helper")
+    accepted = (
+        '"$1 $2" = "ipv6-boot off"' if legacy_helper else '"$*" = "ipv6-boot off --uninstall"'
+    )
+    boot_helper.write_text(
+        f"#!/bin/sh\ntest {accepted} || exit 42\n"
+        + ("exit 7\n" if cleanup_fails else f'rm -f "{dropin}"\n')
+    )
+    boot_helper.chmod(0o755)
     dns_helper = helper.parent / "omarchy-vpn-dns-bootstrap"
     dns_helper.write_text("unused")
     package.mkdir(parents=True)
@@ -71,7 +87,12 @@ def test_uninstall_removes_root_incy_package(monkeypatch, tmp_path):
         text=True,
         env={"PATH": f"{shims}:/usr/bin:/bin", "HOME": str(tmp_path)},
     )
+    if cleanup_fails:
+        assert result.returncode == 7
+        assert dropin.exists() and boot_helper.exists() and package.exists()
+        return
     assert result.returncode == 0, result.stdout + result.stderr
+    assert not dropin.exists()
     assert not helper.exists()
     assert not dns_helper.exists()
     assert not package.parent.exists()

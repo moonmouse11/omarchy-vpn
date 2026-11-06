@@ -28,6 +28,35 @@ def profiles():
     return importlib.import_module("vpn_dns.profiles")
 
 
+def test_route_restoration_matches_reordered_peers_without_endpoints():
+    mod = profiles()
+    original = (
+        "[Interface]\nPrivateKey = key\n"
+        "[Peer]\nPublic Key = first\nAllowedIPs = 0.0.0.0/0, ::/0\n"
+        "[Peer]\nPublicKey = second\nAllowedIPs = fd22::/64\n"
+    )
+    saved = (
+        "[Interface]\nPrivateKey = key\n"
+        "[Peer]\nPublicKey = second\nAllowedIPs = fd22:0:0:0::/64\n"
+        "[Peer]\nPublicKey = first\nAllowedIPs = 10.0.0.0/8\n"
+    )
+    assert mod.restore_ipv6_allowedips(saved, original) == saved.replace(
+        "AllowedIPs = 10.0.0.0/8", "AllowedIPs = 10.0.0.0/8, ::/0"
+    )
+    removed = saved.split("[Peer]\nPublicKey = first", maxsplit=1)[0]
+    assert mod.restore_ipv6_allowedips(removed, original) == removed
+
+
+def test_missing_allowedips_line_can_restore_ipv6_without_recreating_removed_peers():
+    mod = profiles()
+    original = "[Peer]\nPublicKey = first\nAllowedIPs = ::/0\n"
+    saved = "[Peer]\nPublicKey = first\n"
+    assert mod.restore_ipv6_allowedips(saved, original) == original
+    assert mod.restore_ipv6_allowedips("[Peer]\nPublicKey = new\n", original) == (
+        "[Peer]\nPublicKey = new\n"
+    )
+
+
 def test_runtime_replaces_only_hostname_endpoints():
     mod = profiles()
     runtime = mod.numeric_config("wg", WG, {"vpn.example": "192.0.2.1"})

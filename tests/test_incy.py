@@ -236,7 +236,8 @@ def _patch_sub_cache(monkeypatch, tmp_path) -> Path:
     cache = tmp_path / "cache"
     cache.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr("happ.constants.SUB_CACHE_DIR", cache)
-    # Bound at import from the real ~/.cache; keep refresh state in tmp too.
+    # Both values are bound on import; patch the actual reader, not only its source constant.
+    monkeypatch.setattr(incy_subs, "SUB_CACHE_DIR", cache)
     monkeypatch.setattr(incy_subs, "INCY_REFRESH", cache / "incy-subs-refresh.json")
     return cache
 
@@ -283,7 +284,6 @@ def test_update_subscriptions_skips_fresh_cache(tmp_path, monkeypatch):
     _incy_db_with_sub(tmp_path)
     monkeypatch.setattr(incy_mod, "INCY_DB", tmp_path / "incy.db")
     _patch_sub_cache(monkeypatch, tmp_path)
-    incy_subs.SUB_CACHE_DIR.mkdir(parents=True)
     fresh = incy_subs.cache_path("sub1")
     fresh.write_text(
         json.dumps(

@@ -148,7 +148,7 @@ def _failure_hint(reason: str) -> str:
     return ""
 
 
-DNS_VERDICT_VERSION = 2
+DNS_VERDICT_VERSION = 3
 DNS_OK_SUMMARY = "DNS test: no resolver mismatch detected"
 DNS_VERDICT_CACHE = Path.home() / ".cache/vpn-manager/dns-leak.json"
 DNS_VERDICT_MAX_AGE = 24 * 3600  # a verdict outlives neither a day nor a server switch
@@ -171,7 +171,7 @@ def _save_dns_verdict(active: list[VPNConnection], verdict: str | None) -> None:
     record = {
         "version": DNS_VERDICT_VERSION,
         "at": time.time(),
-        "connection": active[0].name if active else None,
+        "connection": active[0].protection_key if active else None,
         "leaked": leaked,
         "summary": verdict,
     }

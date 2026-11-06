@@ -73,6 +73,30 @@ def _is_running(profile: str) -> bool:
         return False
 
 
+def _running_services() -> set[str]:
+    code, output = _run(
+        [
+            "systemctl",
+            "list-units",
+            "--plain",
+            "--no-legend",
+            "--no-pager",
+            "--type=service",
+            "--state=running",
+            "openvpn-client@*.service",
+        ]
+    )
+    if code:
+        return set()
+    return {
+        unit.removeprefix("openvpn-client@").removesuffix(".service")
+        for line in output.splitlines()
+        if (fields := line.split())
+        and (unit := fields[0]).startswith("openvpn-client@")
+        and unit.endswith(".service")
+    }
+
+
 def ovpn_endpoint(conf_path) -> tuple[str, int] | None:
     """(host, port) of the first valid 'remote host port' directive.
 
@@ -106,12 +130,16 @@ class OpenVPNProvider(VPNProvider):
     def active_connections(self) -> list[VPNConnection]:
         ovpn_dir = _ovpn_dir()
         pid_dir = _pid_dir()
-        if not ovpn_dir.exists() or not pid_dir.exists():
+        if not ovpn_dir.exists():
             return []
+        services = _running_services()
+        profiles = services | {
+            path.name.removeprefix("client-").removesuffix(".pid")
+            for path in pid_dir.glob("client-*.pid")
+        }
         result: list[VPNConnection] = []
-        for pid_file in sorted(pid_dir.glob("client-*.pid")):
-            profile = pid_file.name.removeprefix("client-").removesuffix(".pid")
-            if not _is_running(profile):
+        for profile in sorted(profiles):
+            if profile not in services and not _is_running(profile):
                 continue
             conf = _config_for_profile(ovpn_dir, profile)
             if conf is None:
@@ -134,9 +162,10 @@ class OpenVPNProvider(VPNProvider):
         if not ovpn_dir.exists():
             return result
 
+        services = _running_services()
         for conf in sorted(ovpn_dir.glob(_OVPN_GLOB_CONF)) + sorted(ovpn_dir.glob(_OVPN_GLOB_OVPN)):
             profile = conf.stem
-            is_active = _is_running(profile)
+            is_active = profile in services or _is_running(profile)
             result.append(
                 VPNConnection(
                     name=profile,

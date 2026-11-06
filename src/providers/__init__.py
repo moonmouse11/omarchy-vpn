@@ -1,8 +1,6 @@
-from .happ import HappProvider
-from .keys import KeysProvider
-from .networkmanager import NetworkManagerProvider
-from .openvpn import OpenVPNProvider
-from .wireguard import AmneziaWGProvider, WireGuardProvider
+from providers.classic import NetworkManagerProvider, OpenVPNProvider
+from providers.happd import HappProvider, IncyProvider, KeysProvider
+from providers.kernel import AmneziaWGProvider, WireGuardProvider
 
 ALL_PROVIDERS = [
     WireGuardProvider(),
@@ -12,4 +10,5 @@ ALL_PROVIDERS = [
     OpenVPNProvider(),
     NetworkManagerProvider(),
     HappProvider(),
+    IncyProvider(),
 ]

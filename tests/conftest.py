@@ -10,9 +10,9 @@ import tempfile
 
 import pytest
 
+import app.spawn as spawn_mod
 import ipv6guard
 import logutil
-import reputation
 
 
 def pytest_runtest_setup(item):
@@ -43,7 +43,19 @@ def _no_real_reputation_subprocess(monkeypatch):
     fresh test env), which would otherwise make real network calls out of a
     test run. test_reputation.py re-patches Popen itself per case, which
     layers on top of this."""
-    monkeypatch.setattr(reputation.subprocess, "Popen", lambda *a, **k: None)
+
+    class _FakePopen:
+        returncode = 0
+        stdout = None
+        stdin = None
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", lambda *a, **k: _FakePopen())
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +65,9 @@ def _no_real_panel_caches(monkeypatch, tmp_path):
     the real ones from a test run."""
     import killswitch
     import vpn_manager
+    from vpn_dns import routes as dnsroutes
 
+    monkeypatch.setattr(dnsroutes, "CACHE", tmp_path / "dns-route.json")
     monkeypatch.setattr(killswitch, "STATE_CACHE", tmp_path / "killswitch-state.json")
     monkeypatch.setattr(killswitch, "RESOLVED_CACHE", tmp_path / "resolved-ips.json")
     # no resolvers unless a test writes one: the host's/container's own
@@ -72,3 +86,10 @@ def _no_real_panel_caches(monkeypatch, tmp_path):
     monkeypatch.setattr(vpn_manager.happ_provider, "KEEPER_STATE", tmp_path / "happ-keeper.json")
     # a connect asks happd and pgrep whether the Happ app holds the tunnel — never the live ones
     monkeypatch.setattr(vpn_manager.happ_provider, "app_connected", lambda: False)
+    sub_cache = tmp_path / "sub-cache"
+    sub_cache.mkdir()
+    monkeypatch.setattr("happ.constants.SUB_CACHE_DIR", sub_cache)
+    import incy.subscriptions as incy_subs
+
+    monkeypatch.setattr(incy_subs, "SUB_CACHE_DIR", sub_cache)
+    monkeypatch.setattr(incy_subs, "INCY_REFRESH", sub_cache / "incy-subs-refresh.json")

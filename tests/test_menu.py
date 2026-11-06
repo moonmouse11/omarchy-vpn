@@ -98,7 +98,7 @@ def test_killswitch_all_mode_arms_wg(monkeypatch, tmp_path):
     result = vpn_manager.guarded_connect(wg, wg.connections()[0])
     assert result.success
     assert wg.connected == ["nl"]
-    assert calls == [{"extra_ips": ["1.2.3.4"], "ifaces": ["nl", "tun*"], "dns": []}]
+    assert calls == [{"extra_ips": ["1.2.3.4"], "ifaces": ["nl", "tun*"], "dns": [], "fresh": True}]
 
 
 def test_killswitch_connect_opens_dns_only_for_the_connect(monkeypatch, tmp_path):
@@ -575,7 +575,7 @@ def test_dns_leak_server_row_adds_own_check_tags():
         ip_country="DE",
         ip_asn=24940,
     )
-    assert row.endswith("  Leaked")
+    assert row.endswith("  Warning: ASN, GEO")
 
 
 def test_dns_leak_menu_own_verdict_flags_foreign_resolvers(monkeypatch):
@@ -590,17 +590,20 @@ def test_dns_leak_menu_own_verdict_flags_foreign_resolvers(monkeypatch):
         active=[_wg("de1")],
     )
     vpn_manager.run_check("dns")
-    assert "Leaked: 1/2 DNS outside VPN/public resolvers" in seen[0]
+    assert (
+        "Warning: 2/2 DNS differ from the exit country/network — this does not prove a leak"
+        in seen[0]
+    )
 
 
 def test_dns_leak_menu_own_verdict_clean(monkeypatch):
     seen = _dns_leak_menu_env(
         monkeypatch,
-        _leak_result([{"ip": "198.51.100.40", "country": "nl", "asn": "AS13335 CloudFlare"}]),
+        _leak_result([{"ip": "198.51.100.40", "country": "de", "asn": "AS24940"}]),
         active=[_wg("de1")],
     )
     vpn_manager.run_check("dns")
-    assert "DNS via VPN or public resolvers" in seen[0]
+    assert "DNS test: no resolver mismatch detected" in seen[0]
 
 
 def test_dns_leak_menu_no_own_verdict_without_exit_ip_data(monkeypatch):
@@ -691,8 +694,8 @@ def test_dns_leak_test_menu_builds_result_rows(monkeypatch):
     assert result.success
     rows = seen[0]
     assert rows[0] == "IP: 1.2.3.4 🇩🇪"
-    # CloudFlare egress in RU vs a DE exit -> GEO -> Leaked; Quad9 in DE is fine
-    assert any("CloudFlare Inc" in r and r.endswith("Leaked") for r in rows)
+    # Country mismatch is an indicator, not proof the request bypassed the tunnel.
+    assert any("CloudFlare Inc" in r and r.endswith("Warning: GEO") for r in rows)
     assert any("Quad9" in r and "Leaked" not in r for r in rows)
     assert "bash.ws: DNS may be leaking." in rows
     assert not any(ch in r for r in rows for ch in "⚠✅")  # plain text, no status emoji
@@ -818,10 +821,16 @@ def test_refresh_all_menu_spawns_subs_unconditionally(monkeypatch):
     result = vpn_manager.refresh_all_menu()
     assert result.success
     flags = [c[2] for c in calls]  # [sys.executable, script_path, flag]
-    assert flags == ["--update-subs-force"]  # pings: only the panel's Ping button
-    # the forced variant — plain --update-subs would keep the SUB_MAX_AGE
-    # gate inside fetch_subscription and no-op on a fresh cache
-    assert "--update-subs-force" in flags
+    assert sorted(flags) == ["--update-incy-subs-force", "--update-subs-force"]
+
+
+def test_run_tool_refresh_all_still_works_after_tools_button_removed(monkeypatch):
+    """Tools → Refresh All and the wizard still spawn forced Happ + INCY updates."""
+    calls = []
+    monkeypatch.setattr(vpn_manager.subprocess, "Popen", lambda cmd, **k: calls.append(cmd) or None)
+    result = vpn_manager.run_tool("refresh_all")
+    assert result.success
+    assert sorted(c[2] for c in calls) == ["--update-incy-subs-force", "--update-subs-force"]
 
 
 def test_clear_caches_menu_removes_only_json_files(tmp_path, monkeypatch):
@@ -1132,9 +1141,12 @@ def test_manual_subscription_refresh_always_reports(monkeypatch):
     monkeypatch.setattr(vpn_manager.happmeta, "update_subscriptions", lambda force: {})
     monkeypatch.setattr(vpn_manager, "subscription_report", lambda failed: ("T", "B"))
     sent = []
+    refreshed = []
     monkeypatch.setattr(vpn_manager, "notify", lambda title, msg, **kw: sent.append((title, msg)))
+    monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: refreshed.append(True))
     vpn_manager.main()
     assert sent == [("T", "B")]
+    assert refreshed == [True]
 
 
 def _ks_env(monkeypatch, tmp_path, *, lockdown=True, enabled=True):
@@ -1293,9 +1305,8 @@ def test_tool_flag_runs_the_tools_action(monkeypatch):
     assert ran == ["speed_test"]
 
 
-def test_dns_check_card_summary_names_the_first_leak(monkeypatch):
-    """The window's card leads with a verdict: the first leaking row, else
-    our resolver verdict — and never "ok" without data to judge."""
+def test_dns_check_card_summary_distinguishes_warning_from_proven_leak(monkeypatch):
+    """A resolver mismatch is unknown, not proof of a leaked query."""
     _dns_leak_menu_env(
         monkeypatch,
         _leak_result([{"ip": "5.6.7.8", "country": "de", "asn": "AS3320 Telekom"}]),
@@ -1305,8 +1316,8 @@ def test_dns_check_card_summary_names_the_first_leak(monkeypatch):
     monkeypatch.setattr(vpn_manager, "_emit", emitted.append)
     vpn_manager.run_check("dns")
     summary = emitted[-1]["result"]["summary"]
-    assert summary["state"] == "bad"
-    assert summary["text"].startswith("Leaked")
+    assert summary["state"] == "unknown"
+    assert summary["text"].startswith("Warning:")
 
     _dns_leak_menu_env(monkeypatch, _leak_result([], ip_country="", ip_asn=None), active=[])
     emitted.clear()

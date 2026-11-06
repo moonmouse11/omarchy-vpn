@@ -46,11 +46,20 @@ fi
 # The checkout is user-writable: root installs the bytes read here, so a file
 # swapped in during the password prompt never reaches /usr/local/bin.
 declare -A HELPER HELPER_SHA
-for name in omarchy-vpn-helper happ-killswitch openvpn-dns-updown; do
+for name in omarchy-vpn-helper happ-killswitch openvpn-dns-updown omarchy-vpn-incy-network omarchy-vpn-dns-bootstrap; do
     # "." keeps trailing newlines; && so a failed cat stops set -e (not printf's status)
     HELPER[$name]=$(cat "$REPO_DIR/scripts/$name" && printf .)
     HELPER[$name]=${HELPER[$name]%.}
     HELPER_SHA[$name]=$(printf %s "${HELPER[$name]}" | sha256sum | cut -d' ' -f1)
+done
+
+# Root gets ONLY these stdlib-only modules; keep worker/launcher/config/assets user-side.
+# network.protect_socket is root-side; network.prepare_config's app imports must stay lazy.
+declare -A ROOT_MODULE ROOT_MODULE_SHA
+for name in incy/__init__.py incy/broker.py incy/network.py incy/privileged.py vpn_dns/__init__.py vpn_dns/control.py vpn_dns/resolvers.py vpn_dns/profiles.py vpn_dns/runtime.py; do
+    ROOT_MODULE[$name]=$(cat "$REPO_DIR/src/$name" && printf .)
+    ROOT_MODULE[$name]=${ROOT_MODULE[$name]%.}
+    ROOT_MODULE_SHA[$name]=$(printf %s "${ROOT_MODULE[$name]}" | sha256sum | cut -d' ' -f1)
 done
 
 install_helper() {  # NAME → /usr/local/bin/NAME, root:root 755, re-hashed as root
@@ -94,7 +103,8 @@ SUDOERS_FILE="/etc/sudoers.d/vpn-manager"
 # Managed by this installer: rewrite on every run so upgrades pick up new rules.
 # Three things only, each with a fixed command surface:
 #   omarchy-vpn-helper (scripts/, root-owned): WireGuard/AmneziaWG/OpenVPN up/down,
-#     import, delete, autostart, endpoints — profile names only, never paths, and
+#     import, delete, autostart, endpoints — profile names only, never paths;
+#     incy-network — fixed mode + session token, root-owned Python -I entry;
 #     it refuses imports that could run commands as root (WireGuard PostUp/…,
 #     OpenVPN directives off its allowlist: up/route-up/plugin/…);
 #   happ-killswitch (root-owned): the kill switch's nft rules;
@@ -107,6 +117,18 @@ SUDOERS_FILE="/etc/sudoers.d/vpn-manager"
 # openvpn-dns-updown (root-owned) applies OpenVPN-pushed DNS via systemd-resolved;
 # openvpn runs as root, so its --up/--down child needs no entry of its own.
 # the helper first: a rule pointing at a missing (or old) helper breaks connects
+# Python -I imports only this root-owned package, never the user's backend.
+sudo install -d -o root -g root -m 755 /usr/local/lib/omarchy-vpn /usr/local/lib/omarchy-vpn/incy /usr/local/lib/omarchy-vpn/vpn_dns
+for name in "${!ROOT_MODULE[@]}"; do
+    target="/usr/local/lib/omarchy-vpn/$name"
+    printf %s "${ROOT_MODULE[$name]}" | sudo install -o root -g root -m 644 /dev/stdin "$target"
+    [[ $(sudo sha256sum "$target" | cut -d' ' -f1) == "${ROOT_MODULE_SHA[$name]}" ]] || {
+        echo "error: $target doesn't match the copy read before sudo" >&2
+        exit 1
+    }
+done
+install_helper omarchy-vpn-incy-network
+install_helper omarchy-vpn-dns-bootstrap
 install_helper omarchy-vpn-helper
 
 echo "==> Writing sudoers rule..."
@@ -228,4 +250,16 @@ echo "==> Done!"
 echo "    - bar widget:  omarchy plugin enable/disable $PLUGIN_ID, move with omarchy bar move"
 echo "    - keybinding:  SUPER+Shift+V opens the VPN window"
 echo "    - settings:    the window's Settings button, or re-run this installer"
+HINTS=$(python3 -B -c "
+import sys
+sys.path.insert(0, '$REPO_DIR/src')
+import config
+from installwizard import detect, hints
+for line in hints(config.load_config(), detect()):
+    print(line)
+" 2>/dev/null) || true
+if [[ -n $HINTS ]]; then
+    echo ""
+    echo "$HINTS" | sed 's/^/    /'
+fi
 echo ""

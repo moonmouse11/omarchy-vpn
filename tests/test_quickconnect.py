@@ -16,6 +16,18 @@ def test_remember_keeps_the_newest_three_without_duplicates():
     assert [e["name"] for e in quickconnect.load()["recent"]] == ["d", "a", "c"]
 
 
+def test_forget_drops_matching_favourite_and_recent():
+    quickconnect.remember("WireGuard", "home")
+    quickconnect.toggle_favourite("WireGuard", "home")
+    quickconnect.remember("Happ", "🇩🇪 DE", "15")
+    quickconnect.forget("WireGuard", "home")
+    data = quickconnect.load()
+    assert data["favourites"] == []
+    assert data["recent"] == [{"provider": "Happ", "name": "🇩🇪 DE", "sub_id": "15"}]
+    quickconnect.forget("Happ", "🇩🇪 DE", "15")
+    assert quickconnect.load()["recent"] == []
+
+
 def test_toggle_favourite_stars_and_unstars():
     assert quickconnect.toggle_favourite("Happ", "🇩🇪 DE", "15") is True
     assert quickconnect.load()["favourites"] == [

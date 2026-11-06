@@ -5,9 +5,8 @@
 #   - packets carrying xray's SO_MARK (Happ/Keys proxy outbounds, see
 #     happmeta.KILLSWITCH_MARK) — the tunnel itself, whatever its servers
 #   - VPN tunnels (happ-*, plus interfaces passed via --iface)
-#   - DNS only to resolvers passed with --dns (during a connect, so endpoint
-#     hostnames resolve); otherwise DNS leaves through the tunnel, the xray
-#     mark or the LAN like everything else
+#   - dedicated marked bootstrap DNS sockets to --dns resolvers on TCP/UDP 53;
+#     no allowance for ordinary processes or shared systemd-resolved
 #   - DNS from happd's own cgroup (happd + the xray it runs) to resolvers
 #     passed with --happd-dns: xray resolves a hostname server with the
 #     system resolver, and that lookup leaves through its unmarked `direct`
@@ -24,8 +23,8 @@
 #   happ-killswitch detect                  # Happ server IPs (Happ must be connected)
 #   happ-killswitch on [IP…] [--iface NAME] [--dns IP] [--happd-dns IP] [--no-conf]
 #                                           # enable (args: extra server IPs, --iface: allowed
-#                                           # tunnel interfaces, --dns: resolvers allowed on
-#                                           # port 53, --happd-dns: the same for happd's
+#                                           # tunnel interfaces, --dns: marked bootstrap
+#                                           # TCP/UDP :53 upstreams, --happd-dns: DNS for happd's
 #                                           # cgroup only, --no-conf: ignore saved IPs)
 #   happ-killswitch rules [same args as on] # print the ruleset without applying it
 #   happ-killswitch off                     # disable (full rollback)
@@ -36,8 +35,12 @@
 set -euo pipefail
 
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/happ-killswitch.conf"
-# must equal happmeta.KILLSWITCH_MARK (checked by tests/test_killswitch.py)
+# Constants pinned against the Python socket/config producers by tests.
+DNS_MARK=0x6b75
 XRAY_MARK=0x6b73
+# INCY's broker marks every protected socket; only generated proxy traffic has priority 6.
+INCY_MARK=0x6b74
+INCY_PRIORITY=6
 # happd's systemd cgroup (relative to the cgroup2 root): happd and every xray
 # it starts live here, the browser and the rest of the session don't.
 # Overridable for tests only — sudo's env_reset strips it from callers.
@@ -86,9 +89,8 @@ detect() {
 #
 # Arguments: extra server IPs (positional), --iface NAME (allowed tunnel
 # egress interfaces, e.g. --iface wg0 --iface 'tun*'), --dns IP (resolvers
-# allowed on port 53 — only for the duration of a connect, so endpoint
-# hostnames resolve; otherwise DNS leaves only through the tunnel, the xray
-# mark or the LAN), --no-conf (ignore the saved Happ IPs).
+# allowed only for dedicated marked TCP/UDP :53 sockets during bootstrap),
+# --no-conf (ignore saved Happ IPs; an explicit empty whitelist is valid).
 ruleset() {
     local extra_ips=() ifaces=() dns=() happd_dns=() use_conf=1
     while [[ $# -gt 0 ]]; do
@@ -118,7 +120,7 @@ ruleset() {
         ips+=" $ip"
     done
     ips="${ips# }"
-    [[ -n $ips ]] || die "whitelist is empty — run first: happ-killswitch detect (Happ must be connected)"
+    [[ -n $ips || $use_conf -eq 0 ]] || die "whitelist is empty — run first: happ-killswitch detect (Happ must be connected)"
 
     local addrs=""
     for ip in $ips; do
@@ -143,9 +145,9 @@ ruleset() {
         valid_ip "$ip" || valid_ip6 "$ip" || die "not an IP address: $ip"
         local family=ip
         [[ $ip == *:* ]] && family=ip6
-        # 853: DNS over TLS (systemd-resolved's DNSOverTLS=opportunistic)
-        dns_rules+="    $family daddr $ip udp dport 53 accept
-    $family daddr $ip tcp dport { 53, 853 } accept
+        # Only the dedicated bootstrap sockets, never shared resolved or ordinary apps.
+        dns_rules+="    meta mark $DNS_MARK $family daddr $ip udp dport 53 accept
+    meta mark $DNS_MARK $family daddr $ip tcp dport 53 accept
 "
     done
     # nft resolves the cgroup path to its id when the ruleset loads: a missing
@@ -181,6 +183,7 @@ table inet happ-ks {
 
     oifname "lo"        accept
     meta mark $XRAY_MARK accept
+    meta mark $INCY_MARK meta priority $INCY_PRIORITY accept
     oifname "happ-*"    accept
 $iface_rules$dns_rules$cgroup_rules$addrs$lan_rules
     ip daddr 255.255.255.255 udp dport 67 accept

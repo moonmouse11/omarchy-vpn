@@ -229,6 +229,24 @@ def test_connections_marks_active_from_keeper_state(store, monkeypatch):
     ]
 
 
+def test_active_connections_empty_when_tunnel_down(store, monkeypatch):
+    keys.add_server(keys.parse_ss_key(ss_url(tag="s1")))
+    monkeypatch.setattr(keys, "_daemon_running_processes", list)
+    assert keys.KeysProvider("ss").active_connections() == []
+
+
+def test_active_connections_from_keeper_only(store, monkeypatch):
+    keys.add_server(keys.parse_ss_key(ss_url(tag="s1")))
+    keys.add_server(keys.parse_ss_key(ss_url(host="b.com", tag="s2")))
+    monkeypatch.setattr(keys, "_daemon_running_processes", lambda: ["xray-keys-ss"])
+    monkeypatch.setattr(
+        keys, "_read_keeper_state", lambda path: {"status": "connected", "server": "s1"}
+    )
+    active = keys.KeysProvider("ss").active_connections()
+    assert len(active) == 1
+    assert active[0].name == "s1" and active[0].interface == "keys-ss-tun0"
+
+
 def test_connections_empty_without_servers(store):
     assert keys.KeysProvider("ss").connections() == []
 
@@ -415,3 +433,41 @@ def test_headless_connect_ignores_a_superseded_keepers_exit(store, monkeypatch, 
     monkeypatch.setattr(keys.subprocess, "Popen", spawn)
     monkeypatch.setattr(keys.time, "sleep", sleep)
     assert keys.KeysProvider("ss")._headless_connect("uid1").success
+
+
+def test_delete_config_removes_matching_key(monkeypatch, tmp_path):
+    store = tmp_path / "keys.json"
+    monkeypatch.setattr(keys, "STORE", store)
+    parsed = keys.parse_ss_key(ss_url(tag="Home"))
+    assert keys.add_server(parsed).success
+    provider = keys.KeysProvider("ss")
+    conn = provider.connections()[0]
+    result = provider.delete_config(conn)
+    assert result.success
+    assert provider.connections() == []
+
+
+def test_delete_config_unknown_server(monkeypatch, tmp_path):
+    from providers.base import VPNConnection
+
+    monkeypatch.setattr(keys, "STORE", tmp_path / "keys.json")
+    tmp_path.joinpath("keys.json").write_text("[]")
+    provider = keys.KeysProvider("ss")
+    result = provider.delete_config(
+        VPNConnection(name="missing", provider="Shadowsocks", active=False)
+    )
+    assert not result.success
+    assert "Unknown Shadowsocks server" in result.message
+
+
+def test_delete_config_refuses_active_server(monkeypatch, tmp_path):
+    from providers.base import VPNConnection
+
+    store = tmp_path / "keys.json"
+    monkeypatch.setattr(keys, "STORE", store)
+    assert keys.add_server(keys.parse_ss_key(ss_url(tag="Home"))).success
+    provider = keys.KeysProvider("ss")
+    conn = VPNConnection(name="Home", provider="Shadowsocks", active=True)
+    result = provider.delete_config(conn)
+    assert not result.success
+    assert "Disconnect" in result.message

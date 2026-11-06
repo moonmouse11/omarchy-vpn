@@ -39,6 +39,39 @@ def env(monkeypatch, tmp_path):
     return pings
 
 
+@pytest.mark.parametrize("provider_name", ["Happ", "INCY"])
+def test_same_vendor_subscriptions_keep_connect_favourite_and_group_identity(
+    env, monkeypatch, provider_name
+):
+    import providers.incy as incy
+
+    conns = [
+        VPNConnection("Germany", provider_name, False, subscription_id=sub) for sub in ("A", "B")
+    ]
+    provider = FakeProvider(provider_name, conns)
+    entries = [{"name": c.name, "active": False, "provider_id": c.subscription_id} for c in conns]
+
+    def groups(provider):
+        return [], {"Same vendor": entries}
+
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
+    monkeypatch.setattr(vpn_manager, "happ_server_groups", groups)
+    monkeypatch.setattr(incy, "incy_server_groups", groups)
+    monkeypatch.setattr(vpn_manager, "guarded_connect", lambda p, c: p.connect(c))
+    vpn_manager.quickconnect.toggle_favourite(provider_name, "Germany", "B")
+    data = vpn_manager.server_list()
+    assert len(data["groups"]) == 2
+    a, b = data["groups"]
+    assert (a["subscription_id"], b["subscription_id"]) == ("A", "B")
+    assert a["id"] != b["id"]
+    assert not a["servers"][0]["favourite"]
+    assert b["servers"][0]["favourite"]
+    assert vpn_manager.panel_connect(
+        provider_name, b["servers"][0]["name"], b["subscription_id"]
+    ).success
+    assert provider.connected[0].subscription_id == "B"
+
+
 def test_ping_status_fresh_stale_none(env):
     now = time.time()
     env["a"] = {"ms": 42.0, "at": now}
@@ -48,6 +81,66 @@ def test_ping_status_fresh_stale_none(env):
     assert happmeta.ping_status("b") == ("stale", 42.0)
     assert happmeta.ping_status("c") == ("fresh", None)
     assert happmeta.ping_status("nope") == ("none", None)
+
+
+def test_server_row_marks_orphan_profiles(env):
+    row = vpn_manager._server_row({"name": "orphan", "active": True, "orphan": True})
+    assert row["orphan"] is True
+
+
+def test_server_row_omits_orphan_when_not_flagged(env):
+    row = vpn_manager._server_row({"name": "home", "active": True})
+    assert "orphan" not in row
+
+
+def test_server_list_sets_orphan_on_active_profiles_without_config(env, monkeypatch):
+    ghost = VPNConnection(name="ghost", provider="WireGuard", active=True, config_path=None)
+    wg = FakeProvider("WireGuard", [ghost])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [wg])
+    group = next(g for g in vpn_manager.server_list()["groups"] if g["provider"] == "WireGuard")
+    assert group["servers"][0]["orphan"] is True
+
+
+def test_server_list_orphan_false_for_active_key_without_config_path(env, monkeypatch):
+    key = VPNConnection(name="Home", provider="VLESS", active=True, config_path=None)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("VLESS", [key])])
+    group = next(g for g in vpn_manager.server_list()["groups"] if g["provider"] == "VLESS")
+    assert "orphan" not in group["servers"][0]
+
+
+def test_server_list_orphan_true_for_amneziawg_without_config(env, monkeypatch):
+    ghost = VPNConnection(name="gone", provider="AmneziaWG", active=True, config_path=None)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("AmneziaWG", [ghost])])
+    group = next(g for g in vpn_manager.server_list()["groups"] if g["provider"] == "AmneziaWG")
+    assert group["servers"][0]["orphan"] is True
+
+
+def test_server_list_orphan_false_for_active_networkmanager(env, monkeypatch):
+    office = VPNConnection(name="office", provider="NetworkManager", active=True, config_path=None)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("NetworkManager", [office])])
+    group = next(
+        g for g in vpn_manager.server_list()["groups"] if g["provider"] == "NetworkManager"
+    )
+    assert "orphan" not in group["servers"][0]
+
+
+def test_server_list_orphan_false_when_tunnel_not_active(env, monkeypatch):
+    ghost = VPNConnection(name="ghost", provider="WireGuard", active=False, config_path=None)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("WireGuard", [ghost])])
+    group = next(g for g in vpn_manager.server_list()["groups"] if g["provider"] == "WireGuard")
+    assert "orphan" not in group["servers"][0]
+
+
+def test_server_list_orphan_false_for_offline_profile(env, monkeypatch):
+    home = VPNConnection(
+        name="home",
+        provider="WireGuard",
+        active=False,
+        config_path="/etc/wireguard/home.conf",
+    )
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("WireGuard", [home])])
+    group = next(g for g in vpn_manager.server_list()["groups"] if g["provider"] == "WireGuard")
+    assert "orphan" not in group["servers"][0]
 
 
 @pytest.mark.parametrize(
@@ -97,9 +190,30 @@ def test_server_list_groups_happ_per_subscription_and_other_providers(env, monke
     ]  # a provider with nothing to show has no group…
     # …but is still a protocol of the window's tree/tabs/sidebar
     assert listing["providers"] == [
-        {"name": "Happ", "importer": None, "manage": False, "total": 2, "active": True},
-        {"name": "WireGuard", "importer": "file", "manage": True, "total": 1, "active": True},
-        {"name": "OpenVPN", "importer": "file", "manage": False, "total": 0, "active": False},
+        {
+            "name": "Happ",
+            "importer": None,
+            "manage": False,
+            "autostart": False,
+            "total": 2,
+            "active": True,
+        },
+        {
+            "name": "WireGuard",
+            "importer": "file",
+            "manage": True,
+            "autostart": True,
+            "total": 1,
+            "active": True,
+        },
+        {
+            "name": "OpenVPN",
+            "importer": "file",
+            "manage": True,
+            "autostart": True,
+            "total": 0,
+            "active": False,
+        },
     ]
     assert listing["layout"] == "tree"
     sub_a = groups[0]
@@ -162,6 +276,20 @@ def test_panel_connect_other_provider_uses_its_connection(monkeypatch):
     assert calls == [("up", "WireGuard", home)]
     assert not vpn_manager.panel_connect("WireGuard", "gone").success
     assert not vpn_manager.panel_connect("Nope", "home").success
+
+
+def test_panel_connect_resolves_a_provider_hidden_from_the_server_list(monkeypatch):
+    """Settings can hide a protocol from Locations; connect still uses it."""
+    calls = _guarded(monkeypatch)
+    home = VPNConnection(name="home", provider="WireGuard", active=False, config_path="/x")
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("WireGuard", [home])])
+    monkeypatch.setattr(
+        vpn_manager.config,
+        "load_config",
+        lambda: config.Config(providers={"wireguard": False}),
+    )
+    assert vpn_manager.panel_connect("WireGuard", "home").success
+    assert calls == [("up", "WireGuard", home)]
 
 
 def test_panel_disconnect_matches_by_name_or_any_happ(monkeypatch):
@@ -242,7 +370,11 @@ def test_server_list_never_blocks_on_the_network(env, monkeypatch):
     synchronously (measured 15 s against a real stale cache, see CLAUDE.md)."""
     calls = []
     monkeypatch.setattr(
-        happmeta, "request_subscription_update", lambda: calls.append("background refresh")
+        happmeta, "request_subscription_update", lambda: calls.append("happ refresh")
+    )
+    monkeypatch.setattr(
+        "incy.subscriptions.request_subscription_update",
+        lambda: calls.append("incy refresh"),
     )
 
     def fake_all_servers(allow_fetch=True):
@@ -252,7 +384,7 @@ def test_server_list_never_blocks_on_the_network(env, monkeypatch):
     monkeypatch.setattr(happmeta, "all_servers", fake_all_servers)
     monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [FakeProvider("Happ", [])])
     vpn_manager.server_list()
-    assert calls == ["background refresh"]
+    assert calls == ["happ refresh", "incy refresh"]
 
 
 @pytest.mark.parametrize(("captured", "hint"), [(False, True), (True, False)])

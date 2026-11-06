@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - Unreleased
+
+### Upgrade notes
+
+Run **Update setup** in the panel (or `make install`) after updating. This release changes the
+root-owned helpers, trusted Python modules and backend layout; updating the plugin clone alone
+does not update those installed copies. Maintainer verification must cover the new release SHA.
+
+Existing profile, key, subscription and quick-connect files are retained. Endpoint bootstrap uses
+your configured IPv4 DNS upstreams and `/etc/hosts`, without a public fallback or automatic DNS
+settings changes. Strict DNS-over-TLS and unsupported local DNS proxies fail explicitly rather
+than silently falling back to plaintext. OpenVPN option names must be plain; quoted/escaped
+option names are rejected before native startup. Quoted hostname arguments remain supported.
+
+### Added
+
+- **INCY Desktop subscriptions** alongside Happ: subscription groups, refresh, connect/disconnect,
+  xray-based ping and installer detection. Tested with INCY Desktop 3.9.0 and bundled Ferrum
+  26.10.13; the INCY app and plugin cannot own a tunnel at the same time.
+- **Copy exit IP** by clicking the cached public IP in the connection summary.
+- **Profile deletion** for VLESS/Shadowsocks keys, with quick-connect cleanup, plus OpenVPN
+  autostart management through `openvpn-client@`.
+- **Orphan WireGuard/AmneziaWG tunnels** remain visible and can be disconnected when their
+  profile file is missing.
+- Isolated native DNS/nft and pinned INCY library tests for bootstrap, routing, tunnel traffic,
+  cancellation, process cleanup and proxy/direct permission separation.
+
+### Security
+
+- Replace the broad connect-time DNS exception with authenticated, uplink-bound bootstrap
+  sockets. Firewall permission requires the dedicated mark, a configured upstream and TCP/UDP
+  port 53; ordinary application and shared systemd-resolved DNS get no exception.
+- WireGuard, AmneziaWG and OpenVPN use one endpoint-address snapshot for both the firewall and
+  private numeric runtime profiles, avoiding a second native hostname lookup.
+- INCY native library code runs as the desktop user. Fixed root-owned brokers provide narrowly
+  validated TUN/socket operations instead of executing a user-writable runner as root.
+- SaveConfig recovery refuses to overwrite replacement credentials/settings and retains private
+  recovery data on conflict. Profile deletion/import serialize with native operations; deleting
+  an inactive profile discards obsolete runtime state before the name is reused.
+
+### Fixed
+
+- Protection caches distinguish providers and subscriptions even when server names match;
+  old name-only records must be checked again before earning Protected.
+- Happ/INCY subscriptions with identical display names keep separate connect, favourite and
+  ping ownership.
+- Bootstrap firewall scope follows resolver changes after the previous tunnel is stopped;
+  a failed refresh aborts before endpoint lookup or native startup.
+- OpenVPN detects and stops standard systemd client units without helper PID files. Managed
+  autostart units use the desktop connection's PID/DNS lifecycle and optional IPv6 boot guard.
+- Uninstall removes managed boot/service drop-ins before deleting the helper and stops if
+  that cleanup fails.
+- DNS probe timeouts and cancellation no longer wait for stuck libc lookups or delay process
+  exit.
+- OpenVPN active detection and disconnect work with a freshly created PID directory: only PID
+  metadata is readable by the desktop user; runtime profiles and credentials stay private. A
+  rejected native start removes its empty PID placeholder so the next attempt can succeed.
+- WireGuard/AmneziaWG SaveConfig preserves IPv6 interface addresses and peer AllowedIPs removed
+  for guarded startup, including interrupted-save recovery, without discarding native IPv4/port
+  changes or replacing newer source credentials. This preserves configuration; it does not add
+  IPv6 tunnelling.
+- Bootstrap tries another configured DNS upstream after server errors such as SERVFAIL/REFUSED,
+  within the same deadline; NXDOMAIN remains terminal.
+- Failed endpoint bootstrap or final firewall setup reconciles the IPv6 guard after teardown,
+  without opening the cancellation/handover gap.
+- DNS protection no longer trusts a resolver solely by its brand or ASN. Missing/stale evidence
+  cannot earn Protected; configured LAN resolvers are warnings, not proof of a packet-path leak.
+- AmneziaWG detection handles userspace implementations and avoids assigning same-named
+  interfaces to the wrong kernel provider.
+
+### Changed
+
+- Faster status polling through provider-specific active-connection probes and an early status
+  entry point that avoids loading the full CLI facade.
+- Backend code is organized into app, subscription, ping and provider modules while retaining
+  compatible facade patch targets.
+
+### Known limitations
+
+- INCY configurations containing Shadowsocks temporarily disable TUN sniffing to avoid a
+  reproduced HTTP/TLS stall in the external-TUN-FD path. Domain rules requiring sniffed names may
+  not match; IP-based rules and kill-switch separation are unchanged. VLESS-only configurations
+  retain sniffing. The underlying cause is still under investigation.
+- Tunnels remain IPv4-only; the optional IPv6 guard disables IPv6 rather than tunnelling it.
+- NetworkManager VPNs remain outside the plugin-managed kill switch.
+
 ## [0.3.2] - 2026-10-28
 
 Run **Update setup** in the panel (or `make install`) after updating: the helpers and the
@@ -147,6 +233,7 @@ First release: a fork of [waybar-vpn-manager](https://github.com/moonmouse11/way
 0.3.0 (archived), renamed ahead of the Omarchy 4 port.
 
 [Unreleased]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.2...HEAD
+[0.4.0]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.2...release/0.4.0
 [0.3.2]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.2.0...v0.3.0

@@ -1,0 +1,10 @@
+#!/usr/bin/python3 -I
+"""Fixed root-only DNS socket entry; never import the user-owned backend."""
+
+import sys
+
+sys.path.insert(0, "/usr/local/lib/omarchy-vpn")
+
+from vpn_dns.control import main
+
+sys.exit(main())

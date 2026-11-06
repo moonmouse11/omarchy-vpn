@@ -14,6 +14,9 @@ CursorSurface {
   // in the app window: "+ Import" on protocols, right click for profiles
   property bool inWindow: false
   readonly property bool canImport: inWindow && isProvider && !!row.provider.importer
+  readonly property bool isHappProvider: isProvider && row.provider && row.provider.name === "Happ"
+  readonly property bool isIncyProvider: isProvider && row.provider && row.provider.name === "INCY"
+  readonly property bool isSubProvider: isHappProvider || isIncyProvider
   readonly property bool isGroup: row && row.kind === "group"
   // the tree layout's top level: a protocol (Happ, WireGuard, …)
   readonly property bool isProvider: row && row.kind === "provider"
@@ -27,6 +30,7 @@ CursorSurface {
     if (isProvider) return row.provider.name
     if (isGroup) return row.group.title
     if (isAuto) return "Auto — best ping · " + server.name
+    if (server && server.orphan) return server.name + " · no profile"
     return server.name
   }
   readonly property bool pinging: host.rowPinging(row)
@@ -59,6 +63,10 @@ CursorSurface {
     onClicked: function(mouse) {
       if (mouse.button === Qt.RightButton) {
         if (serverRow.inWindow) serverRow.host.showProfile(serverRow.row)
+        else if (serverRow.row && serverRow.row.kind === "server" && serverRow.server
+            && serverRow.server.active === true)
+          serverRow.host.runArgs(["--disconnect", String(serverRow.row.group.provider),
+            String(serverRow.server.name)])
         return
       }
       serverRow.host.activateServerRow(serverRow.row)
@@ -87,46 +95,77 @@ CursorSurface {
       anchors.verticalCenter: parent.verticalCenter
     }
 
-    Text {
-      textFormat: Text.PlainText
-      text: serverRow.leftText
-      color: serverRow.isAuto ? serverRow.host.dim : serverRow.host.foreground
-      font.family: serverRow.host.fontFamily
-      font.pixelSize: serverRow.isHeader ? Style.font.body : Style.font.bodySmall
-      font.bold: serverRow.isHeader || serverRow.isActive
-      elide: Text.ElideRight
-      width: parent.width - rowGlyph.width - rightLabel.width
-        - (groupPing.visible ? groupPing.width + parent.spacing : 0)
-        - (importButton.visible ? importButton.width + parent.spacing : 0)
-        - (starButton.visible ? starButton.width + parent.spacing : 0)
-        - parent.spacing * 2
+    Item {
+      width: Math.max(Style.space(40),
+        parent.width - rowGlyph.width - actionsRow.width - parent.spacing * 2)
+      height: titleText.implicitHeight
       anchors.verticalCenter: parent.verticalCenter
+
+      Text {
+        id: titleText
+        width: parent.width
+        textFormat: Text.PlainText
+        text: serverRow.leftText
+        color: serverRow.isAuto ? serverRow.host.dim : serverRow.host.foreground
+        font.family: serverRow.host.fontFamily
+        font.pixelSize: serverRow.isHeader ? Style.font.body : Style.font.bodySmall
+        font.bold: serverRow.isHeader || serverRow.isActive
+        elide: Text.ElideRight
+        anchors.verticalCenter: parent.verticalCenter
+      }
     }
+
+    Row {
+      id: actionsRow
+      spacing: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
 
     Text {
       id: rightLabel
+      visible: serverRow.isHeader
       textFormat: Text.PlainText
-      // never measured: a ping glyph on hover, so there is still something to click
-      text: serverRow.rightText !== "" || serverRow.isHeader ? serverRow.rightText
-        : (rowMouse.containsMouse ? "" : "")  // nf-fa-refresh
-      color: pingMouse.containsMouse && !serverRow.isHeader ? serverRow.host.foreground
-        : (serverRow.server && (serverRow.server.stale || serverRow.server.ping_ms === null)
-          ? serverRow.host.dim : (serverRow.isHeader ? serverRow.host.dim : serverRow.host.foreground))
+      text: serverRow.rightText !== "" ? serverRow.rightText : serverRow.countText
+      color: serverRow.host.dim
       font.family: serverRow.host.fontFamily
       font.pixelSize: Style.font.caption
-      anchors.verticalCenter: parent.verticalCenter
+    }
 
-      // a server's ping is its own button: click = measure it (the rest
-      // of the row connects)
+    // a group's ping button, next to its summary (above the row click target)
+    Text {
+      id: groupPing
+      z: 10
+      visible: serverRow.isGroup
+      textFormat: Text.PlainText
+      text: ""  // nf-fa-refresh
+      color: groupPingMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
+      font.family: serverRow.host.fontFamily
+      font.pixelSize: Style.font.caption
+
       MouseArea {
-        id: pingMouse
+        id: groupPingMouse
         anchors.fill: parent
         anchors.margins: -Style.space(4)
-        enabled: !serverRow.isHeader && !serverRow.pending
+        enabled: serverRow.isGroup
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        onClicked: serverRow.host.pingRow(serverRow.row)
+        onClicked: function(mouse) {
+          mouse.accepted = true
+          serverRow.host.pingRow(serverRow.row)
+        }
       }
+    }
+
+    ProviderPing {
+      visible: serverRow.isSubProvider
+      host: serverRow.host
+      provider: serverRow.row && serverRow.row.provider ? serverRow.row.provider.name : ""
+    }
+
+    HappSubRefresh {
+      id: subRefresh
+      visible: serverRow.isSubProvider
+      host: serverRow.host
+      provider: serverRow.row && serverRow.row.provider ? serverRow.row.provider.name : "Happ"
     }
 
     // ★ a favourite (always), ☆ on hover: click (or `s`) stars it — QUICK CONNECT
@@ -140,7 +179,6 @@ CursorSurface {
         ? serverRow.host.foreground : serverRow.host.dim
       font.family: serverRow.host.fontFamily
       font.pixelSize: Style.font.caption
-      anchors.verticalCenter: parent.verticalCenter
 
       MouseArea {
         id: starMouse
@@ -162,7 +200,6 @@ CursorSurface {
       color: importMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
       font.family: serverRow.host.fontFamily
       font.pixelSize: Style.font.caption
-      anchors.verticalCenter: parent.verticalCenter
 
       MouseArea {
         id: importMouse
@@ -175,39 +212,53 @@ CursorSurface {
       }
     }
 
-    // a group's ping button, next to its summary
-    Text {
-      id: groupPing
-      visible: serverRow.isGroup
-      textFormat: Text.PlainText
-      text: ""  // nf-fa-refresh
-      color: groupPingMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
-      font.family: serverRow.host.fontFamily
-      font.pixelSize: Style.font.caption
-      anchors.verticalCenter: parent.verticalCenter
+    // Ping column: fixed width so hover never reflows the row; empty ping keeps
+    // a visible ⟳ (not hover-only) so clicks don't fall through to connect.
+    Item {
+      id: pingSlot
+      visible: !serverRow.isHeader
+      width: Math.max(pingLabel.implicitWidth, Style.space(44))
+      implicitHeight: pingLabel.implicitHeight
+
+      Text {
+        id: pingLabel
+        anchors.right: parent.right
+        textFormat: Text.PlainText
+        text: serverRow.pending || serverRow.pinging ? "…"
+          : (serverRow.rightText !== "" ? serverRow.rightText : "")  // nf-fa-refresh
+        color: pingMouse.containsMouse ? serverRow.host.foreground
+          : (serverRow.server && (serverRow.server.stale || serverRow.server.ping_ms === null)
+            ? serverRow.host.dim : serverRow.host.foreground)
+        font.family: serverRow.host.fontFamily
+        font.pixelSize: Style.font.caption
+      }
 
       MouseArea {
-        id: groupPingMouse
+        id: pingMouse
         anchors.fill: parent
-        anchors.margins: -Style.space(4)
-        enabled: serverRow.isGroup
+        enabled: !serverRow.pending
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        onClicked: serverRow.host.pingRow(serverRow.row)
+        onClicked: function(mouse) {
+          mouse.accepted = true
+          serverRow.host.pingRow(serverRow.row)
+        }
       }
     }
+
+    }  // actionsRow
   }
 
   PanelToolTip {
-    visible: pingMouse.containsMouse || groupPingMouse.containsMouse
+    visible: (pingMouse.containsMouse && pingSlot.visible) || groupPingMouse.containsMouse
     text: serverRow.pinging ? "Measuring…"
       : (serverRow.isGroup ? "Ping every server of " + serverRow.row.group.title : "Click to ping")
     fontFamily: serverRow.host.fontFamily
   }
 
   PanelToolTip {
-    visible: rowMouse.containsMouse && !pingMouse.containsMouse && !serverRow.isHeader
-      && serverRow.server !== null
+    visible: rowMouse.containsMouse && !(pingSlot.visible && pingMouse.containsMouse)
+      && !groupPingMouse.containsMouse && !serverRow.isHeader && serverRow.server !== null
     text: serverRow.server
       ? (serverRow.isActive ? "Disconnect" : "Connect") + (serverRow.server.protocol ? " · " + serverRow.server.protocol : "")
       : ""

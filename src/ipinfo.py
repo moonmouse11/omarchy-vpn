@@ -26,6 +26,7 @@ CACHE_PATH = Path.home() / ".cache" / "vpn-manager" / "exit_ip.json"
 # ipwho.is gives IP + country in one request; ifconfig.me is the plain-IP fallback
 API_PRIMARY = "https://ipwho.is/"
 API_FALLBACK = "https://ifconfig.me/ip"
+CACHE_VERSION = 2  # Full provider/subscription/name identity, not the old bare name.
 RECHECK_AFTER_ERROR = 60  # seconds, avoid hammering when the tunnel is down
 
 
@@ -44,7 +45,7 @@ def read_cache() -> dict | None:
 
 
 def is_fresh(cache: dict | None, connection: str, max_age: int) -> bool:
-    if not cache or cache.get("error"):
+    if not cache or cache.get("version") != CACHE_VERSION or cache.get("error"):
         return False
     if cache.get("connection") != connection:
         return False
@@ -67,12 +68,13 @@ def update(connection: str) -> None:
     """Fetch exit IP in the background. Failures are cached briefly."""
     cache = read_cache() or {}
     if (
-        cache.get("connection") == connection
+        cache.get("version") == CACHE_VERSION
+        and cache.get("connection") == connection
         and time.time() - cache.get("fetched_at", 0) < RECHECK_AFTER_ERROR
     ):
         return  # another background run handled this very recently
 
-    entry: dict = {"connection": connection, "fetched_at": time.time()}
+    entry: dict = {"version": CACHE_VERSION, "connection": connection, "fetched_at": time.time()}
     # urlopen's timeout does not cover DNS resolution — a stuck getaddrinfo
     # kept an --update-ip process alive for days once. Guard with a thread.
     result: dict = {}

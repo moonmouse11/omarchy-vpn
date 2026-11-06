@@ -1,0 +1,5 @@
+# INCY Desktop 3.9.0; Ferrum 26.10.13 (0da8c683).
+# Official package SHA256: f110f5b60173b27db45c1c2718d9a512b0d1d901a12ad55ba3bc0d7c0b7431eb
+# Test fixtures only. Update with authenticated release provenance and a native suite run.
+94ed9257c6e6625c926002c9a11b3ee58dadcb7f417f3438d4ec4c528e82365e  lib/app/resources/bin/libincycore.so
+899bdfa110b1eb7fddbc49aee827bcf9ed2f19fe4ae097344a76db708dfb00f4  lib/app/resources/bin/libxray_ffi.so

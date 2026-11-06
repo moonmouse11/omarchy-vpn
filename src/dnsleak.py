@@ -13,18 +13,18 @@ public IP), "dns" (each detected resolver), "conclusion" (bash.ws's own
 verdict text).
 """
 
-import concurrent
 import contextlib
 import json
 import re
 import socket
+import threading
+import time
 import urllib.error
 from typing import TYPE_CHECKING
 
 import lazyimports  # noqa: F401 — registers urllib.request & co. to load on first use
 
 if TYPE_CHECKING:  # loaded lazily at run time, see lazyimports.py
-    import concurrent.futures
     import urllib.request
 
 API = "bash.ws"
@@ -58,16 +58,6 @@ def _describe(e: Exception) -> str:
     return str(e) or type(e).__name__
 
 
-# Public anycast resolvers — their egress can sit in any country near the
-# tunnel exit, so answering from one of these is never a leak on its own.
-NEUTRAL_ASNS = {
-    13335,  # Cloudflare (1.1.1.1)
-    15169,  # Google (8.8.8.8)
-    19281,  # Quad9 (9.9.9.9)
-    36692,  # Cisco OpenDNS
-}
-
-
 def _get_test_id() -> str:
     with urllib.request.urlopen(f"https://{API}/id", timeout=REQUEST_TIMEOUT) as resp:
         return resp.read().decode().strip()
@@ -79,10 +69,16 @@ def _probe(host: str) -> None:
 
 
 def _send_probes(test_id: str) -> None:
-    hosts = [f"{i}.{test_id}.{API}" for i in range(1, PROBE_COUNT + 1)]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=PROBE_COUNT) as pool:
-        futures = [pool.submit(_probe, h) for h in hosts]
-        concurrent.futures.wait(futures, timeout=PROBE_TIMEOUT)
+    deadline = time.monotonic() + PROBE_TIMEOUT
+    # libc lookups cannot be cancelled; daemon workers must not hold cancellation/process exit.
+    workers = [
+        threading.Thread(target=_probe, args=(f"{i}.{test_id}.{API}",), daemon=True)
+        for i in range(1, PROBE_COUNT + 1)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=max(0, deadline - time.monotonic()))
 
 
 def _fetch_results(test_id: str) -> list[dict]:
@@ -98,18 +94,12 @@ def asn_number(asn: str | None) -> int | None:
 
 
 def server_tags(server: dict, ip_country: str, ip_asn: int | None) -> list[str]:
-    """Own leak heuristic for one resolver, independent of bash.ws's verdict
-    (which knows nothing about which VPN is up). A resolver is trusted when
-    it's a public anycast service (NEUTRAL_ASNS) or shares the exit IP's
-    ASN (the VPN provider's own DNS). Otherwise: 'ASN' — not the VPN's and
-    not public; 'GEO' — sits in a different country than the exit IP. Each
-    rule stays quiet when the data it needs is missing, so a sparse bash.ws
-    reply never produces a false alarm."""
+    """Mismatch indicators, not proof of the query's path. Network identity
+    never suppresses a country mismatch; missing facts produce no indicator,
+    but callers must not interpret that absence as a successful check."""
     asn = asn_number(server.get("asn"))
-    if asn is not None and (asn in NEUTRAL_ASNS or asn == ip_asn):
-        return []
     tags = []
-    if asn is not None and ip_asn is not None:
+    if asn is not None and ip_asn is not None and asn != ip_asn:
         tags.append("ASN")
     country = (server.get("country") or "").upper()
     if country and ip_country and country != ip_country:

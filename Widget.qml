@@ -45,6 +45,7 @@ Panel {
     "{server}",
     "{server} · {ping}",
     "{server} · {activity}",
+    "{label} · {connecting}",
     "{exit_flag} {exit_ip}",
     "{state}",
     "{server} · ↓ {down} ↑ {up}",
@@ -133,6 +134,15 @@ Panel {
   // Two short lines under the hero: one long line got cut off at the
   // panel's width once the session totals joined the speed.
   readonly property string exitLine: panelData.exit_ip ? "Exit " + panelData.exit_ip : ""
+  // Plain address for copy (fields.exit_ip); panel exit_ip includes the flag emoji.
+  readonly property string exitIpCopy: {
+    var ip = String((panelData.fields || {}).exit_ip || "")
+    if (ip !== "") return ip
+    var shown = String(panelData.exit_ip || "").trim()
+    if (shown === "") return ""
+    var m = shown.match(/^(\S+)/)
+    return m ? m[1] : ""
+  }
   readonly property string trafficLine: {
     var parts = []
     if (panelData.rate) parts.push(panelData.rate)
@@ -225,7 +235,7 @@ Panel {
       rows.push({ kind: "provider", provider: prov, key: key, open: open, count: count, depth: 0 })
       if (!open) continue
       // a subscription is a level of its own; WireGuard's one group is the protocol itself
-      var nested = prov.name === "Happ"
+      var nested = prov.name === "Happ" || prov.name === "INCY"
       for (var n = 0; n < mine.length; n++) {
         var mg = mine[n].group
         pushGroup(rows, mg, mine[n].servers,
@@ -259,14 +269,21 @@ Panel {
     profileMode = "import"
   }
 
-  // right click / a / x on a server whose protocol manages profiles
+  // right click: managed profiles (delete/autostart) or Happ/INCY (disconnect only)
   function showProfile(row) {
     if (!row || row.kind !== "server") return false
     var info = providerInfo(row.group.provider)
-    if (!info || !info.manage) return false
-    profileTarget = row
-    profileMode = "profile"
-    return true
+    if (info && info.manage) {
+      profileTarget = row
+      profileMode = "profile"
+      return true
+    }
+    if (row.group.provider === "Happ" || row.group.provider === "INCY") {
+      profileTarget = row
+      profileMode = "subscription"
+      return true
+    }
+    return false
   }
 
   function closeProfileBar() {
@@ -298,6 +315,13 @@ Panel {
     closeProfileBar()
   }
 
+  function profileDisconnect() {
+    var row = profileTarget
+    if (!row || !row.server) return
+    runArgs(["--disconnect", String(row.group.provider), String(row.server.name)])
+    closeProfileBar()
+  }
+
   // [ / ]: the previous / next protocol of the tabs or sidebar
   function stepProvider(dir) {
     if (rowsLayout === "tree") return
@@ -313,6 +337,12 @@ Panel {
 
   function runArgs(args) {
     Quickshell.execDetached(["python3", root.backend].concat(args))
+  }
+
+  function copyToClipboard(value) {
+    var text = String(value || "")
+    if (text === "") return
+    Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(text) + " | wl-copy"])
   }
 
   // A group's or a server's ping (click on its ping, its group button, `p`).
@@ -361,6 +391,7 @@ Panel {
 
   // the one place --connect's args are built (rows, chips, the switch)
   function connectServer(provider, name, subId) {
+    busy = true
     var args = ["--connect", String(provider), String(name)]
     if (subId) args.push(String(subId))
     runArgs(args)
@@ -454,6 +485,20 @@ Panel {
 
   function run(flag) {
     Quickshell.execDetached(["python3", root.backend, flag])
+  }
+
+  function refreshHappSubscriptions() {
+    runArgs(["--update-subs-force"])
+  }
+
+  function refreshIncySubscriptions() {
+    runArgs(["--update-incy-subs-force"])
+  }
+
+  function pingProvider(name) {
+    if (!name) return
+    runArgs(["--ping-now", "group", "provider:" + name])
+    pingSettle.restart()
   }
 
   // sudo asks in the terminal; install.sh restarts the shell when it's done
@@ -809,7 +854,10 @@ Panel {
         if (k === "t") root.togglePower()
         else if (k === "m") root.openWindow()
         else if (k === "d") root.runDnsTest()
-        else if (k === "r") { root.refresh(); root.loadServers() }
+        else if (k === "r" || k === "к") {
+          root.refresh()
+          root.loadServers()
+        }
         else if (k === "f") root.cycleLabelFormat()
         else if (k === "p" && root.serverCursor >= 0) root.pingRow(root.serverRows[root.serverCursor])
         else if (k === "s" && root.serverCursor >= 0) root.toggleFavourite(root.serverRows[root.serverCursor])

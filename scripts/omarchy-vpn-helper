@@ -9,6 +9,8 @@
 # Profile names only, never paths — the helper finds the files itself:
 #   omarchy-vpn-helper up KIND NAME               KIND: wg | awg | ovpn
 #   omarchy-vpn-helper down KIND NAME             (wg/awg: the interface name)
+#   omarchy-vpn-helper up-numeric KIND NAME < JSON addresses + exact IPv4 snapshot
+#   omarchy-vpn-helper profile-info KIND NAME      endpoint metadata only, never keys
 #   omarchy-vpn-helper import KIND NAME < CONFIG  refuses WireGuard hooks and
 #                                                 OpenVPN directives off OVPN_SAFE
 #   omarchy-vpn-helper rm KIND NAME               wg | awg
@@ -36,6 +38,7 @@ PROC_DIR=${PROC_DIR:-/proc}
 SYSTEMD_DIR=${SYSTEMD_DIR:-/etc/systemd/system}
 SYSTEMCTL=${SYSTEMCTL:-systemctl}
 DROPIN=omarchy-vpn-ipv6.conf
+OVPN_DROPIN=omarchy-vpn.conf
 DNS_UPDOWN=/usr/local/bin/openvpn-dns-updown
 MAX_IMPORT=1048576  # 1 MiB — a config, not a disk filler
 
@@ -80,6 +83,11 @@ run() {
     else
         "$@"
     fi
+}
+
+# Fixed trusted module, not the checkout or caller's PYTHONPATH/current directory.
+profile_runtime() {
+    run /usr/bin/python3 -I -c 'import sys; sys.path.insert(0, "/usr/local/lib/omarchy-vpn"); from vpn_dns.runtime import main; sys.exit(main())' "$@"
 }
 
 # No "/" ever, no leading "-" (an option to wg-quick/systemctl) or "." ("..");
@@ -170,25 +178,184 @@ ovpn_unsafe_line() {
 
 wg_only() { [[ $1 == wg || $1 == awg ]] || die "$2 is for wg / awg profiles only"; }
 
+# None of our providers tunnel IPv6; awg/wg-quick still add ::/0 policy routes
+# when the profile lists them, which fails under disable_ipv6=1 (our leak guard).
+wg_conf_strip_v6_allowedips() {
+    awk '
+    function strip_allowedips(line,    key, rest, n, i, tok, out, sep) {
+        if (line !~ /^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*/) return line
+        match(line, /^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*/)
+        key = substr(line, 1, RLENGTH)
+        rest = substr(line, RLENGTH + 1)
+        n = split(rest, parts, ",")
+        out = ""
+        sep = ""
+        for (i = 1; i <= n; i++) {
+            tok = parts[i]
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", tok)
+            if (tok == "" || tok ~ /:/) continue
+            out = out sep tok
+            sep = ", "
+        }
+        if (out == "") return line
+        return key out
+    }
+    /^[[:space:]]*AllowedIPs[[:space:]]*=/ { print strip_allowedips($0); next }
+    { print }
+    ' "$1"
+}
+
+# A profile named like an existing bridge/uplink must not authorize deleting it.
+existing_tunnel() {
+    ip link show dev "$2" &>/dev/null || return 1
+    # showconf names one device; show treats "all" as a wildcard.
+    if ip -details link show dev "$2" 2>/dev/null | grep -Eq '^[[:space:]]*(wireguard|amneziawg)([[:space:]]|$)' \
+        || "$1" showconf "$2" &>/dev/null; then
+        return 0
+    fi
+    die "$2 exists but is not a WireGuard/AmneziaWG tunnel; refusing to change it"
+}
+
+# Briefly re-enable IPv6 globally for the up script when the guard had it off;
+# strip IPv6 AllowedIPs so quick never needs working IPv6 on the tunnel device.
+wg_quick_up() {
+    local kind=$1 name=$2 conf=${3:-} dir bak target ipv6_was_off=0 stripped=0 rc
+    existing_tunnel "$kind" "$name" >/dev/null || true
+    target=${3:-$name}
+    [[ -n $conf ]] || conf=$(need_conf "$kind" "$name")
+    dir=$(dirname "$conf")
+    bak="$dir/.$name.conf.omarchy-up"
+
+    if grep -qE '^[[:space:]]*AllowedIPs[[:space:]]*=.*:' "$conf"; then
+        cp -a "$conf" "$bak"
+        wg_conf_strip_v6_allowedips "$bak" >"$conf"
+        stripped=1
+        if grep -qE '^[[:space:]]*AllowedIPs[[:space:]]*=.*:' "$conf"; then
+            mv -f "$bak" "$conf"
+            die "AllowedIPs are IPv6-only — omarchy-vpn tunnels IPv4 only; use 0.0.0.0/0 or IPv4 routes"
+        fi
+    fi
+
+    restore_wg_conf() {
+        if [[ $ipv6_was_off == 1 ]]; then
+            run sysctl -q -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 || true
+            ipv6_was_off=0
+        fi
+        if [[ $stripped == 1 && -f $bak ]]; then
+            mv -f "$bak" "$conf"
+            stripped=0
+        fi
+    }
+    trap restore_wg_conf EXIT
+
+    if [[ $(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || echo 0) == 1 ]]; then
+        ipv6_was_off=1
+        run sysctl -q -w net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0
+    fi
+    # a superseded switch can SIGKILL vpn_manager while awg/wg-quick is mid-up;
+    # the half-created link stays and the next up dies with "already exists"
+    if existing_tunnel "$kind" "$name"; then
+        run "$kind-quick" down "$target" 9>&- 2>/dev/null || run ip link delete dev "$name"
+    fi
+    if run "$kind-quick" up "$target" 9>&-; then
+        restore_wg_conf
+        trap - EXIT
+        return 0
+    else
+        rc=$?
+    fi
+    restore_wg_conf
+    trap - EXIT
+    return "$rc"
+}
+
+ovpn_service_active() {
+    "$SYSTEMCTL" is-active --quiet "openvpn-client@$1" 2>/dev/null
+}
+
 cmd_up() {
-    local conf
-    conf=$(need_conf "$1" "$2")
+    local conf=${3:-}
+    if [[ -z $conf && -z ${DRY_RUN:-} ]]; then
+        if [[ $1 != ovpn ]] && existing_tunnel "$1" "$2"; then
+            cmd_down "$1" "$2" || return
+        elif [[ $1 == ovpn ]] && { [[ -f $PID_DIR/client-$2.pid ]] || ovpn_service_active "$2"; }; then
+            cmd_down "$1" "$2" || return
+        fi
+    fi
+    [[ -n $conf ]] || conf=$(need_conf "$1" "$2")
     if [[ $1 == ovpn ]]; then
-        run mkdir -p "$PID_DIR"
+        # Desktop status reads only PID metadata, never the private runtime profile.
+        run install -d -m 755 "$PID_DIR"
+        run install -m 644 /dev/null "$PID_DIR/client-$2.pid"
         # a ping-restart keeps the resolved server IP: under the kill switch
         # `remote` couldn't resolve again (DNS only through the tunnel)
+        local rc=0
         run openvpn --config "$conf" --daemon --writepid "$PID_DIR/client-$2.pid" \
             --script-security 2 --up "$DNS_UPDOWN up" --down "$DNS_UPDOWN down" \
-            --persist-remote-ip
+            --persist-remote-ip 9>&- || rc=$?
+        if (( rc != 0 )) && [[ ! -s $PID_DIR/client-$2.pid ]]; then
+            run rm -f "$PID_DIR/client-$2.pid"
+        fi
+        return "$rc"
     else
-        run "$1-quick" up "$2"
+        wg_quick_up "$1" "$2" "${3:-}"
     fi
 }
 
-cmd_down() {
-    if [[ $1 != ovpn ]]; then
-        run "$1-quick" down "$2"
+cmd_up_numeric() {
+    local kind=$1 name=$2 conf rc
+    if [[ -n ${DRY_RUN:-} ]]; then
+        profile_runtime prepare "$kind" "$name"
         return
+    fi
+    if [[ $kind != ovpn ]] && existing_tunnel "$kind" "$name"; then
+        cmd_down "$kind" "$name" || return
+    elif [[ $kind == ovpn ]] && { [[ -f $PID_DIR/client-$name.pid ]] || ovpn_service_active "$name"; }; then
+        cmd_down "$kind" "$name" || return
+    fi
+    profile_runtime recover "$kind" "$name" >/dev/null || return
+    conf=$(profile_runtime prepare "$kind" "$name") || return
+    profile_runtime starting "$kind" "$name" || return
+    if cmd_up "$kind" "$name" "$conf"; then
+        profile_runtime started "$kind" "$name"
+        return
+    else
+        rc=$?
+    fi
+    if [[ $kind != ovpn ]] && existing_tunnel "$kind" "$name"; then
+        # Cleanup only the private copy; failed starts must never save to source.
+        run "$kind-quick" down "$conf" 9>&- || return "$rc"
+    fi
+    profile_runtime discard "$kind" "$name" || return
+    return "$rc"
+}
+
+cmd_down() {
+    local target=$2 recovered
+    if [[ $1 == ovpn ]] && ovpn_service_active "$2"; then
+        # Stop the owning unit, not only its PID (Restart= could otherwise bring it back).
+        run "$SYSTEMCTL" stop "openvpn-client@$2" 9>&-
+        return
+    fi
+    if [[ -z ${DRY_RUN:-} ]]; then
+        if [[ $1 != ovpn ]] && ! existing_tunnel "$1" "$2"; then
+            recovered=$(profile_runtime recover "$1" "$2") || return
+            [[ $recovered != recovered ]] || return 0
+        fi
+        target=$(profile_runtime current "$1" "$2") || return
+        profile_runtime stopping "$1" "$2" || return
+    fi
+    if [[ $1 != ovpn ]]; then
+        if run "$1-quick" down "$target" 9>&-; then
+            [[ -n ${DRY_RUN:-} ]] || profile_runtime finish "$1" "$2" || return
+            return 0
+        fi
+        # profile config may be gone while the link is still up
+        if existing_tunnel "$1" "$2"; then
+            run ip link delete dev "$2"
+            return 0
+        fi
+        return 1
     fi
     local pid_file=$PID_DIR/client-$2.pid pid comm
     [[ -f $pid_file ]] || die "not running: $2"
@@ -201,6 +368,16 @@ cmd_down() {
         die "not running: $2"
     fi
     run kill "$pid"
+    if [[ -z ${DRY_RUN:-} ]]; then
+        # Do not reuse the runtime or race its DNS down script while the daemon lives.
+        local attempts=0
+        while [[ $(cat "$PROC_DIR/$pid/comm" 2>/dev/null || true) == openvpn ]]; do
+            (( attempts < 50 )) || die "OpenVPN did not stop; runtime retained for recovery"
+            attempts=$((attempts + 1))
+            sleep 0.1
+        done
+        profile_runtime finish "$1" "$2" || return
+    fi
     run rm -f "$pid_file"
 }
 
@@ -229,12 +406,41 @@ cmd_import() {
 
 cmd_rm() {
     local conf
+    if [[ -z ${DRY_RUN:-} ]]; then
+        if [[ $1 == ovpn ]]; then
+            if [[ -f $PID_DIR/client-$2.pid ]] || ovpn_service_active "$2"; then
+                die "stop the profile before deleting it"
+            fi
+        else
+            ! existing_tunnel "$1" "$2" || die "stop the profile before deleting it"
+        fi
+        # Old overlength WG names cannot have a numeric runtime, but remain deletable.
+        if [[ $1 == ovpn || ${#2} -le 15 ]]; then
+            profile_runtime discard "$1" "$2" || return
+        fi
+    fi
+    if [[ $1 == ovpn ]]; then
+        conf=$(need_conf ovpn "$2")
+        run rm -f "$conf" "$SYSTEMD_DIR/openvpn-client@$2.service.d/$DROPIN" \
+            "$SYSTEMD_DIR/openvpn-client@$2.service.d/$OVPN_DROPIN"
+        run "$SYSTEMCTL" daemon-reload
+        return
+    fi
     wg_only "$1" rm
     conf=$(need_conf "$1" "$2")
     run rm -f "$conf" "$SYSTEMD_DIR/$1-quick@$2.service.d/$DROPIN"
 }
 
 cmd_autostart() {
+    if [[ $1 == ovpn ]]; then
+        need_conf ovpn "$2" >/dev/null
+        case ${3:-} in
+            on)  run systemctl enable "openvpn-client@$2" ;;
+            off) run systemctl disable "openvpn-client@$2" ;;
+            *)   die "autostart takes on | off" ;;
+        esac
+        return
+    fi
     wg_only "$1" autostart
     need_conf "$1" "$2" >/dev/null
     case ${3:-} in
@@ -271,23 +477,47 @@ cmd_audit() {
     done
 }
 
-# wg-quick@NAME starts at boot, before login — long before the bar's first
-# --status turns IPv6 off. A drop-in turns it off right before the tunnel comes
+# Autostart units run before login — long before the bar's first --status.
+# A drop-in turns IPv6 off right before the tunnel comes
 # up, for every profile with autostart on (on), or for none (off: ⚙ IPv6 guard
 # off). Never turned back on by systemd: another tunnel may be up by then; the
 # plugin's disconnect does that. Drop-ins of deleted profiles go either way.
 cmd_ipv6_boot() {
-    [[ ${1:-} == on || ${1:-} == off ]] || die "ipv6-boot takes on | off"
-    local kind dir conf name unit dropin
-    for kind in wg awg; do
+    [[ ${1:-} == on || ${1:-} == off ]] || die "ipv6-boot takes on | off [--uninstall]"
+    [[ -z ${2:-} || ( $1 == off && $2 == --uninstall ) ]] || die "invalid boot cleanup flag"
+    if [[ ${2:-} == --uninstall ]]; then
+        rm -f "$SYSTEMD_DIR"/{wg,awg}-quick@*.service.d/"$DROPIN" \
+            "$SYSTEMD_DIR"/openvpn-client@*.service.d/{"$DROPIN","$OVPN_DROPIN"}
+        run "$SYSTEMCTL" daemon-reload
+        return
+    fi
+    local kind dir conf name unit dropin enabled
+    for kind in wg awg ovpn; do
         dir=$(dir_of "$kind")
-        for conf in "$dir"/*.conf; do
+        for conf in "$dir"/*.conf "$dir"/*.ovpn; do
             [[ -f $conf ]] || continue
-            name=$(basename "$conf" .conf)
+            [[ $kind == ovpn || $conf != *.ovpn ]] || continue
+            name=${conf##*/}
+            name=${name%.*}
             [[ $name =~ ^[A-Za-z0-9_][A-Za-z0-9_.=+-]{0,63}$ ]] || continue
             unit="$kind-quick@$name"
+            [[ $kind != ovpn ]] || unit="openvpn-client@$name"
             dropin="$SYSTEMD_DIR/$unit.service.d/$DROPIN"
-            if [[ $1 == on ]] && "$SYSTEMCTL" is-enabled --quiet "$unit" 2>/dev/null; then
+            enabled=0
+            if "$SYSTEMCTL" is-enabled --quiet "$unit" 2>/dev/null; then enabled=1; fi
+            if [[ $kind == ovpn ]]; then
+                if [[ $enabled == 1 ]]; then
+                    mkdir -p "${dropin%/*}"
+                    # Reuse the fixed PID/DNS/native lifecycle, without a second root entry point.
+                    printf '%s\n' '[Service]' 'Type=forking' 'ExecStart=' \
+                        'ExecStart=/usr/local/bin/omarchy-vpn-helper up ovpn %i' \
+                        'PIDFile=/run/openvpn/client-%i.pid' \
+                        >"${dropin%/*}/$OVPN_DROPIN"
+                else
+                    rm -f "${dropin%/*}/$OVPN_DROPIN"
+                fi
+            fi
+            if [[ $1 == on && $enabled == 1 ]]; then
                 mkdir -p "${dropin%/*}"
                 printf '%s\n' "# omarchy-vpn: IPv6 off before the tunnel (none of its providers tunnel IPv6)" \
                     "[Service]" \
@@ -298,18 +528,42 @@ cmd_ipv6_boot() {
             fi
         done
     done
-    for dropin in "$SYSTEMD_DIR"/{wg,awg}-quick@*.service.d/"$DROPIN"; do
+    for dropin in "$SYSTEMD_DIR"/{wg,awg}-quick@*.service.d/"$DROPIN" \
+        "$SYSTEMD_DIR"/openvpn-client@*.service.d/{"$DROPIN","$OVPN_DROPIN"}; do
         [[ -f $dropin ]] || continue
         unit=${dropin#"$SYSTEMD_DIR"/}
         unit=${unit%%.service.d/*}
-        kind=${unit%%-quick@*}
-        [[ -f $(dir_of "$kind")/${unit#*@}.conf ]] || rm -f "$dropin"
+        if [[ $unit == openvpn-client@* ]]; then
+            [[ -n $(conf_of ovpn "${unit#*@}") ]] || rm -f "$dropin"
+        else
+            kind=${unit%%-quick@*}
+            [[ -f $(dir_of "$kind")/${unit#*@}.conf ]] || rm -f "$dropin"
+        fi
     done
     run "$SYSTEMCTL" daemon-reload
 }
 
+if [[ ${1:-} == dns-bootstrap ]]; then
+    (( $# == 2 )) && [[ $2 =~ ^[0-9a-f]{32}$ ]] || die "invalid DNS bootstrap session"
+    if [[ -n ${DRY_RUN:-} ]]; then
+        run /usr/local/bin/omarchy-vpn-dns-bootstrap "$2"
+    else
+        exec /usr/local/bin/omarchy-vpn-dns-bootstrap "$2"
+    fi
+    exit 0
+fi
+if [[ ${1:-} == incy-network ]]; then
+    (( $# == 3 )) && [[ $2 == connect || $2 == probe ]] && [[ $3 =~ ^[0-9a-f]{32}$ ]] \
+        || die "invalid INCY network session"
+    if [[ -n ${DRY_RUN:-} ]]; then
+        run /usr/local/bin/omarchy-vpn-incy-network "$2" "$3"
+    else
+        exec /usr/local/bin/omarchy-vpn-incy-network "$2" "$3"
+    fi
+    exit 0
+fi
 if [[ ${1:-} == ipv6-boot ]]; then
-    cmd_ipv6_boot "${2:-}"
+    cmd_ipv6_boot "${2:-}" "${3:-}"
     exit 0
 fi
 if [[ ${1:-} == audit ]]; then
@@ -324,12 +578,27 @@ check_name "$name"
 # (rm never runs it, so profiles imported before the cap can still be deleted)
 [[ $kind == ovpn || $verb == rm || ${#name} -le 15 ]] \
     || die "invalid profile name: ${name@Q} (WireGuard names are at most 15 characters)"
+# Serialize native work past the lifetime of a superseded user switch process.
+# Native commands close fd 9 so a daemon or background hook cannot retain this lock.
+if [[ -z ${DRY_RUN:-} && ( $verb == up || $verb == up-numeric || $verb == down || $verb == rm || $verb == import ) ]]; then
+    umask 077
+    exec 9>/run/omarchy-vpn-profile.lock
+    flock -w 5 9 || die "another profile operation is still stopping"
+fi
 case $verb in
+    up-numeric)
+        (($# == 3)) || die "usage: up-numeric KIND NAME < ENDPOINT_SNAPSHOT"
+        cmd_up_numeric "$kind" "$name"
+        ;;
     up)        cmd_up "$kind" "$name" ;;
     down)      cmd_down "$kind" "$name" ;;
     import)    cmd_import "$kind" "$name" ;;
     rm)        cmd_rm "$kind" "$name" ;;
     autostart) cmd_autostart "$kind" "$name" "${4:-}" ;;
     endpoints) cmd_endpoints "$kind" "$name" ;;
+    profile-info)
+        (($# == 3)) || die "usage: profile-info KIND NAME"
+        profile_runtime describe "$kind" "$name"
+        ;;
     *)         die "unknown command: ${verb@Q}" ;;
 esac

@@ -1,9 +1,12 @@
+import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import installwizard
+from app import cli
 
 # captured at import, before conftest's autouse fixtures fake subprocess.run
 # and set subprocess.Popen to None (see test_lazyimports.py)
@@ -97,7 +100,7 @@ def test_install_wizard_flag_takes_no_path(monkeypatch):
     seen = []
     monkeypatch.setattr("sys.argv", ["vpn_manager.py", "--install-wizard"])
     monkeypatch.setenv("OMARCHY_VPN_WIZARD_FD", "3")
-    monkeypatch.setattr(vpn_manager.os, "fstat", lambda fd: None)
+    monkeypatch.setattr(cli, "os", SimpleNamespace(environ=os.environ, fstat=lambda fd: None))
     monkeypatch.setattr(
         "installwizard.run", lambda prompter, out: seen.append(out) or 0, raising=True
     )
@@ -113,7 +116,7 @@ def test_install_wizard_without_fd_3_refuses_before_any_question(monkeypatch):
     monkeypatch.setattr("sys.argv", ["vpn_manager.py", "--install-wizard"])
     monkeypatch.setattr("installwizard.run", lambda *a: asked.append(a) or 0)
     monkeypatch.setenv("OMARCHY_VPN_WIZARD_FD", "3")
-    monkeypatch.setattr(vpn_manager.os, "fstat", _closed)
+    monkeypatch.setattr(cli, "os", SimpleNamespace(environ=os.environ, fstat=_closed))
     with pytest.raises(SystemExit) as e:
         vpn_manager.main()
     assert "3>" in str(e.value.code)  # how to run it, not a traceback
@@ -128,7 +131,7 @@ def test_install_wizard_ignores_an_fd_3_install_sh_did_not_open(monkeypatch):
     monkeypatch.setattr("sys.argv", ["vpn_manager.py", "--install-wizard"])
     monkeypatch.setattr("installwizard.run", lambda *a: asked.append(a) or 0)
     monkeypatch.delenv("OMARCHY_VPN_WIZARD_FD", raising=False)
-    monkeypatch.setattr(vpn_manager.os, "fstat", lambda fd: None)  # fd 3 open
+    monkeypatch.setattr(cli, "os", SimpleNamespace(environ=os.environ, fstat=lambda fd: None))
     with pytest.raises(SystemExit) as e:
         vpn_manager.main()
     assert "install.sh" in str(e.value.code)
@@ -185,11 +188,17 @@ def test_a_cancelled_wizard_is_not_a_failure(monkeypatch, tmp_path):
 SWAPPING_SUDO = """#!/bin/bash
 # sudo -v (the password prompt) swaps the checkout's helper; everything else runs
 # unprivileged, /usr/local/bin mapped into $ROOT and install's -o/-g dropped
-if [ "$1" = -v ]; then echo "echo swapped" > "$REPO/scripts/omarchy-vpn-helper"; exit 0; fi
+if [ "$1" = -v ]; then
+    echo "echo swapped" > "$REPO/scripts/omarchy-vpn-helper"
+    echo "raise RuntimeError('swapped root module')" > "$REPO/src/incy/privileged.py"
+    echo "raise RuntimeError('swapped DNS root module')" > "$REPO/src/vpn_dns/control.py"
+    exit 0
+fi
 args=(); skip=
 for a in "$@"; do
     if [ -n "$skip" ]; then skip=; continue; fi
     case $a in -o|-g) skip=1; continue;; esac
+    a=${a//\\/usr\\/local\\/lib\\/omarchy-vpn/$ROOT/lib}
     args+=("${a//\\/usr\\/local\\/bin/$ROOT}")
 done
 case $1 in install|sha256sum) exec "${args[@]}";; esac
@@ -197,7 +206,15 @@ exit 0
 """
 
 
-HELPERS = ("omarchy-vpn-helper", "happ-killswitch", "openvpn-dns-updown")
+HELPERS = (
+    "omarchy-vpn-helper",
+    "happ-killswitch",
+    "openvpn-dns-updown",
+    "omarchy-vpn-incy-network",
+    "omarchy-vpn-dns-bootstrap",
+)
+DNS_ROOT_MODULES = ("__init__.py", "control.py", "resolvers.py", "profiles.py", "runtime.py")
+ROOT_MODULES = ("__init__.py", "broker.py", "network.py", "privileged.py")
 
 
 def _install_from_checkout(monkeypatch, tmp_path, missing=()):
@@ -206,7 +223,16 @@ def _install_from_checkout(monkeypatch, tmp_path, missing=()):
     monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
     repo, root, shims = tmp_path / "repo", tmp_path / "root", tmp_path / "bin"
     (repo / "scripts").mkdir(parents=True)
-    (repo / "src").mkdir()
+    (repo / "src" / "incy").mkdir(parents=True)
+    for name in set(ROOT_MODULES) - set(missing):
+        (repo / "src" / "incy" / name).write_text(
+            (INSTALL.parent / "src" / "incy" / name).read_text()
+        )
+    (repo / "src" / "vpn_dns").mkdir()
+    for name in set(DNS_ROOT_MODULES) - set(missing):
+        (repo / "src" / "vpn_dns" / name).write_text(
+            (INSTALL.parent / "src" / "vpn_dns" / name).read_text()
+        )
     (repo / "manifest.json").write_text("{}")
     (repo / "Widget.qml").write_text("")
     (repo / "install.sh").write_text(INSTALL.read_text())
@@ -236,6 +262,33 @@ def test_root_installs_the_helpers_read_before_the_password_prompt(monkeypatch, 
     for name in HELPERS:
         # …but root got the bytes read before the prompt
         assert (root / name).read_text() == (INSTALL.parent / "scripts" / name).read_text()
+
+
+def test_root_package_is_captured_before_sudo(monkeypatch, tmp_path):
+    result, _, root = _install_from_checkout(monkeypatch, tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    for name in ROOT_MODULES:
+        assert (root / "lib" / "incy" / name).read_text() == (
+            INSTALL.parent / "src" / "incy" / name
+        ).read_text()
+
+
+def test_dns_root_modules_are_captured_before_sudo(monkeypatch, tmp_path):
+    result, repo, root = _install_from_checkout(monkeypatch, tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "swapped DNS root module" in (repo / "src" / "vpn_dns" / "control.py").read_text()
+    for name in DNS_ROOT_MODULES:
+        assert (root / "lib" / "vpn_dns" / name).read_text() == (
+            INSTALL.parent / "src" / "vpn_dns" / name
+        ).read_text()
+
+
+def test_a_missing_root_module_stops_setup_before_sudo(monkeypatch, tmp_path):
+    result, repo, root = _install_from_checkout(monkeypatch, tmp_path, missing=["privileged.py"])
+    assert result.returncode != 0
+    assert "Setup failed" in result.stderr
+    assert list(root.iterdir()) == []
+    assert (repo / "scripts" / "omarchy-vpn-helper").read_text() != "echo swapped\n"
 
 
 def test_a_missing_helper_stops_setup_before_anything_is_installed(monkeypatch, tmp_path):

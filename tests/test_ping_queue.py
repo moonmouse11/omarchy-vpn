@@ -46,7 +46,7 @@ def pings(monkeypatch):
     monkeypatch.setattr(vpn_manager.killswitch, "is_enabled", lambda: False)
     monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
 
-    def fake_run(xray, direct, allowed, kind="all", on_progress=None):
+    def fake_run(xray, direct, allowed, kind="all", on_progress=None, **kwargs):
         runs.append(([k for k, _ in xray], [d[0] for d in direct], allowed, kind))
         return {k: {"ms": 100.0} for k, _ in xray} | {d[0]: {"ms": None} for d in direct}
 
@@ -71,6 +71,7 @@ def _hold_ping_lock():
     [
         ({}, ["15\tDE", "15\tNL", "22\tDE", "mykey"], ["home", "work"]),
         ({"group": "happ:15:Provider A"}, ["15\tDE", "15\tNL"], []),
+        ({"group": "provider:Happ"}, ["15\tDE", "15\tNL", "22\tDE"], []),
         ({"group": "WireGuard"}, [], ["home", "work"]),
         ({"group": "VLESS"}, ["mykey"], []),
         ({"server": ["Happ", "DE", "22"]}, ["22\tDE"], []),  # not the other subscription's DE
@@ -79,8 +80,26 @@ def _hold_ping_lock():
     ],
 )
 def test_a_scope_measures_exactly_its_servers(pings, scope, xray, direct):
-    x, d = vpn_manager._ping_scope_targets(scope)
-    assert ([k for k, _ in x], [t[0] for t in d]) == (xray, direct)
+    x, incy, d = vpn_manager._ping_scope_targets(scope)
+    keys = [k for k, _ in x] + [k for k, _ in incy]
+    assert (keys, [t[0] for t in d]) == (xray, direct)
+
+
+def test_provider_incy_scope_uses_incy_targets(pings, monkeypatch):
+    class Incy:
+        name = "INCY"
+
+        def ping_targets(self):
+            return []
+
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [Incy()])
+    monkeypatch.setattr(
+        vpn_manager.delayping,
+        "incy_targets",
+        lambda sub_id=None, name=None: [("incy1\tPL", {}), ("incy1\tDE", {})],
+    )
+    _x, incy, _d = vpn_manager._ping_scope_targets({"group": "provider:INCY"})
+    assert [k for k, _ in incy] == ["incy1\tPL", "incy1\tDE"]
 
 
 @pytest.mark.parametrize(
@@ -88,6 +107,7 @@ def test_a_scope_measures_exactly_its_servers(pings, scope, xray, direct):
     [
         ([], {}),
         (["group", "happ:15:Provider A"], {"group": "happ:15:Provider A"}),
+        (["group", "provider:Happ"], {"group": "provider:Happ"}),
         (["server", "Happ", "🇩🇪 DE", "15"], {"server": ["Happ", "🇩🇪 DE", "15"]}),
         (["server", "WireGuard", "home"], {"server": ["WireGuard", "home", ""]}),
         (["server"], None),
@@ -290,7 +310,7 @@ def test_the_panel_reloads_at_most_every_two_seconds_while_results_come_in(pings
     refreshes = []
     monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: refreshes.append(1))
 
-    def fake_run(xray, direct, allowed, kind="all", on_progress=None):
+    def fake_run(xray, direct, allowed, kind="all", on_progress=None, **kwargs):
         for done, t in enumerate([0.5, 1.0, 2.5, 3.0, 4.6], start=1):
             now[0] = t
             on_progress(done, 6)

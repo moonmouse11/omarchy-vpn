@@ -1,0 +1,13 @@
+# Optional real INCY lifecycle/packet checks. No host network, VPN state or binaries modified.
+# Build the regular test image first; native INCY libraries are mounted read-only at run time.
+FROM omarchy-vpn-test
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 nftables sudo openssl \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/local/bin/python3 /usr/bin/python3
+COPY src/incy/__init__.py src/incy/broker.py src/incy/network.py src/incy/privileged.py /usr/local/lib/omarchy-vpn/incy/
+COPY scripts/omarchy-vpn-helper scripts/omarchy-vpn-incy-network /usr/local/bin/
+RUN chmod 755 /usr/local/bin/omarchy-vpn-* \
+    && printf 'nobody ALL=(root) NOPASSWD: /usr/local/bin/omarchy-vpn-helper\n' > /etc/sudoers.d/incy-test \
+    && chmod 440 /etc/sudoers.d/incy-test
+ENTRYPOINT ["python3", "/repo/tests/incy_session_check.py"]

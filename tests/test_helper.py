@@ -2,7 +2,12 @@
 AmneziaWG/OpenVPN. Run for real (bash), against a temp tree: the directory
 overrides and DRY_RUN (print, don't run) work only outside sudo."""
 
+import fcntl
+import os
+import pwd
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -31,9 +36,9 @@ def tree(tmp_path, monkeypatch):
         "DRY_RUN": "1",
     }
 
-    def helper(*args, stdin="", extra_env=None):
+    def helper(*args, stdin="", extra_env=None, script=HELPER):
         return _REAL_RUN(
-            ["bash", str(HELPER), *args],
+            ["bash", str(script), *args],
             input=stdin,
             capture_output=True,
             text=True,
@@ -185,12 +190,121 @@ def test_unknown_kind_and_verb_are_refused(tree):
 
 def test_up_down_autostart_rm_run_fixed_commands(tree):
     tree("import", "wg", "home", stdin=WG)
-    assert tree("up", "wg", "home").stdout == "wg-quick up home\n"
+    up_lines = tree("up", "wg", "home").stdout.strip().splitlines()
+    assert up_lines[-1] == "wg-quick up home"
+    if len(up_lines) == 2:
+        assert "disable_ipv6=0" in up_lines[0]
     assert tree("down", "awg", "home").stdout == "awg-quick down home\n"
+
+
+def _helper_without_runtime(tmp_path):
+    # These two tests isolate native fallback; real runtime integration is tested separately.
+    script = tmp_path / "helper"
+    text = HELPER.read_text().replace("/run/omarchy-vpn-profile.lock", str(tmp_path / "lock"))
+    text = text.replace(
+        "profile_runtime() {",
+        "profile_runtime() {\n"
+        '    [[ $1 != current ]] || echo "/etc/wireguard/$3.conf"\n'
+        "    return 0\n",
+    )
+    script.write_text(text)
+    return script
+
+
+def test_down_deletes_interface_when_quick_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+    bind = tmp_path / "bin"
+    bind.mkdir()
+    (bind / "wg-quick").write_text("#!/bin/sh\nexit 1\n")
+    (bind / "ip").write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = -details ]; then echo " wireguard"; exit 0; fi\n'
+        'if [ "$1" = link ] && [ "$2" = show ] && [ "$3" = dev ]; then exit 0; fi\n'
+        'if [ "$1" = link ] && [ "$2" = delete ]; then echo "ip link delete dev $4"; exit 0; fi\n'
+        "exit 1\n"
+    )
+    for script in bind.iterdir():
+        script.chmod(0o755)
+    env = {
+        "PATH": f"{bind}:/usr/bin:/bin",
+        "WG_DIR": str(tmp_path / "wg"),
+        "AWG_DIR": str(tmp_path / "awg"),
+        "OVPN_DIR": str(tmp_path / "ovpn"),
+        "PID_DIR": str(tmp_path / "run"),
+        "PROC_DIR": str(tmp_path / "proc"),
+        "SYSTEMD_DIR": str(tmp_path / "systemd"),
+    }
+    for d in ("wg", "awg", "ovpn", "run", "proc", "systemd"):
+        (tmp_path / d).mkdir()
+    result = _REAL_RUN(
+        ["bash", str(_helper_without_runtime(tmp_path)), "down", "wg", "orphan"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "ip link delete dev orphan" in result.stdout
+
+
+def test_down_fails_when_quick_fails_and_interface_gone(tmp_path, monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+    bind = tmp_path / "bin"
+    bind.mkdir()
+    (bind / "wg-quick").write_text("#!/bin/sh\nexit 1\n")
+    (bind / "ip").write_text("#!/bin/sh\nexit 1\n")
+    for script in bind.iterdir():
+        script.chmod(0o755)
+    env = {
+        "PATH": f"{bind}:/usr/bin:/bin",
+        "WG_DIR": str(tmp_path / "wg"),
+        "AWG_DIR": str(tmp_path / "awg"),
+        "OVPN_DIR": str(tmp_path / "ovpn"),
+        "PID_DIR": str(tmp_path / "run"),
+        "PROC_DIR": str(tmp_path / "proc"),
+        "SYSTEMD_DIR": str(tmp_path / "systemd"),
+    }
+    for d in ("wg", "awg", "ovpn", "run", "proc", "systemd"):
+        (tmp_path / d).mkdir()
+    result = _REAL_RUN(
+        ["bash", str(_helper_without_runtime(tmp_path)), "down", "wg", "missing"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode != 0
+
+
+def test_wg_up_refuses_ipv6_only_allowedips(tree):
+    v6only = (
+        "[Interface]\nPrivateKey = x\n\n[Peer]\n"
+        "PublicKey = y\nEndpoint = 1.2.3.4:51820\nAllowedIPs = ::/0\n"
+    )
+    tree("import", "wg", "home", stdin=v6only)
+    conf = tree.dirs["wg"] / "home.conf"
+    before = conf.read_text()
+    result = tree("up", "wg", "home")
+    assert result.returncode != 0
+    assert "IPv6-only" in result.stderr
+    assert conf.read_text() == before
+
+
+def test_wg_up_strips_ipv6_allowedips_then_restores_config(tree):
+    v6 = (
+        "[Interface]\nPrivateKey = x\n\n[Peer]\n"
+        "PublicKey = y\nEndpoint = 1.2.3.4:51820\nAllowedIPs = 0.0.0.0/0, ::/0\n"
+    )
+    tree("import", "wg", "home", stdin=v6)
+    conf = tree.dirs["wg"] / "home.conf"
+    before = conf.read_text()
+    tree("up", "wg", "home")
+    assert conf.read_text() == before
+    assert "::/0" in before
     assert tree("autostart", "wg", "home", "on").stdout == "systemctl enable wg-quick@home\n"
     assert tree("autostart", "wg", "home", "off").stdout == "systemctl disable wg-quick@home\n"
     assert tree("rm", "wg", "home").stdout.startswith(f"rm -f {tree.dirs['wg']}/home.conf ")
-    assert "wg / awg" in tree("rm", "ovpn", "home").stderr
+    assert tree("rm", "ovpn", "home").stderr == "error: no ovpn profile named 'home'\n"
     assert "no wg profile" in tree("up", "wg", "nope").stderr
 
 
@@ -214,6 +328,77 @@ def test_openvpn_down_kills_only_the_profiles_openvpn(tree, comm, killed):
     result = tree("down", "ovpn", "nl")
     assert ("kill 42" in result.stdout) is killed
     assert (result.returncode == 0) is killed
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        (),
+        ("connect",),
+        ("bad", "a" * 32),
+        ("connect", "../x"),
+        ("probe", "a" * 32, "extra"),
+    ],
+)
+def test_incy_network_refuses_paths_and_extra_arguments(tree, args):
+    result = tree("incy-network", *args)
+    assert result.returncode != 0
+    assert "invalid INCY network session" in result.stderr
+
+
+def test_incy_network_executes_only_fixed_entry(tree):
+    result = tree("incy-network", "probe", "a" * 32)
+    assert result.returncode == 0, result.stderr
+    assert "/usr/local/bin/omarchy-vpn-incy-network" in result.stdout
+    assert "probe" in result.stdout
+
+
+def test_dns_bootstrap_uses_only_fixed_entry(tree):
+    result = tree("dns-bootstrap", "a" * 32)
+    assert result.returncode == 0, result.stderr
+    assert "/usr/local/bin/omarchy-vpn-dns-bootstrap" in result.stdout
+
+
+@pytest.mark.parametrize("args", [(), ("../path",), ("A" * 32,), ("a" * 32, "extra")])
+def test_dns_bootstrap_rejects_paths_and_extra_arguments(tree, args):
+    result = tree("dns-bootstrap", *args)
+    assert result.returncode != 0
+    assert "invalid DNS bootstrap session" in result.stderr
+
+
+def test_legacy_incy_run_cannot_execute_a_user_binary(tree):
+    home = tree.dirs["run"] / "home"
+    state = home / ".local/state/vpn-manager"
+    state.mkdir(parents=True)
+    user = pwd.getpwuid(os.getuid()).pw_name
+    shims = home / "bin"
+    shims.mkdir()
+    getent = shims / "getent"
+    getent.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' '{user}:x:1000:1000::" + str(home) + ":/bin/sh'\n"
+    )
+    getent.chmod(0o755)
+    binary = home / "untrusted"
+    binary.write_text("#!/bin/sh\necho VULNERABLE\n")
+    binary.chmod(0o755)
+    (state / "incy-xray-active.json").write_text("{}")
+    (state / "incy-xray.bin").write_text(str(binary))
+    result = tree(
+        "incy-run",
+        "incy-xray-active.json",
+        extra_env={
+            "SUDO_USER": user,
+            "PATH": f"{shims}:/usr/bin:/bin",
+        },
+    )
+    assert result.returncode != 0
+    assert "VULNERABLE" not in result.stdout
+
+
+def test_incy_run_rejects_unknown_config_slot(tree):
+    result = tree("incy-run", "not-allowed.json")
+    assert result.returncode != 0
+    assert "usage:" in result.stderr
 
 
 def test_audit_lists_configs_on_disk_that_run_root_commands(tree):
@@ -258,6 +443,23 @@ def test_ipv6_boot_drops_in_for_autostarted_profiles_only(tree, tmp_path):
     assert not (systemd / "wg-quick@work.service.d").exists()  # no autostart, no drop-in
 
 
+def test_openvpn_boot_uses_the_existing_helper_and_cleans_all_managed_dropins(tree, tmp_path):
+    tree("import", "ovpn", "nl", stdin="client\ndev tun\nremote 1.1.1.1 1194\n")
+    env = _enabled_units(tree, tmp_path, "openvpn-client@nl")
+    assert tree("ipv6-boot", "on", extra_env=env).returncode == 0
+    directory = tree.dirs["systemd"] / "openvpn-client@nl.service.d"
+    service = directory / "omarchy-vpn.conf"
+    guard = directory / "omarchy-vpn-ipv6.conf"
+    assert "Type=forking" in service.read_text()
+    assert "ExecStart=/usr/local/bin/omarchy-vpn-helper up ovpn %i" in service.read_text()
+    assert "PIDFile=/run/openvpn/client-%i.pid" in service.read_text()
+    assert "disable_ipv6=1" in guard.read_text()
+    tree("ipv6-boot", "off", extra_env=env)
+    assert service.exists() and not guard.exists()
+    tree("ipv6-boot", "off", "--uninstall", extra_env=env)
+    assert not service.exists() and not guard.exists()
+
+
 def test_ipv6_boot_off_and_deleted_profiles_lose_their_drop_ins(tree, tmp_path):
     tree("import", "wg", "home", stdin=WG)
     tree("import", "wg", "gone", stdin=WG)
@@ -277,6 +479,36 @@ def test_rm_also_removes_the_profiles_drop_in(tree):
     tree("import", "wg", "home", stdin=WG)
     dropin = tree.dirs["systemd"] / "wg-quick@home.service.d" / "omarchy-vpn-ipv6.conf"
     assert str(dropin) in tree("rm", "wg", "home").stdout
+
+
+def test_rm_deletes_an_openvpn_profile(tree):
+    tree("import", "ovpn", "nl", stdin="client\ndev tun\nremote 1.1.1.1 1194\n")
+    conf = tree.dirs["ovpn"] / "nl.conf"
+    assert conf.exists()
+    output = tree("rm", "ovpn", "nl").stdout
+    assert output.startswith(f"rm -f {conf} ")
+    assert "openvpn-client@nl.service.d/omarchy-vpn.conf" in output
+    assert output.endswith("systemctl daemon-reload\n")
+
+
+def test_openvpn_down_stops_an_active_systemd_unit_without_a_pid(tree, tmp_path):
+    fake = tmp_path / "systemctl"
+    fake.write_text('#!/bin/sh\n[ "$*" = "is-active --quiet openvpn-client@nl" ]\n')
+    fake.chmod(0o755)
+    result = tree("down", "ovpn", "nl", extra_env={"SYSTEMCTL": str(fake)})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"{fake} stop openvpn-client@nl"
+
+
+def test_openvpn_autostart_enables_and_disables(tree):
+    tree("import", "ovpn", "nl", stdin="client\nremote 1.1.1.1 1194\n")
+    assert tree("autostart", "ovpn", "nl", "on").stdout == "systemctl enable openvpn-client@nl\n"
+    assert tree("autostart", "ovpn", "nl", "off").stdout == "systemctl disable openvpn-client@nl\n"
+
+
+def test_openvpn_autostart_rejects_bad_argument(tree):
+    tree("import", "ovpn", "nl", stdin="client\nremote 1.1.1.1 1194\n")
+    assert tree("autostart", "ovpn", "nl", "maybe").returncode != 0
 
 
 def test_overrides_are_ignored_under_sudo(tree):
@@ -299,3 +531,130 @@ def test_src_runs_sudo_only_through_the_narrow_entry_points():
         if '"sudo"' in line and not any(a in line for a in allowed)
     ]
     assert offenders == []
+
+
+def test_profile_info_uses_only_fixed_isolated_root_module(tree):
+    result = tree("profile-info", "wg", "home")
+    assert result.returncode == 0, result.stderr
+    assert "/usr/bin/python3 -I -c" in result.stdout
+    assert "/usr/local/lib/omarchy-vpn" in result.stdout
+    assert "from vpn_dns.runtime import main" in result.stdout
+    assert "describe wg home" in result.stdout
+    assert tree("profile-info", "wg", "../secret").returncode != 0
+    assert tree("profile-info", "wg", "home", "extra").returncode != 0
+
+
+@pytest.mark.parametrize("kind", ["wg", "awg", "ovpn"])
+def test_delete_serializes_and_discards_old_runtime_before_reimport(
+    tree, tmp_path, monkeypatch, kind
+):
+    from test_dnsprofiles import WG as SAVE_WG
+
+    from vpn_dns import runtime
+
+    conf = tree.dirs[kind] / "home.conf"
+    original = "client\nremote vpn.example 1194\n" if kind == "ovpn" else SAVE_WG
+    conf.write_text(original)
+    monkeypatch.setattr(runtime, "DIRECTORIES", {kind: tree.dirs[kind]})
+    monkeypatch.setattr(runtime, "RUNTIME", tmp_path / "runtime")
+    path = runtime.prepare(kind, "home", {"vpn.example": "192.0.2.1"})
+    runtime.mark(kind, "home", "stopping")
+    code = (
+        f"import sys; sys.path.insert(0, {str(SRC)!r}); from vpn_dns import runtime; "
+        "from pathlib import Path; "
+        f"runtime.DIRECTORIES = {{{kind!r}: Path({str(conf.parent)!r})}}; "
+        f"runtime.RUNTIME = Path({str(runtime.RUNTIME)!r}); sys.exit(runtime.main())"
+    )
+    lock = tmp_path / "lock"
+    systemctl = tmp_path / "systemctl"
+    systemctl.write_text('#!/bin/sh\n[ "$1" = daemon-reload ]\n')
+    systemctl.chmod(0o755)
+    script = tmp_path / "helper"
+    script.write_text(
+        HELPER.read_text()
+        .replace("/run/omarchy-vpn-profile.lock", str(lock))
+        .replace(
+            "profile_runtime() {",
+            "profile_runtime() {\n    "
+            + shlex.join([sys.executable, "-I", "-c", code])
+            + ' "$@"\n    return $?\n',
+        )
+    )
+    with lock.open("w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with _REAL_POPEN(
+            ["bash", str(script), "rm", kind, "home"],
+            env={
+                "PATH": "/usr/bin:/bin",
+                f"{kind.upper()}_DIR": str(conf.parent),
+                "SYSTEMCTL": str(systemctl),
+                "SYSTEMD_DIR": str(tree.dirs["systemd"]),
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ) as proc:
+            try:
+                with pytest.raises(subprocess.TimeoutExpired):
+                    proc.wait(timeout=0.2)
+                assert conf.exists()
+                assert path.exists()
+            finally:
+                fcntl.flock(held, fcntl.LOCK_UN)
+            _, error = proc.communicate(timeout=8)
+            assert proc.returncode == 0, error
+    assert not conf.exists()
+    assert not path.parent.exists()
+    conf.write_text(original.replace("private", "replacement"))
+    assert not runtime.recover(kind, "home")
+    assert conf.read_text() == original.replace("private", "replacement")
+
+
+@pytest.mark.parametrize("kind", ["wg", "awg", "ovpn"])
+def test_delete_refuses_active_profile_before_discard(tree, tmp_path, kind):
+    conf = tree.dirs[kind] / "home.conf"
+    conf.write_text(WG)
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    ip = binaries / "ip"
+    ip.write_text('#!/bin/sh\necho " wireguard"\nexit 0\n')
+    ip.chmod(0o755)
+    (tree.dirs["run"] / "client-home.pid").write_text("1234")
+    result = tree(
+        "rm",
+        kind,
+        "home",
+        script=_helper_without_runtime(tmp_path),
+        extra_env={"DRY_RUN": "", "PATH": f"{binaries}:/usr/bin:/bin"},
+    )
+    assert result.returncode != 0
+    assert "stop the profile" in result.stderr
+    assert conf.read_text() == WG
+
+
+def test_failed_quick_up_preserves_exit_code(tree, tmp_path):
+    script = tmp_path / "helper"
+    script.write_text(
+        HELPER.read_text().replace("/run/omarchy-vpn-profile.lock", str(tmp_path / "lock"))
+    )
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    for name, body in {
+        "ip": "exit 1",
+        "sysctl": "echo 0",
+        "wg-quick": "exit 23",
+        "awg-quick": "exit 23",
+    }.items():
+        executable = binaries / name
+        executable.write_text(f"#!/bin/sh\n{body}\n")
+        executable.chmod(0o755)
+    for kind in ("wg", "awg"):
+        (tree.dirs[kind] / "home.conf").write_text(WG)
+        result = tree(
+            "up",
+            kind,
+            "home",
+            extra_env={"DRY_RUN": "", "PATH": f"{binaries}:/usr/bin:/bin"},
+            script=script,
+        )
+        assert result.returncode == 23, result.stderr

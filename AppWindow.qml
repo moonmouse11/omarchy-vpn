@@ -84,13 +84,18 @@ FloatingWindow {
       var k = String(t).toLowerCase()
       if (k === "t") win.host.togglePower()
       else if (k === "d") win.host.runDnsTest()
-      else if (k === "r") { win.host.refresh(); win.host.loadServers() }
+      else if (k === "r" || k === "к") {
+        win.host.refresh()
+        win.host.loadServers()
+      }
       else if (k === "p" && win.host.serverCursor >= 0) win.host.pingRow(win.host.serverRows[win.host.serverCursor])
       else if (k === "/") locations.filterField.forceActiveFocus()
       else if (k === "s") win.host.toggleFavourite(win.cursorRow())
       else if (k === "i") win.host.startImport(win.importTarget())
-      else if (k === "a" && win.host.showProfile(win.cursorRow())) win.host.profileAction("autostart")
-      else if (k === "x" && win.host.showProfile(win.cursorRow())) win.host.deleteConfirmOpen = true
+      else if (k === "a" && win.host.showProfile(win.cursorRow()) && !win.cursorRow().server.active)
+        win.host.profileAction("autostart")
+      else if (k === "x" && win.host.showProfile(win.cursorRow()) && !win.cursorRow().server.active)
+        win.host.deleteConfirmOpen = true
       else if (k === "[") win.host.stepProvider(-1)
       else if (k === "]") win.host.stepProvider(1)
     }
@@ -213,7 +218,7 @@ FloatingWindow {
       anchors.right: parent.right
       anchors.bottom: parent.bottom
       textFormat: Text.PlainText
-      text: "j/k move · h/l fold · enter connect · p ping · s star · / filter · i import · a autostart · x delete"
+      text: "j/k move · h/l fold · enter connect · p ping · s star · / filter · i import · right click profile · a autostart · x delete"
         + (win.host.windowLayout !== "tree" ? " · [ ] protocol" : "")
         + " · t toggle · d DNS · r refresh · esc close"
       color: win.host.dim

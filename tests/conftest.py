@@ -91,4 +91,5 @@ def _no_real_panel_caches(monkeypatch, tmp_path):
     monkeypatch.setattr("happ.constants.SUB_CACHE_DIR", sub_cache)
     import incy.subscriptions as incy_subs
 
+    monkeypatch.setattr(incy_subs, "SUB_CACHE_DIR", sub_cache)
     monkeypatch.setattr(incy_subs, "INCY_REFRESH", sub_cache / "incy-subs-refresh.json")

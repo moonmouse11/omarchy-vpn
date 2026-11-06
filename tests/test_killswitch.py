@@ -48,6 +48,7 @@ def test_iface_traffic_missing(monkeypatch):
 def test_iface_rate_from_cached_sample(monkeypatch, tmp_path):
     cache = tmp_path / "rate.json"
     monkeypatch.setattr(base, "RATE_CACHE", cache)
+    monkeypatch.setattr(base.time, "time", lambda: 1000.0)
     cache.write_text(json.dumps({"wg0": {"rx": 1000, "tx": 500, "at": time.time() - 3}}))
     # 3 s later: +6144 rx bytes, +1536 tx bytes -> 2048 B/s and 512 B/s
     monkeypatch.setattr(base, "_iface_counters", lambda iface: (7144, 2036))

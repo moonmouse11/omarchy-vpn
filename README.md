@@ -34,12 +34,12 @@ any VPN managed by **NetworkManager**.
   all check out; otherwise *Unverified* or *At risk*, with the reason.
 - **Kill switch** — no tunnel, no internet (see [Kill switch](#kill-switch)).
 - **IPv6 leak guard** — IPv6 is off while a VPN is up (none of these tunnels carry it), also at
-  boot for WireGuard autostart.
+  boot for WireGuard, AmneziaWG and OpenVPN autostart.
 - **DNS through the tunnel** for Happ and keys.
 - **Tools** — DNS leak test, IP info, speed test, ping through each server, refresh
   subscriptions, clear caches.
 - **Import and manage profiles** — a config file or a pasted `vless://` / `ss://` key; toggle
-  autostart or delete WireGuard/AmneziaWG/NetworkManager profiles.
+  autostart or delete WireGuard/AmneziaWG/OpenVPN/NetworkManager profiles.
 
 ## Install
 
@@ -74,6 +74,8 @@ reminds you when you pick them.
   The main helper refuses VPN configs that would run commands as root.
 - Copies the app to `~/.local/share/omarchy-vpn` and adds the SUPER+Shift+V binding to
   `~/.config/hypr/bindings.lua`.
+- Keeps managed systemd drop-ins for enabled VPN profiles: the IPv6 boot guard, and for
+  OpenVPN, the same PID/DNS lifecycle as desktop connections. Uninstall removes these drop-ins.
 - `/etc/resolv.conf` is left alone, unless you agree to switch it back to systemd-resolved
   when the installer asks.
 
@@ -82,7 +84,8 @@ reminds you when you pick them.
 The plugin resolves WireGuard, AmneziaWG and OpenVPN endpoint hostnames once, then passes the
 same IPv4 answers to the firewall and a private runtime profile. It does not replace the
 profile's DNS settings. On a plugin-managed disconnect, `SaveConfig=true` keeps native state
-changes while restoring the original hostname for matching WireGuard/AmneziaWG peers.
+changes while restoring original hostnames and IPv6 AllowedIPs for matching WireGuard/AmneziaWG
+peers, plus IPv6 interface addresses omitted while the guard was active.
 External `wg-quick`/systemd operations retain their own native save behavior. If the source profile
 changes before a pending save is recovered, recovery refuses to overwrite it and retains the private
 runtime for manual reconciliation. Explicitly deleting an inactive profile discards its old runtime,

@@ -383,6 +383,16 @@ class _ConnectFirewall:
             self._apply()
         return self.result
 
+    def refresh_dns(self) -> ActionResult | None:
+        if not self.wanted:
+            return None
+        resolvers = killswitch.system_resolvers()
+        if set(resolvers) == set(self.resolvers):
+            return None
+        self.resolvers = resolvers
+        self._apply()
+        return self.result
+
     def select_numeric(self, connection: VPNConnection, kind: str) -> bool:
         self.ips = connection.endpoint_ipv4 or []
         self.ifaces = ["tun*"] if kind == "ovpn" else [connection.interface or connection.name]
@@ -464,6 +474,10 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
         down = _disconnect_other_connections(provider, connection)
         if down is not None and not down.success:
             return down
+        refreshed = firewall.refresh_dns()
+        if refreshed is not None and not refreshed.success:
+            _sync_ipv6_guard()
+            return ActionResult(False, refreshed.message)
         prepared = _prepare_connection(provider, connection, firewall)
         if prepared is not None:
             result = prepared

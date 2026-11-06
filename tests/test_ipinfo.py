@@ -15,18 +15,30 @@ def test_flag_emoji():
 
 def test_is_fresh():
     now = time.time()
-    assert ipinfo.is_fresh({"fetched_at": now, "connection": "a"}, "a", 600)
-    assert not ipinfo.is_fresh({"fetched_at": now - 700, "connection": "a"}, "a", 600)
-    assert not ipinfo.is_fresh({"fetched_at": now, "connection": "a"}, "b", 600)
-    assert not ipinfo.is_fresh({"fetched_at": now, "connection": "a", "error": "x"}, "a", 600)
+    assert ipinfo.is_fresh({"version": 2, "fetched_at": now, "connection": "a"}, "a", 600)
+    assert not ipinfo.is_fresh({"version": 2, "fetched_at": now - 700, "connection": "a"}, "a", 600)
+    assert not ipinfo.is_fresh({"version": 2, "fetched_at": now, "connection": "a"}, "b", 600)
+    assert not ipinfo.is_fresh(
+        {"version": 2, "fetched_at": now, "connection": "a", "error": "x"}, "a", 600
+    )
     assert not ipinfo.is_fresh(None, "a", 600)
+
+
+def test_old_name_only_exit_cache_is_not_fresh():
+    assert not ipinfo.is_fresh({"fetched_at": time.time(), "connection": "a"}, "a", 600)
 
 
 def test_status_line(tmp_path, monkeypatch):
     p = tmp_path / "cache.json"
     monkeypatch.setattr(ipinfo, "CACHE_PATH", p)
     assert ipinfo.status_line("a", 600) is None
-    entry = {"connection": "a", "fetched_at": time.time(), "ip": "1.2.3.4", "country_code": "DE"}
+    entry = {
+        "version": 2,
+        "connection": "a",
+        "fetched_at": time.time(),
+        "ip": "1.2.3.4",
+        "country_code": "DE",
+    }
     p.write_text(json.dumps(entry))
     assert ipinfo.status_line("a", 600) == "Exit: 1.2.3.4 🇩🇪"
     assert ipinfo.status_line("b", 600) is None
@@ -37,6 +49,7 @@ def test_status_line_has_no_reputation_marker(tmp_path, monkeypatch):
     p = tmp_path / "cache.json"
     monkeypatch.setattr(ipinfo, "CACHE_PATH", p)
     entry = {
+        "version": 2,
         "connection": "a",
         "fetched_at": time.time(),
         "ip": "1.2.3.4",

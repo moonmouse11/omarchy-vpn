@@ -56,13 +56,13 @@ def test_malformed_dns_timestamp_cannot_earn_protected(at):
     record = json.loads(vm.DNS_VERDICT_CACHE.read_text())
     record["at"] = at
     fsutil.write_json_atomic(vm.DNS_VERDICT_CACHE, record)
-    assert _read_dns_verdict(conn.name) is None
+    assert _read_dns_verdict(conn.protection_key) is None
 
 
 def test_unrecognised_summary_cannot_become_a_clean_verdict():
     conn = VPNConnection("server", "Happ", True)
     vm._save_dns_verdict([conn], "DNS via VPN or public resolvers")
-    assert _read_dns_verdict(conn.name)["leaked"] is None
+    assert _read_dns_verdict(conn.protection_key)["leaked"] is None
 
 
 def test_old_policy_cache_is_not_reused():
@@ -71,4 +71,4 @@ def test_old_policy_cache_is_not_reused():
     record = json.loads(vm.DNS_VERDICT_CACHE.read_text())
     record.pop("version", None)
     fsutil.write_json_atomic(vm.DNS_VERDICT_CACHE, record)
-    assert _read_dns_verdict(conn.name) is None
+    assert _read_dns_verdict(conn.protection_key) is None

@@ -92,11 +92,11 @@ def get_status() -> dict:
         tooltip.append(line)
 
     if cfg.exit_ip_enabled:
-        exit_line = ipinfo.status_line(active[0].name, cfg.exit_ip_max_age)
+        exit_line = ipinfo.status_line(active[0].protection_key, cfg.exit_ip_max_age)
         if exit_line:
             tooltip.append(exit_line)
         else:
-            request_ip_update(active[0].name)
+            request_ip_update(active[0].protection_key)
 
     first = active[0]
     return {
@@ -122,7 +122,7 @@ def _exit_badge(conn: VPNConnection, max_age: int) -> dict:
     tooltip path schedules the lookup); expected country as in the DNS
     leak test: the flag in the name, else the sweep's entry country."""
     cache = ipinfo.read_cache()
-    if cache is None or not ipinfo.is_fresh(cache, conn.name, max_age):
+    if cache is None or not ipinfo.is_fresh(cache, conn.protection_key, max_age):
         return _badge("exit", "Exit: checking", "unknown", "Looking up the public exit IP")
     country = (cache.get("country_code") or "").upper()
     flag = ipinfo.flag_emoji(country)
@@ -146,7 +146,7 @@ def _exit_badge(conn: VPNConnection, max_age: int) -> dict:
 def _dns_badge(conn: VPNConnection) -> dict:
     if hint := dnsroutes.warning(conn.interface):
         return _badge("dns", "DNS warning", "unknown", hint)
-    record = _read_dns_verdict(conn.name)
+    record = _read_dns_verdict(conn.protection_key)
     if record is None or record.get("leaked") is None:
         summary = str(record.get("summary") or "") if record else ""
         return _badge(
@@ -244,7 +244,7 @@ def _label_fields_for_connection(
     fields["down"], fields["up"] = _split_arrows(rate)
     fields["total_down"], fields["total_up"] = _split_arrows(total)
     cache = ipinfo.read_cache()
-    if cache and ipinfo.is_fresh(cache, conn.name, cfg.exit_ip_max_age):
+    if cache and ipinfo.is_fresh(cache, conn.protection_key, cfg.exit_ip_max_age):
         country = (cache.get("country_code") or "").upper()
         fields.update(
             exit_ip=str(cache.get("ip") or ""),
@@ -380,7 +380,7 @@ def _panel_state_connected(
     meta = first.label.removeprefix(f"{first.provider} · ").removeprefix(f"{first.provider}: ")
     cache = ipinfo.read_cache()
     exit_ip = ""
-    if cache and ipinfo.is_fresh(cache, first.name, cfg.exit_ip_max_age):
+    if cache and ipinfo.is_fresh(cache, first.protection_key, cfg.exit_ip_max_age):
         exit_ip = f"{cache.get('ip')} {ipinfo.flag_emoji(cache.get('country_code'))}".strip()
     detail = first.provider + (f" +{len(active) - 1}" if len(active) > 1 else "")
     state, title = _protection_title(badges)

@@ -39,6 +39,39 @@ def env(monkeypatch, tmp_path):
     return pings
 
 
+@pytest.mark.parametrize("provider_name", ["Happ", "INCY"])
+def test_same_vendor_subscriptions_keep_connect_favourite_and_group_identity(
+    env, monkeypatch, provider_name
+):
+    import providers.incy as incy
+
+    conns = [
+        VPNConnection("Germany", provider_name, False, subscription_id=sub) for sub in ("A", "B")
+    ]
+    provider = FakeProvider(provider_name, conns)
+    entries = [{"name": c.name, "active": False, "provider_id": c.subscription_id} for c in conns]
+
+    def groups(provider):
+        return [], {"Same vendor": entries}
+
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
+    monkeypatch.setattr(vpn_manager, "happ_server_groups", groups)
+    monkeypatch.setattr(incy, "incy_server_groups", groups)
+    monkeypatch.setattr(vpn_manager, "guarded_connect", lambda p, c: p.connect(c))
+    vpn_manager.quickconnect.toggle_favourite(provider_name, "Germany", "B")
+    data = vpn_manager.server_list()
+    assert len(data["groups"]) == 2
+    a, b = data["groups"]
+    assert (a["subscription_id"], b["subscription_id"]) == ("A", "B")
+    assert a["id"] != b["id"]
+    assert not a["servers"][0]["favourite"]
+    assert b["servers"][0]["favourite"]
+    assert vpn_manager.panel_connect(
+        provider_name, b["servers"][0]["name"], b["subscription_id"]
+    ).success
+    assert provider.connected[0].subscription_id == "B"
+
+
 def test_ping_status_fresh_stale_none(env):
     now = time.time()
     env["a"] = {"ms": 42.0, "at": now}

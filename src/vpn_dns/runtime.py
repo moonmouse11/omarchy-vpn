@@ -24,6 +24,8 @@ MAX_CONFIG = 1048576
 SOURCE_SNAPSHOT = ".source"
 STARTING_MARK = ".starting"
 SAVING_MARK = ".saving"
+IPV6_MARK = ".ipv6-disabled"
+IPV6_DISABLED = Path("/proc/sys/net/ipv6/conf/all/disable_ipv6")
 
 
 def _paths(kind: str, name: str) -> tuple[Path, Path]:
@@ -139,6 +141,9 @@ def mark(kind: str, name: str, action: str) -> None:
     elif action == "started":
         (directory / STARTING_MARK).unlink(missing_ok=True)
     elif action == "stopping" and not (directory / STARTING_MARK).exists():
+        # Save the guard condition before native teardown; recovery may run after it changes.
+        if kind in ("wg", "awg") and IPV6_DISABLED.read_text().strip() == "1":
+            _atomic_text(directory / IPV6_MARK, "")
         _atomic_text(directory / SAVING_MARK, "")
 
 
@@ -165,6 +170,7 @@ def _retire(directory: Path, filename: str) -> None:
             retired / SOURCE_SNAPSHOT,
             retired / STARTING_MARK,
             retired / SAVING_MARK,
+            retired / IPV6_MARK,
         ):
             path.unlink(missing_ok=True)
         retired.rmdir()
@@ -185,6 +191,9 @@ def finish(kind: str, name: str, *, save: bool) -> None:
             saved, _ = _read(directory / source.name)
             current_text, info = _read(source)
             restored = dnsprofiles.restore_hostnames(saved, original)
+            restored = dnsprofiles.restore_ipv6_allowedips(restored, original)
+            if (directory / IPV6_MARK).exists():
+                restored = dnsprofiles.restore_ipv6_addresses(restored, original)
             # A retry may see our completed save, but must never replace newer credentials.
             if current_text not in (original, restored):
                 raise ValueError("Source profile changed; private recovery data retained")

@@ -42,6 +42,7 @@ def numeric_helper(tmp_path, monkeypatch):
         for original in ("/etc/wireguard", "/etc/amnezia/amneziawg", "/etc/openvpn/client"):
             text = text.replace(original, str(configs))
         text = text.replace("/run/omarchy-vpn-profiles", str(tmp_path / "runtime"))
+        text = text.replace("/proc/sys/net/ipv6/conf/all/disable_ipv6", str(tmp_path / "ipv6"))
         (package / f"{name}.py").write_text(text)
     script = tmp_path / "helper"
     text = (ROOT / "scripts/omarchy-vpn-helper").read_text()
@@ -54,6 +55,7 @@ def numeric_helper(tmp_path, monkeypatch):
     binaries.mkdir()
     link = tmp_path / "link"
     failure = tmp_path / "fail"
+    (tmp_path / "ipv6").write_text("0\n")
     for name, body in {
         "ip": f'''test -f "{link}" || exit 1
 if [ "$1" = -details ]; then
@@ -76,6 +78,7 @@ esac
 done
 grep -q 'remote 192.0.2.1 ' "$config" || exit 40
 if grep -q '^remote-random-hostname' "$config"; then exit 41; fi
+if [ -f "$PROC_DIR/reject-start" ]; then exit 44; fi
 echo 321 > "$pidfile"
 mkdir -p "$PROC_DIR/321"
 echo openvpn > "$PROC_DIR/321/comm"
@@ -164,6 +167,48 @@ def test_numeric_failure_does_not_save_or_strand_runtime(numeric_helper):
     assert not (directory / "runtime" / "wg-office").exists()
     failure.unlink()
     assert run("up-numeric", "wg", "office", stdin='{"vpn.example":"192.0.2.1"}').returncode == 0
+
+
+@pytest.mark.parametrize("verb", ["up", "up-numeric"])
+@pytest.mark.parametrize("existing_private_directory", [False, True])
+def test_openvpn_pid_metadata_is_readable_but_profiles_stay_private(
+    numeric_helper, verb, existing_private_directory
+):
+    run, source, directory, _ = numeric_helper
+    source.write_text("client\nremote vpn.example 1194\n")
+    pid_dir = directory / "pids"
+    if existing_private_directory:
+        pid_dir.mkdir(mode=0o700)
+    if verb == "up":
+        source.write_text("client\nremote 192.0.2.1 1194\n")
+    result = run(verb, "ovpn", "office", stdin='{"vpn.example":"192.0.2.1"}')
+    assert result.returncode == 0, result.stderr
+    assert pid_dir.stat().st_mode & 0o777 == 0o755
+    pid_file = pid_dir / "client-office.pid"
+    assert pid_file.stat().st_mode & 0o777 == 0o644
+    assert pid_file.read_text().strip() == "321"
+    assert (directory / "lock").stat().st_mode & 0o777 == 0o600
+    if verb == "up-numeric":
+        runtime = directory / "runtime/ovpn-office/office.conf"
+        assert runtime.parent.stat().st_mode & 0o777 == 0o700
+        assert runtime.stat().st_mode & 0o777 == 0o600
+    assert run("down", "ovpn", "office").returncode == 0
+    assert not pid_file.exists()
+
+
+def test_rejected_openvpn_start_removes_empty_pid_so_retry_can_succeed(numeric_helper):
+    run, source, directory, _ = numeric_helper
+    source.write_text("client\nremote vpn.example 1194\n")
+    rejection = directory / "proc/reject-start"
+    rejection.parent.mkdir()
+    rejection.touch()
+    result = run("up-numeric", "ovpn", "office", stdin='{"vpn.example":"192.0.2.1"}')
+    assert result.returncode == 44, result.stderr
+    assert not (directory / "pids/client-office.pid").exists()
+    rejection.unlink()
+    result = run("up-numeric", "ovpn", "office", stdin='{"vpn.example":"192.0.2.1"}')
+    assert result.returncode == 0, result.stderr
+    assert run("down", "ovpn", "office").returncode == 0
 
 
 def test_openvpn_numeric_runtime_lives_until_daemon_stops(numeric_helper):

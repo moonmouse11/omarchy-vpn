@@ -1,8 +1,60 @@
+import subprocess
+import sys
+import threading
 import urllib.error
+from pathlib import Path
 
 import pytest
 
 import dnsleak
+
+_REAL_RUN = subprocess.run
+_REAL_POPEN = subprocess.Popen
+
+
+def test_cancelled_probe_process_exits_without_waiting_for_lookup(monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+    script = f"""
+import os, signal, sys, threading, time
+sys.path.insert(0, {str(Path(dnsleak.__file__).parent)!r})
+import dnsleak
+from app.checks import _cancel_check
+from app.switch import CheckCancelled
+signal.signal(signal.SIGTERM, _cancel_check)
+dnsleak.PROBE_COUNT = 1
+dnsleak._probe = lambda host: time.sleep(30)
+timer = threading.Timer(.05, lambda: os.kill(os.getpid(), signal.SIGTERM))
+timer.start()
+try:
+    dnsleak._send_probes('cancel')
+except CheckCancelled:
+    print('cancelled')
+"""
+    result = _REAL_RUN(
+        [sys.executable, "-B", "-c", script], capture_output=True, text=True, timeout=5
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "cancelled"
+
+
+def test_probe_deadline_does_not_wait_for_blocked_lookups(monkeypatch):
+    release = threading.Event()
+    completed = threading.Event()
+    monkeypatch.setattr(dnsleak, "PROBE_COUNT", 2)
+    monkeypatch.setattr(dnsleak, "PROBE_TIMEOUT", 0.02)
+    monkeypatch.setattr(dnsleak, "_probe", lambda host: release.wait(5))
+
+    def send():
+        dnsleak._send_probes("deadline")
+        completed.set()
+
+    caller = threading.Thread(target=send, daemon=True)
+    caller.start()
+    try:
+        assert completed.wait(1), "deadline still waits for stuck DNS workers"
+    finally:
+        release.set()
+        caller.join(2)
 
 
 def test_run_happy_path(monkeypatch):

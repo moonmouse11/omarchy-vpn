@@ -1,3 +1,4 @@
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -20,6 +21,13 @@ class VPNConnection:
     # Per-connect bootstrap result, not connection identity or persisted configuration.
     endpoint_addresses: dict[str, str] | None = field(default=None, repr=False, compare=False)
     endpoint_ipv4: list[str] | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def protection_key(self) -> str:
+        """Stable cache/argv identity; display names alone are not unique."""
+        return json.dumps(
+            [self.provider, self.subscription_id or "", self.name], ensure_ascii=False
+        )
 
     @property
     def label(self) -> str:

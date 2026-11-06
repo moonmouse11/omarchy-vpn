@@ -13,18 +13,18 @@ public IP), "dns" (each detected resolver), "conclusion" (bash.ws's own
 verdict text).
 """
 
-import concurrent
 import contextlib
 import json
 import re
 import socket
+import threading
+import time
 import urllib.error
 from typing import TYPE_CHECKING
 
 import lazyimports  # noqa: F401 — registers urllib.request & co. to load on first use
 
 if TYPE_CHECKING:  # loaded lazily at run time, see lazyimports.py
-    import concurrent.futures
     import urllib.request
 
 API = "bash.ws"
@@ -69,10 +69,16 @@ def _probe(host: str) -> None:
 
 
 def _send_probes(test_id: str) -> None:
-    hosts = [f"{i}.{test_id}.{API}" for i in range(1, PROBE_COUNT + 1)]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=PROBE_COUNT) as pool:
-        futures = [pool.submit(_probe, h) for h in hosts]
-        concurrent.futures.wait(futures, timeout=PROBE_TIMEOUT)
+    deadline = time.monotonic() + PROBE_TIMEOUT
+    # libc lookups cannot be cancelled; daemon workers must not hold cancellation/process exit.
+    workers = [
+        threading.Thread(target=_probe, args=(f"{i}.{test_id}.{API}",), daemon=True)
+        for i in range(1, PROBE_COUNT + 1)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=max(0, deadline - time.monotonic()))
 
 
 def _fetch_results(test_id: str) -> list[dict]:

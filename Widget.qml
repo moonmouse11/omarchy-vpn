@@ -353,6 +353,7 @@ Panel {
   function pingRow(row) {
     if (!row || row.kind === "provider") return
     var g = row.group
+    if (row.kind === "group" && g.setup) return  // a setup notice has nothing to ping
     var args = ["--ping-now"]
     var key
     if (row.kind === "group") {
@@ -516,6 +517,7 @@ Panel {
   // a provider's setup row (hint + command from server_list): the command runs
   // in a floating terminal, sudo/logins ask there; the next refresh picks it up
   function runProviderSetup(command) {
+    close()
     Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation",
       String(command)])
   }

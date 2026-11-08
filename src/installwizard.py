@@ -137,6 +137,7 @@ _PROBES: dict[str, Callable[[], str]] = {
     "NetworkManager": _networkmanager,
     "Happ": _happ,
     "INCY": _incy,
+    "Cloudflare WARP": lambda: "warp-cli" if shutil.which("warp-cli") else "",
 }
 
 
@@ -208,6 +209,11 @@ def hints(cfg: Config, det: Detection, switched: bool = False) -> list[str]:
                 "INCY xray not found — install incy-bin (AUR) or the GitHub .pkg.tar.zst; "
                 "or set OMARCHY_VPN_INCY_ROOT to your INCY install directory"
             )
+    if cfg.provider_visible("Cloudflare WARP") and not shutil.which("warp-cli"):
+        lines.append(
+            "Cloudflare WARP: install from AUR — cloudflare-warp-bin "
+            "(the panel's setup row then starts the daemon and registers)"
+        )
     if resolved_mismatch(cfg, det) and not switched:
         lines.append(
             "DNS: /etc/resolv.conf isn't systemd-resolved's stub — "

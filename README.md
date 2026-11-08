@@ -173,6 +173,17 @@ If a provider still refuses (device limit, unsupported client), the server list 
 other request headers, put them in `~/.config/happ-capture/headers.json` as one JSON object
 (`{"User-Agent": "…", "X-Hwid": "…"}`) and `chmod 600` it; they replace the default ones.
 
+## Cloudflare WARP setup
+
+Free, no account, unlimited. Install `cloudflare-warp-bin` from the AUR (the install wizard
+hints at it). The rest has a **setup row** right in the Locations list — click **Set up**
+and a terminal starts the daemon and runs `warp-cli registration new` for you (one sudo
+password). After that the **Cloudflare WARP** row connects/disconnects like any other.
+
+Consumer WARP has no server picker (Cloudflare picks the nearest exit) and its daemon owns
+the tunnel outside the plugin's kill switch — while WARP is up the kill switch badge is
+hidden, the same as with NetworkManager connections.
+
 ## INCY setup
 
 1. Install **INCY Desktop** yourself: AUR `incy-bin`, or the official Arch `.pkg.tar.zst`

@@ -34,7 +34,8 @@ class VPNConnection:
         """'Happ · Provider C: 🇩🇪 Germany', or 'WireGuard: nl' without a subscription."""
         if self.subscription_name:
             return f"{self.provider} · {self.subscription_name}: {self.name}"
-        return f"{self.provider}: {self.name}"
+        # a single-connection provider whose row IS the provider (Cloudflare WARP)
+        return self.name if self.name == self.provider else f"{self.provider}: {self.name}"
 
 
 @dataclass
@@ -73,6 +74,12 @@ class VPNProvider(ABC):
     def ping_targets(self) -> list[PingTarget]:
         """(connection name, host, port[, icmp_only]) for ping measurement."""
         return []
+
+    def setup_issue(self) -> dict | None:
+        """{"hint", "command"} when the provider needs user-side setup (install,
+        service, login) — shown as a notice group; the command runs in a floating
+        terminal (sudo asks there). None when the provider is ready."""
+        return None
 
     def toggle_autostart(self, connection: VPNConnection) -> ActionResult:
         return ActionResult(False, f"{self.name}: autostart not supported")

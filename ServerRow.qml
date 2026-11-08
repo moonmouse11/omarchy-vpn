@@ -18,6 +18,7 @@ CursorSurface {
   readonly property bool isIncyProvider: isProvider && row.provider && row.provider.name === "INCY"
   readonly property bool isSubProvider: isHappProvider || isIncyProvider
   readonly property bool isGroup: row && row.kind === "group"
+  readonly property bool hasSetup: isGroup && row.group.setup !== undefined && row.group.setup !== ""
   // the tree layout's top level: a protocol (Happ, WireGuard, …)
   readonly property bool isProvider: row && row.kind === "provider"
   readonly property bool isHeader: isGroup || isProvider
@@ -39,7 +40,7 @@ CursorSurface {
     if (!row) return ""
     if (isProvider) return row.provider.total > 0 ? countText : "empty"
     if (pending || pinging) return "…"
-    if (isGroup) return row.group.summary || countText
+    if (isGroup) return row.group.setup ? "" : (row.group.summary || countText)
     return String(server.ping || "")
   }
 
@@ -122,7 +123,7 @@ CursorSurface {
 
     Text {
       id: rightLabel
-      visible: serverRow.isHeader
+      visible: serverRow.isHeader && !serverRow.hasSetup
       textFormat: Text.PlainText
       text: serverRow.rightText !== "" ? serverRow.rightText : serverRow.countText
       color: serverRow.host.dim
@@ -130,11 +131,12 @@ CursorSurface {
       font.pixelSize: Style.font.caption
     }
 
-    // a group's ping button, next to its summary (above the row click target)
+    // a group's ping button, next to its summary (above the row click target);
+    // a setup notice has nothing to ping — it gets the Set up button instead
     Text {
       id: groupPing
       z: 10
-      visible: serverRow.isGroup
+      visible: serverRow.isGroup && !serverRow.hasSetup
       textFormat: Text.PlainText
       text: ""  // nf-fa-refresh
       color: groupPingMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
@@ -151,6 +153,31 @@ CursorSurface {
         onClicked: function(mouse) {
           mouse.accepted = true
           serverRow.host.pingRow(serverRow.row)
+        }
+      }
+    }
+
+    // a setup notice's action: runs the provider's command in a terminal
+    Text {
+      id: setupButton
+      z: 10
+      visible: serverRow.hasSetup
+      textFormat: Text.PlainText
+      text: "Set up"
+      color: setupMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
+      font.family: serverRow.host.fontFamily
+      font.pixelSize: Style.font.caption
+
+      MouseArea {
+        id: setupMouse
+        anchors.fill: parent
+        anchors.margins: -Style.space(4)
+        enabled: setupButton.visible
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: function(mouse) {
+          mouse.accepted = true
+          serverRow.host.runProviderSetup(serverRow.row.group.setup)
         }
       }
     }

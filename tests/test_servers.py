@@ -405,7 +405,7 @@ def test_server_list_setup_notice_group(env, monkeypatch):
         def setup_issue(self):
             return {
                 "hint": "WARP daemon is not running",
-                "command": "sudo systemctl enable --now cloudflare-warp"
+                "command": "sudo systemctl enable --now warp-svc"
                 " && warp-cli registration new",
             }
 
@@ -417,7 +417,7 @@ def test_server_list_setup_notice_group(env, monkeypatch):
     assert group["provider"] == "Cloudflare WARP"
     assert group["title"] == "WARP daemon is not running"
     assert group["setup"] == (
-        "sudo systemctl enable --now cloudflare-warp && warp-cli registration new"
+        "sudo systemctl enable --now warp-svc && warp-cli registration new"
     )
     assert group["servers"] == []
 

@@ -88,7 +88,7 @@ class WarpProvider(VPNProvider):
         if self._status() is None:
             return {
                 "hint": "The WARP daemon is not running",
-                "command": "sudo systemctl enable --now cloudflare-warp"
+                "command": "sudo systemctl enable --now warp-svc"
                 " && warp-cli registration new",
             }
         if not self._registered():
@@ -116,7 +116,7 @@ class WarpProvider(VPNProvider):
             return ActionResult(
                 False,
                 "WARP daemon is not running — start it: "
-                "sudo systemctl enable --now cloudflare-warp.service",
+                "sudo systemctl enable --now warp-svc.service",
             )
         if "timeout after" in out:
             return ActionResult(False, f"warp-cli timed out — {out}")

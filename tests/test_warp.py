@@ -93,7 +93,7 @@ def test_connect_refuses_when_daemon_down(monkeypatch):
     _cli(monkeypatch, status=None)
     r = warp.WarpProvider().connect(_conn())
     assert not r.success
-    assert "cloudflare-warp.service" in r.message
+    assert "warp-svc.service" in r.message
 
 
 def test_connect_refuses_when_not_registered(monkeypatch):
@@ -164,7 +164,7 @@ def test_setup_issue_binary_missing(monkeypatch):
 def test_setup_issue_daemon_down(monkeypatch):
     _cli(monkeypatch, status=None)
     issue = warp.WarpProvider().setup_issue()
-    assert "systemctl enable --now cloudflare-warp" in issue["command"]
+    assert "systemctl enable --now warp-svc" in issue["command"]
     assert "registration new" in issue["command"]
 
 

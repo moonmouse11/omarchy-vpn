@@ -46,7 +46,10 @@ def _run(cmd: list[str]) -> tuple[int, str]:
     remote = wg._run
     if remote is not _run:
         return remote(cmd)
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
+    except subprocess.TimeoutExpired:
+        return 1, f"timeout after 10s: {' '.join(cmd)}"
     output = (result.stdout + result.stderr).strip()
     return result.returncode, output
 

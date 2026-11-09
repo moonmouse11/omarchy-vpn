@@ -305,3 +305,19 @@ def test_amnezia_delete_disables_autostart_before_rm(tmp_path, monkeypatch):
     result = provider.delete_config(VPNConnection(name="nl", provider="AmneziaWG", active=False))
     assert result.success
     assert calls == [("autostart", "awg", "nl", "off"), ("rm", "awg", "nl")]
+
+
+def test_run_passes_a_timeout_to_subprocess(monkeypatch):
+    """A hung local command must not freeze the 3 s --status tick."""
+    import providers.kernel.wireguard as impl
+
+    captured = {}
+
+    def fake_run(cmd, **kw):
+        captured.update(kw)
+        raise impl.subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get("timeout", 0))
+
+    monkeypatch.setattr(impl.subprocess, "run", fake_run)
+    code, _out = impl._run(["ip", "-o", "link", "show"])
+    assert code == 1
+    assert "timeout" in captured

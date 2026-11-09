@@ -10,6 +10,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
+import fsutil
 from app.spawn import spawn_manager
 from happ.constants import SUB_CACHE_DIR, SUB_MAX_AGE
 from incy.headers import incy_headers
@@ -219,7 +220,7 @@ def request_subscription_update() -> None:
 def update_subscriptions(force: bool = False) -> dict[str, str]:
     """Refresh every INCY subscription cache (--update-incy-subs)."""
     INCY_REFRESH.parent.mkdir(parents=True, exist_ok=True)
-    INCY_REFRESH.write_text(json.dumps({"at": time.time()}))
+    fsutil.write_json_atomic(INCY_REFRESH, {"at": time.time()})
     failed: dict[str, str] = {}
     db = _incy_db()
     if not db.is_file():
@@ -244,7 +245,7 @@ def update_subscriptions(force: bool = False) -> dict[str, str]:
         if err:
             failed[title or sub_id] = err
     with contextlib.suppress(OSError):
-        INCY_REFRESH.write_text(json.dumps({"at": time.time(), "failed": failed}))
+        fsutil.write_json_atomic(INCY_REFRESH, {"at": time.time(), "failed": failed})
     return failed
 
 

@@ -218,9 +218,14 @@ def _cli_seq(monkeypatch, statuses, connect=(0, "Success")):
 
 def test_connect_waits_until_connected(monkeypatch):
     monkeypatch.setattr(warp.time, "sleep", lambda _: None)
-    _cli_seq(monkeypatch, ["Status update: Disconnected\n",
-                           "Status update: Connecting\n",
-                           "Status update: Connected\n"])
+    _cli_seq(
+        monkeypatch,
+        [
+            "Status update: Disconnected\n",
+            "Status update: Connecting\n",
+            "Status update: Connected\n",
+        ],
+    )
     r = warp.WarpProvider().connect(_conn())
     assert r.success
 
@@ -243,8 +248,10 @@ def test_connect_fails_when_stuck_connecting(monkeypatch):
 
 def test_connect_fails_fast_on_unable(monkeypatch):
     monkeypatch.setattr(warp.time, "sleep", lambda _: None)
-    _cli_seq(monkeypatch, ["Status update: Disconnected\n",
-                           "Status update: Unable to connect\nReason: No network\n"])
+    _cli_seq(
+        monkeypatch,
+        ["Status update: Disconnected\n", "Status update: Unable to connect\nReason: No network\n"],
+    )
     r = warp.WarpProvider().connect(_conn())
     assert not r.success
     assert "Unable to connect" in r.message

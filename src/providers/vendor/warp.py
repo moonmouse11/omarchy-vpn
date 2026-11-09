@@ -92,8 +92,7 @@ class WarpProvider(VPNProvider):
         if self._status() is None:
             return {
                 "hint": "The WARP daemon is not running",
-                "command": "sudo systemctl enable --now warp-svc"
-                " && warp-cli registration new",
+                "command": "sudo systemctl enable --now warp-svc && warp-cli registration new",
             }
         if not self._registered():
             return {

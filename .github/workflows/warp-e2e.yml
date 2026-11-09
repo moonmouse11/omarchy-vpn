@@ -32,7 +32,7 @@ jobs:
 
       - name: Install cloudflare-warp
         run: |
-          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+          curl -fsSL --proto "=https" --tlsv1.2 https://pkg.cloudflareclient.com/pubkey.gpg \
             | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ noble main" \
             | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
@@ -46,7 +46,7 @@ jobs:
 
       - name: Assert the row exists
         run: |
-          uv run python src/vpn_manager.py --servers > servers.json
+          uv run --locked --no-build python src/vpn_manager.py --servers > servers.json
           python3 - <<'EOF'
           import json
           d = json.load(open("servers.json"))
@@ -56,11 +56,11 @@ jobs:
           EOF
 
       - name: Connect through the provider (async-wait path)
-        run: uv run python src/vpn_manager.py --connect "Cloudflare WARP" "Cloudflare WARP"
+        run: uv run --locked --no-build python src/vpn_manager.py --connect "Cloudflare WARP" "Cloudflare WARP"
 
       - name: Assert tunnel up, exit IP is Cloudflare, ping flows
         run: |
-          uv run python src/vpn_manager.py --status > status.json
+          uv run --locked --no-build python src/vpn_manager.py --status > status.json
           python3 - <<'EOF'
           import json
           d = json.load(open("status.json"))
@@ -76,5 +76,5 @@ jobs:
       - name: Disconnect through the provider
         if: always()
         run: |
-          uv run python src/vpn_manager.py --disconnect "Cloudflare WARP" "Cloudflare WARP"
+          uv run --locked --no-build python src/vpn_manager.py --disconnect "Cloudflare WARP" "Cloudflare WARP"
           warp-cli status

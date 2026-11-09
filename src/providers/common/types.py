@@ -81,6 +81,12 @@ class VPNProvider(ABC):
         terminal (sudo asks there). None when the provider is ready."""
         return None
 
+    def lockdown_hint(self, connection: VPNConnection) -> str | None:
+        """Text to warn with when the user switches away while the vendor's OWN
+        lockdown would block traffic once disconnected (e.g. Windscribe firewall).
+        None when nothing applies. Never blocks the switch — a warning only."""
+        return None
+
     def toggle_autostart(self, connection: VPNConnection) -> ActionResult:
         return ActionResult(False, f"{self.name}: autostart not supported")
 

@@ -1471,3 +1471,23 @@ def test_an_autostart_change_resyncs_the_boot_drop_ins(monkeypatch, ok, guard, s
     assert calls == [("ipv6-boot", state)]
     assert result.success
     assert result.message == "Autostart enabled: nl" + suffix
+
+
+def test_switch_teardown_warns_about_vendor_lockdown(monkeypatch):
+    """Switching away from a vendor whose own lockdown blocks traffic while
+    disconnected warns (never blocks the switch)."""
+    import app.switch as switch_mod
+
+    class LockedDown(FakeProvider):
+        def lockdown_hint(self, conn):
+            return "Windscribe's own firewall is ON — turn it off: windscribe-cli firewall off"
+
+    provider = LockedDown(
+        "Windscribe", [VPNConnection(name="US", provider="Windscribe", active=True)]
+    )
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
+    notes = []
+    monkeypatch.setattr(switch_mod, "notify", lambda title, msg: notes.append((title, msg)))
+    result = vpn_manager._disconnect_all(for_switch=True)
+    assert result.success
+    assert any("windscribe-cli firewall off" in m for _t, m in notes)

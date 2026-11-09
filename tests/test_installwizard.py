@@ -298,3 +298,25 @@ def test_warp_hint(monkeypatch):
         hint in line
         for line in installwizard.hints(only("Cloudflare WARP"), installwizard.Detection())
     )
+
+
+def test_windscribe_probe(monkeypatch):
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: None)
+    assert installwizard._PROBES["Windscribe"]() == ""
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: "/usr/bin/windscribe-cli")
+    assert installwizard._PROBES["Windscribe"]() != ""
+
+
+def test_windscribe_hint(monkeypatch):
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: None)
+    hint = "Windscribe: install from AUR — windscribe-cli-v2-bin"
+    assert any(
+        hint in line for line in installwizard.hints(only("Windscribe"), installwizard.Detection())
+    )
+    assert not any(
+        hint in line for line in installwizard.hints(only("WireGuard"), installwizard.Detection())
+    )
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: "/usr/bin/windscribe-cli")
+    assert not any(
+        hint in line for line in installwizard.hints(only("Windscribe"), installwizard.Detection())
+    )

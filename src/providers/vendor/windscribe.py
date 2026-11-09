@@ -16,8 +16,12 @@ CONNECT_WAIT = 20.0
 _CONNECT_POLL = 0.5
 # whole words: 'Unlimited' (a normal Pro status) must never read as a failure
 _FAILURE_MARKERS = re.compile(r"\b(error|unable|upgrade|exceed|limit|fail)\b")
-_CONNECTED_PREFIX = "Windscribe: Connected to "
-_LOGGED_OUT_MARKERS = ("not logged in", "please log in", "login required")
+_LOGGED_OUT_MARKERS = ("not logged in", "logged out", "please log in", "login required")
+# v2 (2.21.7) pins key-value status lines: 'Login state:', 'Connect state:',
+# 'Location:', 'Firewall state:' — and flat location rows
+# 'US East - New York - Empire (Pro) (10 Gbps)'.
+_GBPS_SUFFIX = re.compile(r"\s*\(\d+ Gbps\)\s*$")
+_PRO_MARK = " (Pro)"
 
 
 def _run(args: list[str], timeout: int = TIMEOUT) -> tuple[int, str]:
@@ -37,20 +41,34 @@ def _run(args: list[str], timeout: int = TIMEOUT) -> tuple[int, str]:
 
 
 def _locations(text: str) -> list[str]:
-    """Connectable labels from `windscribe-cli locations`: skip headers, section
-    titles (country groups) and separators — the indented entries are the locations."""
+    """Display names from `windscribe-cli locations` (v2: flat rows,
+    'Region - City - Nickname (Pro)? (10 Gbps)') — the speed suffix is uniform
+    noise, the (Pro) mark stays: free users must see what they can't use."""
     rows: list[str] = []
     for line in text.splitlines():
-        row = line.strip()
-        if not row or set(row) <= {"-", "="}:
-            continue
-        if " - " not in row:  # header ("Locations") or country section ("Canada East")
-            continue
-        rows.append(row)
+        row = _GBPS_SUFFIX.sub("", line.strip())
+        if row:
+            rows.append(row)
     return rows
 
 
+def _nickname(name: str) -> str:
+    """connect takes a nickname (or city/region/ISO), never the display label:
+    'US East - New York - Empire (Pro)' → 'Empire'."""
+    return name.removesuffix(_PRO_MARK).rsplit(" - ", 1)[-1]
+
+
+def _kv(status: str, key: str) -> str | None:
+    for line in status.splitlines():
+        label, _, value = line.partition(":")
+        if label.strip().lower() == key:
+            return value.strip()
+    return None
+
+
 class WindscribeProvider(VPNProvider):
+    can_logout = True
+
     @property
     def name(self) -> str:
         return _NAME
@@ -70,17 +88,23 @@ class WindscribeProvider(VPNProvider):
         return out
 
     def _logged_in(self) -> bool:
-        """Unknown is logged OUT (never refuse silently, never connect anonymously)."""
+        """Unknown is logged OUT (never refuse silently, never connect anonymously).
+        v2 pins a key-value 'Login state:' line; older wordings fall back to markers."""
         status = self._status()
         if status is None:
             return False
+        for line in status.lower().splitlines():
+            label, _, state = line.partition(":")
+            if label.strip() == "login state":
+                return state.strip() == "logged in"
         return not any(m in status.lower() for m in _LOGGED_OUT_MARKERS)
 
     def _connected_label(self, status: str) -> str | None:
-        for line in status.splitlines():
-            if line.startswith(_CONNECTED_PREFIX):
-                return line.removeprefix(_CONNECTED_PREFIX).strip() or None
-        return None
+        """The display name of the connected location, or None."""
+        state = _kv(status, "connect state")
+        if state is None or not state.lower().startswith("connected"):
+            return None
+        return _kv(status, "location") or _NAME
 
     def connections(self) -> list[VPNConnection]:
         from providers import windscribe  # noqa: PLC0415 — tests patch the shim
@@ -96,8 +120,12 @@ class WindscribeProvider(VPNProvider):
             VPNConnection(
                 name=row,
                 provider=self.name,
-                active=row == label,
-                interface="Windscribe" if row == label else None,
+                active=(label is not None and row.removesuffix(_PRO_MARK) == label),
+                interface=(
+                    "Windscribe"
+                    if label is not None and row.removesuffix(_PRO_MARK) == label
+                    else None
+                ),
             )
             for row in _locations(out)
         ]
@@ -126,23 +154,23 @@ class WindscribeProvider(VPNProvider):
         return None
 
     def lockdown_hint(self, connection: VPNConnection) -> str | None:
-        from providers import windscribe  # noqa: PLC0415 — tests patch the shim
-
         if not self._available():
             return None
-        code, out = windscribe._run(["firewall"])
-        if code != 0:
+        status = self._status()
+        if status is None or (_kv(status, "firewall state") or "").lower() != "on":
             return None
-        for line in out.splitlines():
-            label, _, state = line.partition(":")
-            if label.strip().lower() == "firewall":
-                if state.strip().lower() == "on":
-                    return (
-                        "Windscribe's own firewall is ON — it may keep blocking traffic "
-                        "after this disconnect. Turn it off: windscribe-cli firewall off"
-                    )
-                return None
-        return None
+        return (
+            "Windscribe's own firewall is ON — it may keep blocking traffic "
+            "after this disconnect. Turn it off: windscribe-cli firewall off"
+        )
+
+    def logout(self) -> ActionResult:
+        from providers import windscribe  # noqa: PLC0415 — tests patch the shim
+
+        code, out = windscribe._run(["logout"])
+        if code != 0:
+            return ActionResult(False, out or "windscribe-cli logout failed")
+        return ActionResult(True, "Logged out")
 
     def import_config(self, path: str) -> ActionResult:
         return ActionResult(False, "Windscribe has no config files to import")
@@ -156,7 +184,7 @@ class WindscribeProvider(VPNProvider):
             )
         if not self._logged_in():
             return ActionResult(False, "Not logged in — run: windscribe-cli login")
-        code, out = windscribe._run(["connect", connection.name])
+        code, out = windscribe._run(["connect", _nickname(connection.name)])
         if code != 0:
             return ActionResult(False, out or "windscribe-cli connect failed")
         return self._await_connected(windscribe, connection.name)
@@ -169,8 +197,11 @@ class WindscribeProvider(VPNProvider):
         while windscribe.time.monotonic() < deadline:
             code, out = windscribe._run(["status"])
             if code == 0:
-                if self._connected_label(out) == name:
-                    return ActionResult(True, f"Connected to {name}")
+                label = self._connected_label(out)
+                if label is not None and (
+                    label == name.removesuffix(_PRO_MARK) or _nickname(label) == _nickname(name)
+                ):
+                    return ActionResult(True, f"Connected to {label}")
                 last = out
                 if _FAILURE_MARKERS.search(out.lower()):
                     break

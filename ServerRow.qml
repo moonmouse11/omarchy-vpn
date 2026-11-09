@@ -14,6 +14,7 @@ CursorSurface {
   // in the app window: "+ Import" on protocols, right click for profiles
   property bool inWindow: false
   readonly property bool canImport: inWindow && isProvider && !!row.provider.importer
+  readonly property bool canLogout: inWindow && isProvider && row.provider.logout === true
   readonly property bool isHappProvider: isProvider && row.provider && row.provider.name === "Happ"
   readonly property bool isIncyProvider: isProvider && row.provider && row.provider.name === "INCY"
   readonly property bool isSubProvider: isHappProvider || isIncyProvider
@@ -236,6 +237,27 @@ CursorSurface {
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         onClicked: serverRow.host.startImport(serverRow.row.provider)
+      }
+    }
+
+    // a vendor account's "Log out" (the window only, like + Import)
+    Text {
+      id: logoutButton
+      visible: serverRow.canLogout
+      textFormat: Text.PlainText
+      text: "Log out"
+      color: logoutMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
+      font.family: serverRow.host.fontFamily
+      font.pixelSize: Style.font.caption
+
+      MouseArea {
+        id: logoutMouse
+        anchors.fill: parent
+        anchors.margins: -Style.space(4)
+        enabled: serverRow.canLogout
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: serverRow.host.runArgs(["--logout", String(serverRow.row.provider.name)])
       }
     }
 

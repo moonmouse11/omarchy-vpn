@@ -75,6 +75,10 @@ class VPNProvider(ABC):
         """(connection name, host, port[, icmp_only]) for ping measurement."""
         return []
 
+    # True for vendor accounts with a session to end (Windscribe); the window
+    # shows a Log out button on the protocol row when set and logged in.
+    can_logout: bool = False
+
     def setup_issue(self) -> dict | None:
         """{"hint", "command"} when the provider needs user-side setup (install,
         service, login) — shown as a notice group; the command runs in a floating
@@ -86,6 +90,9 @@ class VPNProvider(ABC):
         lockdown would block traffic once disconnected (e.g. Windscribe firewall).
         None when nothing applies. Never blocks the switch — a warning only."""
         return None
+
+    def logout(self) -> ActionResult:
+        return ActionResult(False, f"{self.name}: logout not supported")
 
     def toggle_autostart(self, connection: VPNConnection) -> ActionResult:
         return ActionResult(False, f"{self.name}: autostart not supported")

@@ -515,11 +515,25 @@ Panel {
   }
 
   // a provider's setup row (hint + command from server_list): the command runs
-  // in a floating terminal, sudo/logins ask there; the next refresh picks it up
+  // in a floating terminal, sudo/logins ask there; the watchdog below reloads
+  // the list so a finished login shows its servers without a manual reload
   function runProviderSetup(command) {
     close()
     Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation",
       String(command)])
+    setupWatch.left = 20
+    setupWatch.start()
+  }
+
+  Timer {
+    id: setupWatch
+    interval: 3000
+    repeat: true
+    property int left: 0
+    onTriggered: {
+      root.loadServers()
+      if (--left <= 0) stop()
+    }
   }
 
   function openWindow() {

@@ -27,6 +27,7 @@ from app.switch import disconnect_all, sync_ipv6_boot
 from app.tools import (
     TOOLS,
     run_import,
+    run_logout,
     run_profile_action,
     run_settings_window,
     run_tool,
@@ -89,6 +90,11 @@ def main() -> None:
         nargs=3,
         metavar=("autostart|delete", "PROVIDER", "NAME"),
         help="Toggle a profile's autostart or delete it (a server row's right click)",
+    )
+    group.add_argument(
+        "--logout",
+        metavar="PROVIDER",
+        help="Log out of a vendor account (a protocol row's Log out button)",
     )
     group.add_argument(
         "--check",
@@ -220,6 +226,8 @@ def main() -> None:
         if args.profile[0] not in ("autostart", "delete"):
             parser.error("--profile takes autostart|delete PROVIDER NAME")
         _report(_patched("run_profile_action", run_profile_action)(*args.profile))
+    elif args.logout is not None:
+        _report(_patched("run_logout", run_logout)(args.logout))
     elif args.check is not None:
         if args.check[0] not in CHECK_TITLES or len(args.check) > 2:
             parser.error("--check takes dns|ip|speed [TARGET]")

@@ -1,19 +1,24 @@
 from providers import windscribe as ws
 
 LOCATIONS = """\
-Locations
----------
- Canada East
-   Toronto - Comfort Zone
-   Montreal - Old Port
- US Central
-   Chicago - Cubby
-   Dallas - Ranch
+Best Location - Empire (10 Gbps)
+Canada East - Toronto - Comfort Zone (10 Gbps)
+Canada East - Montreal - Old Port (10 Gbps)
+US Central - Chicago - Cubby (10 Gbps)
+US Central - Dallas - Ranch (Pro) (10 Gbps)
 """
 
-STATUS_DISCONNECTED = "Windscribe: Disconnected\n"
-STATUS_CONNECTED = "Windscribe: Connected to Toronto - Comfort Zone\n"
-STATUS_LOGGED_OUT = "Windscribe: Disconnected\nNot logged in\n"
+STATUS_DISCONNECTED = (
+    "Internet connectivity: available\nLogin state: Logged in\nFirewall state: Off\n"
+    "Connect state: Disconnected\n"
+)
+STATUS_CONNECTED = (
+    "Internet connectivity: available\nLogin state: Logged in\nFirewall state: Off\n"
+    "Connect state: Connected\nLocation: Canada East - Toronto - Comfort Zone\n"
+)
+STATUS_LOGGED_OUT = (
+    "Internet connectivity: available\nLogin state: Logged out\nFirewall state: Off\n"
+)
 
 
 def _present(monkeypatch, status=STATUS_DISCONNECTED, locations=LOCATIONS, rc=0):
@@ -48,10 +53,11 @@ def test_lists_locations_when_disconnected(monkeypatch):
     _present(monkeypatch)
     conns = ws.WindscribeProvider().connections()
     assert [c.name for c in conns] == [
-        "Toronto - Comfort Zone",
-        "Montreal - Old Port",
-        "Chicago - Cubby",
-        "Dallas - Ranch",
+        "Best Location - Empire",
+        "Canada East - Toronto - Comfort Zone",
+        "Canada East - Montreal - Old Port",
+        "US Central - Chicago - Cubby",
+        "US Central - Dallas - Ranch (Pro)",
     ]
     assert all(c.provider == "Windscribe" and not c.active for c in conns)
 
@@ -60,7 +66,7 @@ def test_connected_marks_only_the_named_location(monkeypatch):
     _present(monkeypatch, status=STATUS_CONNECTED)
     conns = ws.WindscribeProvider().connections()
     active = [c for c in conns if c.active]
-    assert [c.name for c in active] == ["Toronto - Comfort Zone"]
+    assert [c.name for c in active] == ["Canada East - Toronto - Comfort Zone"]
     assert active[0].interface is not None
 
 
@@ -73,7 +79,7 @@ def test_active_connections_is_a_single_status_call(monkeypatch):
         lambda args, timeout=15: calls.append(args) or (0, STATUS_CONNECTED),
     )
     assert [c.name for c in ws.WindscribeProvider().active_connections()] == [
-        "Toronto - Comfort Zone"
+        "Canada East - Toronto - Comfort Zone"
     ]
     assert calls == [["status"]]
 
@@ -182,58 +188,130 @@ def test_setup_issue_none_when_ready(monkeypatch):
     assert ws.WindscribeProvider().setup_issue() is None
 
 
-def _firewall(monkeypatch, state):
-    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
-
-    def fake_run(args, timeout=15):
-        if args == ["firewall"]:
-            return 0, f"Firewall: {state}\n"
-        if args == ["status"]:
-            return 0, STATUS_CONNECTED
-        return 1, "unexpected"
-
-    monkeypatch.setattr(ws, "_run", fake_run)
-
-
 def test_lockdown_hint_when_firewall_on(monkeypatch):
-    _firewall(monkeypatch, "On")
+    _present(
+        monkeypatch, status=STATUS_CONNECTED.replace("Firewall state: Off", "Firewall state: On")
+    )
     hint = ws.WindscribeProvider().lockdown_hint(_conn())
     assert hint is not None
     assert "windscribe-cli firewall off" in hint
 
 
-def test_no_lockdown_hint_when_firewall_off_or_auto(monkeypatch):
-    _firewall(monkeypatch, "Off")
-    assert ws.WindscribeProvider().lockdown_hint(_conn()) is None
-    _firewall(monkeypatch, "Auto")
+def test_no_lockdown_hint_when_firewall_off(monkeypatch):
+    _present(monkeypatch, status=STATUS_CONNECTED)
     assert ws.WindscribeProvider().lockdown_hint(_conn()) is None
 
 
-def test_unlimited_status_is_not_a_failure(monkeypatch):
-    """Pro accounts report 'Unlimited' — substring 'limit' must not kill the connect."""
-    _frozen_clock(monkeypatch)
-    _cli_seq(
+def test_real_v2_status_shape_logged_out(monkeypatch):
+    """Pinned from live windscribe-cli v2.21.7: key-value status lines."""
+    _present(
         monkeypatch,
-        [
-            STATUS_DISCONNECTED,  # consumed by the login check
-            "Windscribe: Disconnected\nBandwidth used: Unlimited\n",  # first poll
-            STATUS_CONNECTED,
-        ],
+        status="Internet connectivity: available\nLogin state: Logged out\nFirewall state: Off\n",
     )
-    r = ws.WindscribeProvider().connect(_conn())
-    assert r.success
+    assert ws.WindscribeProvider().connections() == []
+    issue = ws.WindscribeProvider().setup_issue()
+    assert issue is not None and issue["command"] == "windscribe-cli login"
 
 
-def test_noisy_firewall_output_is_not_misread(monkeypatch):
-    """'connection' contains 'on' — the firewall state word must be parsed, not scanned."""
+def test_real_v2_status_shape_logged_in(monkeypatch):
+    _present(
+        monkeypatch,
+        status=(
+            "Internet connectivity: available\nLogin state: Logged in\n"
+            "Firewall state: Off\nVPN state: Disconnected\n"
+        ),
+    )
+    issue = ws.WindscribeProvider().setup_issue()
+    assert issue is None
+
+
+REAL_LOCATIONS = """\
+Best Location - Empire (10 Gbps)
+US Central - Atlanta - Magic City (Pro) (10 Gbps)
+US Central - Atlanta - Peachtree (10 Gbps)
+US East - Miami - Vice (10 Gbps)
+US East - New York - Empire (10 Gbps)
+US East - New York - Insomnia (Pro) (10 Gbps)
+"""
+
+REAL_STATUS_DISCONNECTED = (
+    "Internet connectivity: available\nLogin state: Logged in\nFirewall state: Off\n"
+    "Connect state: Disconnected\nData usage: 0 bytes / 2.00 GB\n"
+)
+
+REAL_STATUS_CONNECTED = (
+    "Internet connectivity: available\nLogin state: Logged in\nFirewall state: Off\n"
+    "Connect state: Connected\nLocation: US East - New York - Empire\n"
+    "Data usage: 100.0 MB / 2.00 GB\n"
+)
+
+
+def test_real_locations_rows(monkeypatch):
+    _present(monkeypatch, status=REAL_STATUS_DISCONNECTED, locations=REAL_LOCATIONS)
+    conns = ws.WindscribeProvider().connections()
+    assert [c.name for c in conns] == [
+        "Best Location - Empire",
+        "US Central - Atlanta - Magic City (Pro)",
+        "US Central - Atlanta - Peachtree",
+        "US East - Miami - Vice",
+        "US East - New York - Empire",
+        "US East - New York - Insomnia (Pro)",
+    ]
+
+
+def test_connect_uses_nickname_not_display_label(monkeypatch):
+    sent = []
+    _frozen_clock(monkeypatch)
     monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
 
     def fake_run(args, timeout=15):
-        if args == ["firewall"]:
-            return 0, "Firewall: Off\nNote: no active connection\n"
         if args == ["status"]:
-            return 0, STATUS_CONNECTED
+            return 0, REAL_STATUS_CONNECTED
+        if args and args[0] == "connect":
+            sent.append(args)
+            return 0, ""
         return 1, "unexpected"
 
     monkeypatch.setattr(ws, "_run", fake_run)
-    assert ws.WindscribeProvider().lockdown_hint(_conn()) is None
+    r = ws.WindscribeProvider().connect(_conn("US East - New York - Empire"))
+    assert r.success
+    assert sent == [["connect", "Empire"]]
+
+
+def test_real_connected_status_marks_active(monkeypatch):
+    _present(monkeypatch, status=REAL_STATUS_CONNECTED, locations=REAL_LOCATIONS)
+    conns = ws.WindscribeProvider().connections()
+    active = [c for c in conns if c.active]
+    assert [c.name for c in active] == ["US East - New York - Empire"]
+
+
+def test_connect_state_error_counts_as_disconnected(monkeypatch):
+    status = REAL_STATUS_DISCONNECTED.replace(
+        "Connect state: Disconnected", "Connect state: Error: Location does not exist"
+    )
+    _present(monkeypatch, status=status, locations=REAL_LOCATIONS)
+    assert ws.WindscribeProvider().active_connections() == []
+
+
+def test_firewall_state_from_status_line(monkeypatch):
+    status = REAL_STATUS_CONNECTED.replace("Firewall state: Off", "Firewall state: On")
+    _present(monkeypatch, status=status)
+    hint = ws.WindscribeProvider().lockdown_hint(_conn())
+    assert hint is not None and "firewall off" in hint
+
+
+def test_logout_runs_cli_logout(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+    monkeypatch.setattr(ws, "_run", lambda args, timeout=15: calls.append(args) or (0, ""))
+    r = ws.WindscribeProvider().logout()
+    assert r.success
+    assert calls == [["logout"]]
+
+
+def test_logout_failure(monkeypatch):
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+    monkeypatch.setattr(ws, "_run", lambda args, timeout=15: (1, "Error: daemon down"))
+    r = ws.WindscribeProvider().logout()
+    assert not r.success
+    assert "daemon down" in r.message

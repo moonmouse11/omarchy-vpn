@@ -195,6 +195,7 @@ def test_server_list_groups_happ_per_subscription_and_other_providers(env, monke
             "importer": None,
             "manage": False,
             "autostart": False,
+            "logout": False,
             "total": 2,
             "active": True,
         },
@@ -203,6 +204,7 @@ def test_server_list_groups_happ_per_subscription_and_other_providers(env, monke
             "importer": "file",
             "manage": True,
             "autostart": True,
+            "logout": False,
             "total": 1,
             "active": True,
         },
@@ -211,6 +213,7 @@ def test_server_list_groups_happ_per_subscription_and_other_providers(env, monke
             "importer": "file",
             "manage": True,
             "autostart": True,
+            "logout": False,
             "total": 0,
             "active": False,
         },
@@ -448,3 +451,16 @@ def test_server_list_malformed_setup_issue_is_ignored(env, monkeypatch):
 
     monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [Malformed("WireGuard", [])])
     assert vpn_manager.server_list()["groups"] == []
+
+
+def test_server_list_marks_providers_that_can_log_out(env, monkeypatch):
+    class LogoutCapable(FakeProvider):
+        can_logout = True
+
+        def setup_issue(self):
+            return None
+
+    conn = VPNConnection(name="US East - New York - Empire", provider="Windscribe", active=False)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [LogoutCapable("Windscribe", [conn])])
+    listing = vpn_manager.server_list()
+    assert listing["providers"][0]["logout"] is True

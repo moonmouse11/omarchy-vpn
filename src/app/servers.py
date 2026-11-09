@@ -290,6 +290,12 @@ def server_list() -> dict:
                         provider.name, provider.name, provider.name, entries, pinging=pinging
                     )
                 )
+            elif (issue := _setup_issue(provider)) is not None:
+                # no rows to show and setup is needed: the hint IS the group
+                # (the Happ no-headers notice is the same pattern)
+                group = _server_group(f"setup:{provider.name}", provider.name, issue["hint"], [])
+                group["setup"] = issue["command"]
+                groups.append(group)
         mine = groups[first:]
         providers[-1]["total"] = sum(len(g["servers"]) for g in mine)
         providers[-1]["active"] = any(g["active"] for g in mine)
@@ -299,6 +305,18 @@ def server_list() -> dict:
         "layout": config.load_config().locations_layout,
         "quick": _quick_connect(groups),
     }
+
+
+def _setup_issue(provider) -> dict | None:
+    """A broken setup probe must not empty the list (same rule as connections())."""
+    try:
+        issue = provider.setup_issue()
+    except Exception as e:  # noqa: BLE001
+        logutil.log(f"server list: {provider.name} setup probe: {e!r}")
+        return None
+    if isinstance(issue, dict) and issue.get("hint") and issue.get("command"):
+        return issue
+    return None
 
 
 def _quick_connect(groups: list[dict]) -> dict:

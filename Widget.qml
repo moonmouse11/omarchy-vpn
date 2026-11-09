@@ -230,16 +230,20 @@ Panel {
       }
       if (q !== "" && mine.length === 0) continue
       var key = "provider:" + prov.name
-      // a protocol with only notice groups (rejected subscriptions, no headers) opens too
-      var open = mine.length > 0 && isOpen(expanded, key, prov.active, q)
+      var hasSetup = false
+      for (var s2 = 0; s2 < mine.length; s2++) if (mine[s2].group.setup) hasSetup = true
+      // a protocol with only notice groups (rejected subscriptions, no headers,
+      // setup needed) opens too
+      var open = mine.length > 0 && isOpen(expanded, key, prov.active || hasSetup, q)
       rows.push({ kind: "provider", provider: prov, key: key, open: open, count: count, depth: 0 })
       if (!open) continue
       // a subscription is a level of its own; WireGuard's one group is the protocol itself
       var nested = prov.name === "Happ" || prov.name === "INCY"
       for (var n = 0; n < mine.length; n++) {
         var mg = mine[n].group
+        var hdr = nested || !!mg.setup
         pushGroup(rows, mg, mine[n].servers,
-          !nested || isOpen(expanded, mg.id, mg.active, q), 1, nested)
+          !hdr || isOpen(expanded, mg.id, mg.active, q), 1, hdr)
       }
     }
     return rows
@@ -349,6 +353,7 @@ Panel {
   function pingRow(row) {
     if (!row || row.kind === "provider") return
     var g = row.group
+    if (row.kind === "group" && g.setup) return  // a setup notice has nothing to ping
     var args = ["--ping-now"]
     var key
     if (row.kind === "group") {
@@ -379,6 +384,7 @@ Panel {
 
   function activateServerRow(row) {
     if (!row) return
+    if (row.kind === "group" && row.group.setup) { runProviderSetup(row.group.setup); return }
     if (row.kind === "group" || row.kind === "provider") { setExpanded(rowOpenKey(row), !row.open); return }
     var g = row.group, s = row.server
     pendingKey = rowKey(g, s)
@@ -506,6 +512,14 @@ Panel {
     close()
     Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation",
       Util.shellQuote(root.pluginDir + "/install.sh")])
+  }
+
+  // a provider's setup row (hint + command from server_list): the command runs
+  // in a floating terminal, sudo/logins ask there; the next refresh picks it up
+  function runProviderSetup(command) {
+    close()
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation",
+      String(command)])
   }
 
   function openWindow() {

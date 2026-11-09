@@ -12,8 +12,9 @@ _NAME = "Windscribe"
 TIMEOUT = 15
 # `connect -n` only accepts the command — poll for the real state
 # (same async contract as the WARP provider).
-CONNECT_WAIT = 20.0
+CONNECT_WAIT = 35.0
 _CONNECT_POLL = 0.5
+_PROTOCOLS: tuple[str | None, ...] = (None, "stealth", "wstunnel")
 # whole words: 'Unlimited' (a normal Pro status) must never read as a failure
 _FAILURE_MARKERS = re.compile(r"\b(error|unable|upgrade|exceed|limit|fail)\b")
 _LOGGED_OUT_MARKERS = ("not logged in", "logged out", "please log in", "login required")
@@ -174,10 +175,20 @@ class WindscribeProvider(VPNProvider):
             )
         if not self._logged_in():
             return ActionResult(False, "Not logged in — run: windscribe-cli login")
-        code, out = windscribe._run(["connect", "-n", _connect_target(connection.name)])
-        if code != 0:
-            return ActionResult(False, out or "windscribe-cli connect failed")
-        return self._await_connected(windscribe, connection.name)
+        target = _connect_target(connection.name)
+        last = ActionResult(False, "windscribe-cli connect failed")
+        for protocol in _PROTOCOLS:
+            args = ["connect", "-n", target]
+            if protocol is not None:
+                args.append(protocol)
+            code, out = windscribe._run(args)
+            if code != 0:
+                last = ActionResult(False, out or "windscribe-cli connect failed")
+                continue
+            last = self._await_connected(windscribe, connection.name)
+            if last.success:
+                return last
+        return last
 
     def _await_connected(self, windscribe, name: str) -> ActionResult:
         """connect is async: rc 0 = accepted. Poll until this location is the

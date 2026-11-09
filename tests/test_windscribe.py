@@ -145,7 +145,40 @@ def test_connect_timeout_disconnects_and_reports(monkeypatch):
     r = ws.WindscribeProvider().connect(_conn())
     assert not r.success
     assert "did not connect" in r.message
-    assert calls["disconnect"] == 1
+    assert calls["disconnect"] == 3
+
+
+def test_connect_falls_back_from_auto_to_stealth_then_wstunnel(monkeypatch):
+    _frozen_clock(monkeypatch)
+    calls = []
+    statuses = iter(
+        [
+            REAL_STATUS_DISCONNECTED,
+            REAL_STATUS_DISCONNECTED.replace(
+                "Connect state: Disconnected", "Connect state: Error: WireGuard unavailable"
+            ),
+            REAL_STATUS_DISCONNECTED.replace(
+                "Connect state: Disconnected", "Connect state: Error: Stealth unavailable"
+            ),
+            REAL_STATUS_CONNECTED,
+        ]
+    )
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+
+    def fake_run(args, timeout=15):
+        calls.append(args)
+        if args == ["status"]:
+            return 0, next(statuses)
+        return 0, ""
+
+    monkeypatch.setattr(ws, "_run", fake_run)
+    r = ws.WindscribeProvider().connect(_conn("US East - New York - Empire"))
+    assert r.success
+    assert [call for call in calls if call[0] == "connect"] == [
+        ["connect", "-n", "New York"],
+        ["connect", "-n", "New York", "stealth"],
+        ["connect", "-n", "New York", "wstunnel"],
+    ]
 
 
 def test_connect_vendor_refusal_surfaces(monkeypatch):
@@ -293,7 +326,11 @@ def test_best_location_uses_cli_best_keyword(monkeypatch):
 
     monkeypatch.setattr(ws, "_run", fake_run)
     ws.WindscribeProvider().connect(_conn("Best Location - Empire"))
-    assert sent == [["connect", "-n", "best"]]
+    assert sent == [
+        ["connect", "-n", "best"],
+        ["connect", "-n", "best", "stealth"],
+        ["connect", "-n", "best", "wstunnel"],
+    ]
 
 
 def test_real_connected_status_marks_active(monkeypatch):

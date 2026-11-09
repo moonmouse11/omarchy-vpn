@@ -119,7 +119,8 @@ def test_registration_show_rc0_with_error_text_counts_unregistered(monkeypatch):
 
 
 def test_connect_success(monkeypatch):
-    _cli(monkeypatch)
+    monkeypatch.setattr(warp.time, "sleep", lambda _: None)
+    _cli_seq(monkeypatch, ["Status update: Disconnected\n", "Status update: Connected\n"])
     r = warp.WarpProvider().connect(_conn())
     assert r.success
 
@@ -189,3 +190,61 @@ def test_label_not_duplicated_when_name_equals_provider():
 def test_not_connected_status_is_not_connected(monkeypatch):
     _present(monkeypatch, "Status update: Not Connected\n")
     assert warp.WarpProvider().active_connections() == []
+
+
+def _cli_seq(monkeypatch, statuses, connect=(0, "Success")):
+    """status answers cycle through `statuses`, then repeat the last one."""
+    calls = {"disconnect": 0}
+    monkeypatch.setattr(warp.shutil, "which", lambda _: "/usr/bin/warp-cli")
+    state = {"i": 0}
+
+    def fake_run(args, timeout=15):
+        if args == ["status"]:
+            s = statuses[min(state["i"], len(statuses) - 1)]
+            state["i"] += 1
+            return 0, s
+        if args == ["registration", "show"]:
+            return 0, "Registration: abc123"
+        if args == ["connect"]:
+            return connect
+        if args == ["disconnect"]:
+            calls["disconnect"] += 1
+            return 0, "Success"
+        return 1, "unexpected"
+
+    monkeypatch.setattr(warp, "_run", fake_run)
+    return calls
+
+
+def test_connect_waits_until_connected(monkeypatch):
+    monkeypatch.setattr(warp.time, "sleep", lambda _: None)
+    _cli_seq(monkeypatch, ["Status update: Disconnected\n",
+                           "Status update: Connecting\n",
+                           "Status update: Connected\n"])
+    r = warp.WarpProvider().connect(_conn())
+    assert r.success
+
+
+def test_connect_fails_when_stuck_connecting(monkeypatch):
+    monkeypatch.setattr(warp.time, "sleep", lambda _: None)
+    clock = {"t": 0.0}
+
+    def monotonic():  # jump 5 s per call: the 20 s deadline passes in 5 polls
+        clock["t"] += 5.0
+        return clock["t"]
+
+    monkeypatch.setattr(warp.time, "monotonic", monotonic)
+    calls = _cli_seq(monkeypatch, ["Status update: Connecting\n"])
+    r = warp.WarpProvider().connect(_conn())
+    assert not r.success
+    assert "did not connect" in r.message
+    assert calls["disconnect"] == 1  # leaves no half-up Connecting state behind
+
+
+def test_connect_fails_fast_on_unable(monkeypatch):
+    monkeypatch.setattr(warp.time, "sleep", lambda _: None)
+    _cli_seq(monkeypatch, ["Status update: Disconnected\n",
+                           "Status update: Unable to connect\nReason: No network\n"])
+    r = warp.WarpProvider().connect(_conn())
+    assert not r.success
+    assert "Unable to connect" in r.message

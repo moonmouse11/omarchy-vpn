@@ -12,6 +12,10 @@ _NAME = "Cloudflare WARP"
 _IFACE = "CloudflareWARP"
 _DAEMON_DOWN = "Unable to connect to the CloudflareWARP daemon"
 TIMEOUT = 15
+# `warp-cli connect` only accepts the command — the tunnel comes up later (or
+# never). Wait this long for a real Connected before admitting defeat.
+CONNECT_WAIT = 20.0
+_CONNECT_POLL = 0.5
 
 # "Status update: Connected" (2024+) or a bare "Connected" (older) — anchored so
 # "Disconnected"/"Not Connected"/"Connecting" never match.
@@ -127,7 +131,29 @@ class WarpProvider(VPNProvider):
         code, out = warp._run(["connect"])
         if code != 0:
             return ActionResult(False, out or "warp-cli connect failed")
-        return ActionResult(True, "Connected")
+        return self._await_connected(warp)
+
+    def _await_connected(self, warp) -> ActionResult:
+        """connect is async: rc 0 = accepted. Poll until Connected; give up
+        cleanly (disconnect) on Unable/timeout so no half-up state lingers."""
+        deadline = warp.time.monotonic() + CONNECT_WAIT
+        last = ""
+        while warp.time.monotonic() < deadline:
+            code, out = warp._run(["status"])
+            if code == 0:
+                if self._connected(out):
+                    return ActionResult(True, "Connected")
+                last = out
+                if "unable" in out.lower() or "error" in out.lower():
+                    break
+            warp.time.sleep(_CONNECT_POLL)
+        warp._run(["disconnect"])
+        reason = last or "no status"
+        return ActionResult(
+            False,
+            f"WARP did not connect in {CONNECT_WAIT:.0f}s ({reason}) — "
+            "the network may be blocking Cloudflare WARP",
+        )
 
     def disconnect(self, connection: VPNConnection) -> ActionResult:
         from providers import warp  # noqa: PLC0415 — tests patch the shim

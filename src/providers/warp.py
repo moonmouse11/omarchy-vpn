@@ -2,6 +2,7 @@
 
 import shutil
 import subprocess
+import time
 
 from providers.vendor.warp import WarpProvider
 
@@ -12,4 +13,4 @@ def _run(args: list[str], timeout: int = 15) -> tuple[int, str]:
     return impl._run(args, timeout)
 
 
-__all__ = ["WarpProvider", "_run", "shutil", "subprocess"]
+__all__ = ["WarpProvider", "_run", "shutil", "subprocess", "time"]

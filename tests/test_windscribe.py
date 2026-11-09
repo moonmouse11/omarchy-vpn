@@ -259,7 +259,7 @@ def test_real_locations_rows(monkeypatch):
     ]
 
 
-def test_connect_uses_nickname_not_display_label(monkeypatch):
+def test_connect_uses_city_not_ambiguous_nickname(monkeypatch):
     sent = []
     _frozen_clock(monkeypatch)
     monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
@@ -275,7 +275,25 @@ def test_connect_uses_nickname_not_display_label(monkeypatch):
     monkeypatch.setattr(ws, "_run", fake_run)
     r = ws.WindscribeProvider().connect(_conn("US East - New York - Empire"))
     assert r.success
-    assert sent == [["connect", "Empire"]]
+    assert sent == [["connect", "-n", "New York"]]
+
+
+def test_best_location_uses_cli_best_keyword(monkeypatch):
+    sent = []
+    _frozen_clock(monkeypatch)
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+
+    def fake_run(args, timeout=15):
+        if args == ["status"]:
+            return 0, REAL_STATUS_DISCONNECTED
+        if args and args[0] == "connect":
+            sent.append(args)
+            return 0, ""
+        return 0, ""
+
+    monkeypatch.setattr(ws, "_run", fake_run)
+    ws.WindscribeProvider().connect(_conn("Best Location - Empire"))
+    assert sent == [["connect", "-n", "best"]]
 
 
 def test_real_connected_status_marks_active(monkeypatch):
@@ -298,20 +316,3 @@ def test_firewall_state_from_status_line(monkeypatch):
     _present(monkeypatch, status=status)
     hint = ws.WindscribeProvider().lockdown_hint(_conn())
     assert hint is not None and "firewall off" in hint
-
-
-def test_logout_runs_cli_logout(monkeypatch):
-    calls = []
-    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
-    monkeypatch.setattr(ws, "_run", lambda args, timeout=15: calls.append(args) or (0, ""))
-    r = ws.WindscribeProvider().logout()
-    assert r.success
-    assert calls == [["logout"]]
-
-
-def test_logout_failure(monkeypatch):
-    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
-    monkeypatch.setattr(ws, "_run", lambda args, timeout=15: (1, "Error: daemon down"))
-    r = ws.WindscribeProvider().logout()
-    assert not r.success
-    assert "daemon down" in r.message

@@ -10,7 +10,7 @@ from providers.common.types import ActionResult, VPNConnection, VPNProvider
 
 _NAME = "Windscribe"
 TIMEOUT = 15
-# `windscribe-cli connect` only accepts the command — poll for the real state
+# `connect -n` only accepts the command — poll for the real state
 # (same async contract as the WARP provider).
 CONNECT_WAIT = 20.0
 _CONNECT_POLL = 0.5
@@ -52,10 +52,10 @@ def _locations(text: str) -> list[str]:
     return rows
 
 
-def _nickname(name: str) -> str:
-    """connect takes a nickname (or city/region/ISO), never the display label:
-    'US East - New York - Empire (Pro)' → 'Empire'."""
-    return name.removesuffix(_PRO_MARK).rsplit(" - ", 1)[-1]
+def _connect_target(name: str) -> str:
+    """Use the city: nicknames need not be unique (e.g. Empire is also Best Location)."""
+    parts = name.removesuffix(_PRO_MARK).split(" - ")
+    return "best" if parts[0] == "Best Location" else parts[-2]
 
 
 def _kv(status: str, key: str) -> str | None:
@@ -67,8 +67,6 @@ def _kv(status: str, key: str) -> str | None:
 
 
 class WindscribeProvider(VPNProvider):
-    can_logout = True
-
     @property
     def name(self) -> str:
         return _NAME
@@ -164,14 +162,6 @@ class WindscribeProvider(VPNProvider):
             "after this disconnect. Turn it off: windscribe-cli firewall off"
         )
 
-    def logout(self) -> ActionResult:
-        from providers import windscribe  # noqa: PLC0415 — tests patch the shim
-
-        code, out = windscribe._run(["logout"])
-        if code != 0:
-            return ActionResult(False, out or "windscribe-cli logout failed")
-        return ActionResult(True, "Logged out")
-
     def import_config(self, path: str) -> ActionResult:
         return ActionResult(False, "Windscribe has no config files to import")
 
@@ -184,7 +174,7 @@ class WindscribeProvider(VPNProvider):
             )
         if not self._logged_in():
             return ActionResult(False, "Not logged in — run: windscribe-cli login")
-        code, out = windscribe._run(["connect", _nickname(connection.name)])
+        code, out = windscribe._run(["connect", "-n", _connect_target(connection.name)])
         if code != 0:
             return ActionResult(False, out or "windscribe-cli connect failed")
         return self._await_connected(windscribe, connection.name)
@@ -199,7 +189,8 @@ class WindscribeProvider(VPNProvider):
             if code == 0:
                 label = self._connected_label(out)
                 if label is not None and (
-                    label == name.removesuffix(_PRO_MARK) or _nickname(label) == _nickname(name)
+                    label == name.removesuffix(_PRO_MARK)
+                    or _connect_target(label) == _connect_target(name)
                 ):
                     return ActionResult(True, f"Connected to {label}")
                 last = out

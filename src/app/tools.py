@@ -161,14 +161,6 @@ def run_import(provider_name: str, source: str | None = None) -> ActionResult:
     return provider.import_config(source)
 
 
-def run_logout(provider_name: str) -> ActionResult:
-    """--logout PROVIDER: end the vendor account session (Windscribe)."""
-    provider = _provider_named(provider_name)
-    if provider is None or not getattr(provider, "can_logout", False):
-        return ActionResult(False, f"{provider_name}: logout not supported")
-    return provider.logout()
-
-
 def run_profile_action(action: str, provider_name: str, name: str) -> ActionResult:
     provider = _provider_named(provider_name)
     if provider is None or provider_name not in MANAGED_PROVIDERS:

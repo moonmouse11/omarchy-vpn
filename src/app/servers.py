@@ -226,7 +226,6 @@ def server_list() -> dict:
                 "importer": _IMPORT_KINDS.get(provider.name),
                 "manage": provider.name in _MANAGED_PROVIDERS,
                 "autostart": provider.name in _AUTOSTART_PROVIDERS,
-                "logout": False,
             }
         )
         if provider.name == "Happ":
@@ -291,7 +290,6 @@ def server_list() -> dict:
                         provider.name, provider.name, provider.name, entries, pinging=pinging
                     )
                 )
-                providers[-1]["logout"] = bool(getattr(provider, "can_logout", False))
             elif (issue := _setup_issue(provider)) is not None:
                 # no rows to show and setup is needed: the hint IS the group
                 # (the Happ no-headers notice is the same pattern)

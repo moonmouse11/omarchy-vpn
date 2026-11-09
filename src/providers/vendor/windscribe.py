@@ -4,6 +4,8 @@ The root windscribeservice daemon owns all state; the user drives it without sud
 Free-tier accounts work — that is the point of this provider.
 """
 
+import re
+
 from providers.common.types import ActionResult, VPNConnection, VPNProvider
 
 _NAME = "Windscribe"
@@ -12,7 +14,8 @@ TIMEOUT = 15
 # (same async contract as the WARP provider).
 CONNECT_WAIT = 20.0
 _CONNECT_POLL = 0.5
-_FAILURE_MARKERS = ("error", "unable", "upgrade", "exceed", "limit", "fail")
+# whole words: 'Unlimited' (a normal Pro status) must never read as a failure
+_FAILURE_MARKERS = re.compile(r"\b(error|unable|upgrade|exceed|limit|fail)\b")
 _CONNECTED_PREFIX = "Windscribe: Connected to "
 _LOGGED_OUT_MARKERS = ("not logged in", "please log in", "login required")
 
@@ -128,12 +131,18 @@ class WindscribeProvider(VPNProvider):
         if not self._available():
             return None
         code, out = windscribe._run(["firewall"])
-        if code != 0 or "on" not in out.lower().replace("auto", ""):
+        if code != 0:
             return None
-        return (
-            "Windscribe's own firewall is ON — it may keep blocking traffic "
-            "after this disconnect. Turn it off: windscribe-cli firewall off"
-        )
+        for line in out.splitlines():
+            label, _, state = line.partition(":")
+            if label.strip().lower() == "firewall":
+                if state.strip().lower() == "on":
+                    return (
+                        "Windscribe's own firewall is ON — it may keep blocking traffic "
+                        "after this disconnect. Turn it off: windscribe-cli firewall off"
+                    )
+                return None
+        return None
 
     def import_config(self, path: str) -> ActionResult:
         return ActionResult(False, "Windscribe has no config files to import")
@@ -163,7 +172,7 @@ class WindscribeProvider(VPNProvider):
                 if self._connected_label(out) == name:
                     return ActionResult(True, f"Connected to {name}")
                 last = out
-                if any(m in out.lower() for m in _FAILURE_MARKERS):
+                if _FAILURE_MARKERS.search(out.lower()):
                     break
             windscribe.time.sleep(_CONNECT_POLL)
         windscribe._run(["disconnect"])

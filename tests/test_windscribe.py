@@ -207,3 +207,33 @@ def test_no_lockdown_hint_when_firewall_off_or_auto(monkeypatch):
     assert ws.WindscribeProvider().lockdown_hint(_conn()) is None
     _firewall(monkeypatch, "Auto")
     assert ws.WindscribeProvider().lockdown_hint(_conn()) is None
+
+
+def test_unlimited_status_is_not_a_failure(monkeypatch):
+    """Pro accounts report 'Unlimited' — substring 'limit' must not kill the connect."""
+    _frozen_clock(monkeypatch)
+    _cli_seq(
+        monkeypatch,
+        [
+            STATUS_DISCONNECTED,  # consumed by the login check
+            "Windscribe: Disconnected\nBandwidth used: Unlimited\n",  # first poll
+            STATUS_CONNECTED,
+        ],
+    )
+    r = ws.WindscribeProvider().connect(_conn())
+    assert r.success
+
+
+def test_noisy_firewall_output_is_not_misread(monkeypatch):
+    """'connection' contains 'on' — the firewall state word must be parsed, not scanned."""
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+
+    def fake_run(args, timeout=15):
+        if args == ["firewall"]:
+            return 0, "Firewall: Off\nNote: no active connection\n"
+        if args == ["status"]:
+            return 0, STATUS_CONNECTED
+        return 1, "unexpected"
+
+    monkeypatch.setattr(ws, "_run", fake_run)
+    assert ws.WindscribeProvider().lockdown_hint(_conn()) is None

@@ -145,7 +145,27 @@ def test_connect_waits_until_connected(monkeypatch):
 
 def test_connect_timeout_disconnects_and_reports(monkeypatch):
     _frozen_clock(monkeypatch)
-    calls = _cli_seq(monkeypatch, ["Windscribe: Connecting\n"])
+    calls = {"disconnect": 0}
+    phase = {"value": "idle"}
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+
+    def fake_run(args, timeout=15):
+        if args == ["status"]:
+            if phase["value"] == "connecting":
+                return 0, REAL_STATUS_DISCONNECTED.replace(
+                    "Connect state: Disconnected", "Connect state: Connecting"
+                )
+            return 0, REAL_STATUS_DISCONNECTED
+        if args and args[0] == "connect":
+            phase["value"] = "connecting"
+            return 0, ""
+        if args == ["disconnect"]:
+            calls["disconnect"] += 1
+            phase["value"] = "idle"
+            return 0, "Disconnecting"
+        return 1, "unexpected"
+
+    monkeypatch.setattr(ws, "_run", fake_run)
     r = ws.WindscribeProvider().connect(_conn())
     assert not r.success
     assert "did not connect" in r.message
@@ -233,10 +253,38 @@ def test_fallback_waits_until_previous_attempt_is_disconnected(monkeypatch):
     assert calls[disconnect_at + 1 : stealth_at] == [["status"], ["status"]]
 
 
+def test_fallback_stops_when_previous_attempt_never_disconnects(monkeypatch):
+    _frozen_clock(monkeypatch)
+    calls = []
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+
+    def fake_run(args, timeout=15):
+        calls.append(args)
+        if args == ["status"]:
+            if any(call == ["disconnect"] for call in calls):
+                return 0, REAL_STATUS_DISCONNECTED.replace(
+                    "Connect state: Disconnected", "Connect state: Disconnecting"
+                )
+            if any(call and call[0] == "connect" for call in calls):
+                return 0, REAL_STATUS_DISCONNECTED.replace(
+                    "Connect state: Disconnected", "Connect state: Error: blocked"
+                )
+            return 0, REAL_STATUS_DISCONNECTED
+        return 0, ""
+
+    monkeypatch.setattr(ws, "_run", fake_run)
+    result = ws.WindscribeProvider().connect(_conn("US East - New York - Empire"))
+    assert not result.success
+    assert "did not disconnect" in result.message
+    assert [call for call in calls if call and call[0] == "connect"] == [
+        ["connect", "-n", "New York"]
+    ]
+
+
 def test_successful_connect_claims_the_only_new_interface(monkeypatch):
     _frozen_clock(monkeypatch)
     _cli_seq(monkeypatch, [REAL_STATUS_DISCONNECTED, REAL_STATUS_CONNECTED])
-    snapshots = iter([{"lo"}, {"lo", "utun999"}])
+    snapshots = iter([{"lo": 1}, {"lo": 1, "utun999": 2}])
     monkeypatch.setattr(ws, "_interfaces", lambda: next(snapshots))
     claimed = []
 
@@ -250,11 +298,54 @@ def test_successful_connect_claims_the_only_new_interface(monkeypatch):
     assert claimed == [("Windscribe", "utun999")]
 
 
-@pytest.mark.parametrize("after", [{"lo"}, {"lo", "utun1", "tun0"}])
+def test_connect_keeps_claim_when_vendor_reuses_the_same_interface(monkeypatch):
+    _frozen_clock(monkeypatch)
+    _cli_seq(monkeypatch, [REAL_STATUS_DISCONNECTED, REAL_STATUS_CONNECTED])
+    monkeypatch.setattr(ws, "_interfaces", lambda: {"lo": 1, "utun420": 2})
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: "utun420")
+    claimed = []
+    released = []
+    monkeypatch.setattr(interfaceclaims, "claim", lambda provider, iface: claimed.append(iface))
+    monkeypatch.setattr(interfaceclaims, "release", released.append)
+
+    assert ws.WindscribeProvider().connect(_conn("US East - New York - Empire")).success
+    assert claimed == []
+    assert released == []
+
+
+def test_connect_keeps_existing_exact_claim_over_unrelated_new_interface(monkeypatch):
+    _frozen_clock(monkeypatch)
+    _cli_seq(monkeypatch, [REAL_STATUS_DISCONNECTED, REAL_STATUS_CONNECTED])
+    snapshots = iter([{"lo": 1, "utun420": 2}, {"lo": 1, "utun420": 2, "unrelated0": 3}])
+    monkeypatch.setattr(ws, "_interfaces", lambda: next(snapshots))
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: "utun420")
+    claimed = []
+    monkeypatch.setattr(interfaceclaims, "claim", lambda provider, iface: claimed.append(iface))
+    monkeypatch.setattr(interfaceclaims, "release", lambda provider: None)
+
+    assert ws.WindscribeProvider().connect(_conn("US East - New York - Empire")).success
+    assert claimed == []
+
+
+def test_connect_reclaims_same_name_when_interface_identity_changed(monkeypatch):
+    _frozen_clock(monkeypatch)
+    _cli_seq(monkeypatch, [REAL_STATUS_DISCONNECTED, REAL_STATUS_CONNECTED])
+    snapshots = iter([{"lo": 1, "utun420": 2}, {"lo": 1, "utun420": 3}])
+    monkeypatch.setattr(ws, "_interfaces", lambda: next(snapshots))
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: None)
+    claimed = []
+    monkeypatch.setattr(interfaceclaims, "claim", lambda provider, iface: claimed.append(iface))
+    monkeypatch.setattr(interfaceclaims, "release", lambda provider: None)
+
+    assert ws.WindscribeProvider().connect(_conn("US East - New York - Empire")).success
+    assert claimed == ["utun420"]
+
+
+@pytest.mark.parametrize("after", [{"lo": 1}, {"lo": 1, "utun1": 2, "tun0": 3}])
 def test_connect_does_not_guess_between_zero_or_multiple_new_interfaces(monkeypatch, after):
     _frozen_clock(monkeypatch)
     _cli_seq(monkeypatch, [REAL_STATUS_DISCONNECTED, REAL_STATUS_CONNECTED])
-    snapshots = iter([{"lo"}, after])
+    snapshots = iter([{"lo": 1}, after])
     monkeypatch.setattr(ws, "_interfaces", lambda: next(snapshots))
     claimed = []
     released = []
@@ -267,13 +358,13 @@ def test_connect_does_not_guess_between_zero_or_multiple_new_interfaces(monkeypa
 
     assert ws.WindscribeProvider().connect(_conn("US East - New York - Empire")).success
     assert claimed == []
-    assert released == ["Windscribe", "Windscribe"]
+    assert released == ["Windscribe"]
 
 
 def test_failed_connect_releases_runtime_interface_claim(monkeypatch):
     _frozen_clock(monkeypatch)
     _cli_seq(monkeypatch, [REAL_STATUS_DISCONNECTED, "Connect state: Error: blocked\n"])
-    monkeypatch.setattr(ws, "_interfaces", lambda: {"lo"})
+    monkeypatch.setattr(ws, "_interfaces", lambda: {"lo": 1})
     released = []
     monkeypatch.setattr(interfaceclaims, "release", released.append)
     monkeypatch.setattr(interfaceclaims, "claim", lambda provider, iface: None)
@@ -284,9 +375,18 @@ def test_failed_connect_releases_runtime_interface_claim(monkeypatch):
 
 def test_connect_vendor_refusal_surfaces(monkeypatch):
     _frozen_clock(monkeypatch)
+    refused = REAL_STATUS_DISCONNECTED + "Upgrade to Pro to use this location\n"
     _cli_seq(
         monkeypatch,
-        ["Windscribe: Disconnected\nUpgrade to Pro to use this location\n"],
+        [
+            REAL_STATUS_DISCONNECTED,
+            refused,
+            REAL_STATUS_DISCONNECTED,
+            refused,
+            REAL_STATUS_DISCONNECTED,
+            refused,
+            REAL_STATUS_DISCONNECTED,
+        ],
     )
     r = ws.WindscribeProvider().connect(_conn())
     assert not r.success

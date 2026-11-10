@@ -13,7 +13,7 @@ def _run(args: list[str], timeout: int = 15) -> tuple[int, str]:
     return impl._run(args, timeout)
 
 
-def _interfaces() -> set[str]:
+def _interfaces() -> dict[str, int]:
     from providers.vendor import windscribe as impl  # noqa: PLC0415 — tests patch shim
 
     return impl._interfaces()

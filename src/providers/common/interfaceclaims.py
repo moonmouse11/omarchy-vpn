@@ -11,33 +11,43 @@ import fsutil
 
 CLAIM_FILE = Path.home() / ".cache/vpn-manager/interface-claims.json"
 SYS_NET = Path("/sys/class/net")
+BOOT_ID_FILE = Path("/proc/sys/kernel/random/boot_id")
 
 
-def _valid_interface(interface: object) -> str | None:
+def _identity(interface: object) -> tuple[str, int, str] | None:
     if not isinstance(interface, str) or not interface or Path(interface).name != interface:
         return None
-    return interface if (SYS_NET / interface).exists() else None
+    try:
+        inode = (SYS_NET / interface).stat().st_ino
+        boot_id = BOOT_ID_FILE.read_text().strip()
+    except OSError:
+        return None
+    return (interface, inode, boot_id) if boot_id else None
 
 
-def _read() -> dict[str, str]:
+def _read() -> dict[str, tuple[str, int, str]]:
     try:
         data = json.loads(CLAIM_FILE.read_text())
     except OSError, ValueError, TypeError:
         return {}
     if not isinstance(data, dict):
         return {}
-    return {
-        provider: interface
-        for provider, value in data.items()
-        if isinstance(provider, str) and (interface := _valid_interface(value)) is not None
-    }
+    claims: dict[str, tuple[str, int, str]] = {}
+    for provider, value in data.items():
+        if not isinstance(provider, str) or not isinstance(value, list) or len(value) != 3:
+            continue
+        identity = _identity(value[0])
+        if identity is not None and identity[1:] == tuple(value[1:]):
+            claims[provider] = identity
+    return claims
 
 
 def claim(provider: str, interface: str) -> None:
-    if _valid_interface(interface) is None:
+    identity = _identity(interface)
+    if identity is None:
         return
     claims = _read()
-    claims[provider] = interface
+    claims[provider] = identity
     fsutil.write_json_atomic(CLAIM_FILE, claims)
 
 
@@ -50,8 +60,9 @@ def release(provider: str) -> None:
 
 
 def get(provider: str) -> str | None:
-    return _read().get(provider)
+    identity = _read().get(provider)
+    return identity[0] if identity is not None else None
 
 
 def claimed_by_others(provider: str) -> set[str]:
-    return {interface for owner, interface in _read().items() if owner != provider}
+    return {identity[0] for owner, identity in _read().items() if owner != provider}

@@ -30,11 +30,11 @@ _PRO_MARK = " (Pro)"
 _SYS_NET = Path("/sys/class/net")
 
 
-def _interfaces() -> set[str]:
+def _interfaces() -> dict[str, int]:
     try:
-        return {path.name for path in _SYS_NET.iterdir()}
+        return {path.name: path.stat().st_ino for path in _SYS_NET.iterdir()}
     except OSError:
-        return set()
+        return {}
 
 
 def _run(args: list[str], timeout: int = TIMEOUT) -> tuple[int, str]:
@@ -201,9 +201,8 @@ class WindscribeProvider(VPNProvider):
         if not self._logged_in():
             return ActionResult(False, "Not logged in — run: windscribe-cli login")
         target = _connect_target(connection.name)
+        previous = interfaceclaims.get(self.name)
         before = windscribe._interfaces()
-        with contextlib.suppress(OSError):
-            interfaceclaims.release(self.name)
         last = ActionResult(False, "windscribe-cli connect failed")
         for protocol in _PROTOCOLS:
             args = ["connect", "-n", target]
@@ -213,20 +212,29 @@ class WindscribeProvider(VPNProvider):
             if code != 0:
                 last = ActionResult(False, out or "windscribe-cli connect failed")
                 continue
-            last = self._await_connected(windscribe, connection.name)
+            last, stopped = self._await_connected(windscribe, connection.name)
             if last.success:
-                created = windscribe._interfaces() - before
+                after = windscribe._interfaces()
+                created = {name for name, inode in after.items() if before.get(name) != inode}
                 with contextlib.suppress(OSError):
-                    if len(created) == 1:
+                    if previous is not None and interfaceclaims.get(self.name) == previous:
+                        pass
+                    elif len(created) == 1:
                         interfaceclaims.claim(self.name, created.pop())
                     else:
                         interfaceclaims.release(self.name)
                 return last
-        with contextlib.suppress(OSError):
-            interfaceclaims.release(self.name)
+            if not stopped:
+                if previous is None:
+                    with contextlib.suppress(OSError):
+                        interfaceclaims.release(self.name)
+                return last
+        if previous is None:
+            with contextlib.suppress(OSError):
+                interfaceclaims.release(self.name)
         return last
 
-    def _await_connected(self, windscribe, name: str) -> ActionResult:
+    def _await_connected(self, windscribe, name: str) -> tuple[ActionResult, bool]:
         """connect is async: rc 0 = accepted. Poll until this location is the
         connected one; disconnect on vendor refusal/timeout (no half-up state)."""
         deadline = windscribe.time.monotonic() + CONNECT_WAIT
@@ -239,24 +247,29 @@ class WindscribeProvider(VPNProvider):
                     label == name.removesuffix(_PRO_MARK)
                     or _connect_target(label) == _connect_target(name)
                 ):
-                    return ActionResult(True, f"Connected to {label}")
+                    return ActionResult(True, f"Connected to {label}"), True
                 last = out
                 if _FAILURE_MARKERS.search(out.lower()):
                     break
             windscribe.time.sleep(_CONNECT_POLL)
-        self._disconnect_and_wait(windscribe)
+        if not self._disconnect_and_wait(windscribe):
+            return ActionResult(False, "Windscribe did not disconnect; fallback stopped"), False
         reason = last or "no status"
-        return ActionResult(False, f"Windscribe did not connect in {CONNECT_WAIT:.0f}s ({reason})")
+        return (
+            ActionResult(False, f"Windscribe did not connect in {CONNECT_WAIT:.0f}s ({reason})"),
+            True,
+        )
 
-    def _disconnect_and_wait(self, windscribe) -> None:
+    def _disconnect_and_wait(self, windscribe) -> bool:
         """The CLI acknowledges disconnect before its tunnel has stopped."""
         windscribe._run(["disconnect"])
         deadline = windscribe.time.monotonic() + DISCONNECT_WAIT
         while windscribe.time.monotonic() < deadline:
             code, status = windscribe._run(["status"])
             if code == 0 and (_kv(status, "connect state") or "").lower() == "disconnected":
-                return
+                return True
             windscribe.time.sleep(_CONNECT_POLL)
+        return False
 
     def disconnect(self, connection: VPNConnection) -> ActionResult:
         from providers import windscribe  # noqa: PLC0415 — tests patch the shim

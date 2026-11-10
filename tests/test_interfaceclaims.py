@@ -34,6 +34,28 @@ def test_stale_missing_interface_is_ignored(tmp_path, monkeypatch):
     assert interfaceclaims.claimed_by_others("WireGuard") == set()
 
 
+def test_recreated_interface_with_same_name_does_not_revive_stale_claim(tmp_path, monkeypatch):
+    monkeypatch.setattr(interfaceclaims, "CLAIM_FILE", tmp_path / "claims.json")
+    monkeypatch.setattr(interfaceclaims, "SYS_NET", _net(tmp_path, "utun420"))
+    interfaceclaims.claim("Windscribe", "utun420")
+    (interfaceclaims.SYS_NET / "utun420").rmdir()
+    (interfaceclaims.SYS_NET / "utun420").mkdir()
+    assert interfaceclaims.get("Windscribe") is None
+    assert interfaceclaims.claimed_by_others("WireGuard") == set()
+
+
+def test_claim_from_previous_boot_is_ignored(tmp_path, monkeypatch):
+    boot_id = tmp_path / "boot-id"
+    boot_id.write_text("boot-a")
+    monkeypatch.setattr(interfaceclaims, "CLAIM_FILE", tmp_path / "claims.json")
+    monkeypatch.setattr(interfaceclaims, "SYS_NET", _net(tmp_path, "utun420"))
+    monkeypatch.setattr(interfaceclaims, "BOOT_ID_FILE", boot_id)
+    interfaceclaims.claim("Windscribe", "utun420")
+    boot_id.write_text("boot-b")
+    assert interfaceclaims.get("Windscribe") is None
+    assert interfaceclaims.claimed_by_others("WireGuard") == set()
+
+
 def test_path_like_interface_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr(interfaceclaims, "CLAIM_FILE", tmp_path / "claims.json")
     monkeypatch.setattr(interfaceclaims, "SYS_NET", _net(tmp_path, "utun420"))

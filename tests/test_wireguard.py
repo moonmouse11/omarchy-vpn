@@ -1,4 +1,5 @@
 from providers import wireguard
+from providers.common import interfaceclaims
 from providers.wireguard import AmneziaWGProvider, WireGuardProvider
 
 
@@ -19,6 +20,15 @@ def test_runtime_endpoint_parses_wg_show(monkeypatch):
     monkeypatch.setattr(wireguard, "_run", fake_run)
     monkeypatch.setattr(wireguard.shutil, "which", lambda b: "/usr/bin/wg" if b == "wg" else None)
     assert wireguard._runtime_endpoint("tun0", awg=False) == ("45.140.17.3", 4098)
+
+
+def test_only_exact_claimed_interface_is_not_listed_as_wireguard_orphan(tmp_path, monkeypatch):
+    monkeypatch.setattr(wireguard, "_active_interfaces", lambda *_: ["utun420", "utun421"])
+    monkeypatch.setattr(interfaceclaims, "claimed_by_others", lambda _: {"utun420"})
+    provider = WireGuardProvider()
+    provider.config_dir = tmp_path / "missing"
+    provider.other_config_dirs = ()
+    assert [c.name for c in provider.connections()] == ["utun421"]
 
 
 def test_orphan_ping_target_uses_runtime_endpoint(tmp_path, monkeypatch):

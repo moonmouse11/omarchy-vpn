@@ -358,6 +358,7 @@ def test_a_superseded_switch_unwinds_quietly(env, monkeypatch):
     before = signal.getsignal(signal.SIGTERM)
     result = vpn_manager.guarded_connect(wg, nl)
     assert (result.success, result.message) == (False, "")
+    assert wg.disconnected == ["nl"]  # cancel the discarded provider intent
     assert signal.getsignal(signal.SIGTERM) == before
     assert vpn_manager.guarded_connect(FakeProvider("WireGuard", [nl]), nl).success  # lock free
 

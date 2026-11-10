@@ -591,6 +591,8 @@ def run_keeper(kind: str, server_id: str) -> None:
 class KeysProvider(VPNProvider):
     """One protocol's view of the shared key store (kind: "ss" | "vless")."""
 
+    ping_supported = True
+
     def __init__(self, kind: str):
         self._kind = kind
 

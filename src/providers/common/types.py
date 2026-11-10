@@ -11,6 +11,7 @@ class VPNConnection:
     provider: str
     active: bool
     interface: str | None = None
+    protocol: str | None = None
     config_path: str | None = None
     uuid: str | None = None  # NetworkManager connection UUID
     # Happ: which subscription this server came from. Server names are only
@@ -45,6 +46,8 @@ class ActionResult:
 
 
 class VPNProvider(ABC):
+    ping_supported: bool = False
+
     @property
     @abstractmethod
     def name(self) -> str:

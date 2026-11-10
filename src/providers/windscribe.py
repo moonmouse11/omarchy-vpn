@@ -13,4 +13,10 @@ def _run(args: list[str], timeout: int = 15) -> tuple[int, str]:
     return impl._run(args, timeout)
 
 
-__all__ = ["WindscribeProvider", "_run", "shutil", "subprocess", "time"]
+def _interfaces() -> set[str]:
+    from providers.vendor import windscribe as impl  # noqa: PLC0415 — tests patch shim
+
+    return impl._interfaces()
+
+
+__all__ = ["WindscribeProvider", "_interfaces", "_run", "shutil", "subprocess", "time"]

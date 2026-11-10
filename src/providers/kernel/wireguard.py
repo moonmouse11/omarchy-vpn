@@ -2,6 +2,7 @@ import json
 import subprocess
 from pathlib import Path
 
+from providers.common import interfaceclaims
 from providers.common.helper import read_config_text
 from providers.common.types import ActionResult, PingTarget, VPNConnection, VPNProvider
 
@@ -202,6 +203,7 @@ class WireGuardProvider(VPNProvider):
     """Base for wg-quick-style providers; AmneziaWG subclasses with the
     awg tools and its own config dir."""
 
+    ping_supported = True
     provider_name = "WireGuard"
     config_dir = WG_DIR
     quick_bin = "wg-quick"  # AmneziaWG uses awg-quick
@@ -228,6 +230,7 @@ class WireGuardProvider(VPNProvider):
 
     def _orphan_active_rows(self, active: set[str], known: set[str]) -> list[VPNConnection]:
         excluded = {p.stem for d in self.other_config_dirs for p in d.glob(_WG_CONF_GLOB)}
+        excluded.update(interfaceclaims.claimed_by_others(self.name))
         return [
             VPNConnection(name=iface, provider=self.name, active=True, interface=iface)
             for iface in active

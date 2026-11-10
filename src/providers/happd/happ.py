@@ -610,6 +610,8 @@ def _happ_active_identity() -> tuple[str | None, str | None]:
 
 
 class HappProvider(VPNProvider):
+    ping_supported = True
+
     @property
     def name(self) -> str:
         return "Happ"

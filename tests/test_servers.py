@@ -11,6 +11,8 @@ from providers.base import ActionResult, VPNConnection
 
 
 class FakeProvider:
+    ping_supported = True
+
     def __init__(self, name, conns):
         self.name = name
         self._conns = conns
@@ -195,6 +197,7 @@ def test_server_list_groups_happ_per_subscription_and_other_providers(env, monke
             "importer": None,
             "manage": False,
             "autostart": False,
+            "pingable": True,
             "total": 2,
             "active": True,
         },
@@ -203,6 +206,7 @@ def test_server_list_groups_happ_per_subscription_and_other_providers(env, monke
             "importer": "file",
             "manage": True,
             "autostart": True,
+            "pingable": True,
             "total": 1,
             "active": True,
         },
@@ -211,6 +215,7 @@ def test_server_list_groups_happ_per_subscription_and_other_providers(env, monke
             "importer": "file",
             "manage": True,
             "autostart": True,
+            "pingable": True,
             "total": 0,
             "active": False,
         },
@@ -439,6 +444,28 @@ def test_server_list_broken_setup_issue_is_ignored(env, monkeypatch):
     listing = vpn_manager.server_list()
     assert listing["groups"] == []
     assert listing["providers"][0]["name"] == "WireGuard"
+
+
+def test_server_list_marks_ping_capability_on_provider_group_and_rows(env, monkeypatch):
+    class Provider(FakeProvider):
+        def __init__(self, name, ping_supported):
+            super().__init__(name, [VPNConnection("server", name, False)])
+            self.ping_supported = ping_supported
+
+    monkeypatch.setattr(
+        vpn_manager,
+        "ALL_PROVIDERS",
+        [Provider("WireGuard", True), Provider("Windscribe", False)],
+    )
+    listing = vpn_manager.server_list()
+    by_name = {p["name"]: p for p in listing["providers"]}
+    groups = {g["provider"]: g for g in listing["groups"]}
+    assert by_name["WireGuard"]["pingable"] is True
+    assert groups["WireGuard"]["pingable"] is True
+    assert groups["WireGuard"]["servers"][0]["pingable"] is True
+    assert by_name["Windscribe"]["pingable"] is False
+    assert groups["Windscribe"]["pingable"] is False
+    assert groups["Windscribe"]["servers"][0]["pingable"] is False
 
 
 def test_server_list_malformed_setup_issue_is_ignored(env, monkeypatch):

@@ -353,6 +353,7 @@ Panel {
   function pingRow(row) {
     if (!row || row.kind === "provider") return
     var g = row.group
+    if (g.pingable !== true || (row.server && row.server.pingable !== true)) return
     if (row.kind === "group" && g.setup) return  // a setup notice has nothing to ping
     var args = ["--ping-now"]
     var key
@@ -503,6 +504,8 @@ Panel {
 
   function pingProvider(name) {
     if (!name) return
+    for (var i = 0; i < serverProviders.length; i++)
+      if (serverProviders[i].name === name && serverProviders[i].pingable !== true) return
     runArgs(["--ping-now", "group", "provider:" + name])
     pingSettle.restart()
   }

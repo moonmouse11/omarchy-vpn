@@ -1,4 +1,7 @@
+import pytest
+
 from providers import windscribe as ws
+from providers.common import interfaceclaims
 
 LOCATIONS = """\
 Best Location - Empire (10 Gbps)
@@ -64,6 +67,7 @@ def test_lists_locations_when_disconnected(monkeypatch):
 
 def test_connected_marks_only_the_named_location(monkeypatch):
     _present(monkeypatch, status=STATUS_CONNECTED)
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: "tun0")
     conns = ws.WindscribeProvider().connections()
     active = [c for c in conns if c.active]
     assert [c.name for c in active] == ["Canada East - Toronto - Comfort Zone"]
@@ -157,9 +161,11 @@ def test_connect_falls_back_from_auto_to_stealth_then_wstunnel(monkeypatch):
             REAL_STATUS_DISCONNECTED.replace(
                 "Connect state: Disconnected", "Connect state: Error: WireGuard unavailable"
             ),
+            REAL_STATUS_DISCONNECTED,
             REAL_STATUS_DISCONNECTED.replace(
                 "Connect state: Disconnected", "Connect state: Error: Stealth unavailable"
             ),
+            REAL_STATUS_DISCONNECTED,
             REAL_STATUS_CONNECTED,
         ]
     )
@@ -181,6 +187,101 @@ def test_connect_falls_back_from_auto_to_stealth_then_wstunnel(monkeypatch):
     ]
 
 
+def test_fallback_waits_until_previous_attempt_is_disconnected(monkeypatch):
+    _frozen_clock(monkeypatch)
+    calls = []
+    phase = {"value": "idle", "disconnect_polls": 0}
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+
+    def fake_run(args, timeout=15):
+        calls.append(args)
+        if args == ["status"]:
+            if phase["value"] == "idle":
+                return 0, REAL_STATUS_DISCONNECTED
+            if phase["value"] == "auto":
+                return 0, REAL_STATUS_DISCONNECTED.replace(
+                    "Connect state: Disconnected", "Connect state: Error: blocked"
+                )
+            if phase["value"] == "disconnecting":
+                phase["disconnect_polls"] += 1
+                if phase["disconnect_polls"] < 2:
+                    return 0, REAL_STATUS_DISCONNECTED.replace(
+                        "Connect state: Disconnected", "Connect state: Disconnecting"
+                    )
+                phase["value"] = "idle"
+                return 0, REAL_STATUS_DISCONNECTED
+            return 0, REAL_STATUS_CONNECTED
+        if args == ["connect", "-n", "New York"]:
+            phase["value"] = "auto"
+            return 0, ""
+        if args == ["connect", "-n", "New York", "stealth"]:
+            if phase["value"] != "idle":
+                return 1, "previous attempt still stopping"
+            phase["value"] = "stealth"
+            return 0, ""
+        if args == ["disconnect"]:
+            phase["value"] = "disconnecting"
+            phase["disconnect_polls"] = 0
+            return 0, "Disconnecting"
+        return 1, "unexpected"
+
+    monkeypatch.setattr(ws, "_run", fake_run)
+    r = ws.WindscribeProvider().connect(_conn("US East - New York - Empire"))
+    assert r.success
+    disconnect_at = calls.index(["disconnect"])
+    stealth_at = calls.index(["connect", "-n", "New York", "stealth"])
+    assert calls[disconnect_at + 1 : stealth_at] == [["status"], ["status"]]
+
+
+def test_successful_connect_claims_the_only_new_interface(monkeypatch):
+    _frozen_clock(monkeypatch)
+    _cli_seq(monkeypatch, [REAL_STATUS_DISCONNECTED, REAL_STATUS_CONNECTED])
+    snapshots = iter([{"lo"}, {"lo", "utun999"}])
+    monkeypatch.setattr(ws, "_interfaces", lambda: next(snapshots))
+    claimed = []
+
+    def record_claim(provider, iface):
+        claimed.append((provider, iface))
+
+    monkeypatch.setattr(interfaceclaims, "claim", record_claim)
+    monkeypatch.setattr(interfaceclaims, "release", lambda provider: None)
+
+    assert ws.WindscribeProvider().connect(_conn("US East - New York - Empire")).success
+    assert claimed == [("Windscribe", "utun999")]
+
+
+@pytest.mark.parametrize("after", [{"lo"}, {"lo", "utun1", "tun0"}])
+def test_connect_does_not_guess_between_zero_or_multiple_new_interfaces(monkeypatch, after):
+    _frozen_clock(monkeypatch)
+    _cli_seq(monkeypatch, [REAL_STATUS_DISCONNECTED, REAL_STATUS_CONNECTED])
+    snapshots = iter([{"lo"}, after])
+    monkeypatch.setattr(ws, "_interfaces", lambda: next(snapshots))
+    claimed = []
+    released = []
+
+    def record_claim(provider, iface):
+        claimed.append((provider, iface))
+
+    monkeypatch.setattr(interfaceclaims, "claim", record_claim)
+    monkeypatch.setattr(interfaceclaims, "release", released.append)
+
+    assert ws.WindscribeProvider().connect(_conn("US East - New York - Empire")).success
+    assert claimed == []
+    assert released == ["Windscribe", "Windscribe"]
+
+
+def test_failed_connect_releases_runtime_interface_claim(monkeypatch):
+    _frozen_clock(monkeypatch)
+    _cli_seq(monkeypatch, [REAL_STATUS_DISCONNECTED, "Connect state: Error: blocked\n"])
+    monkeypatch.setattr(ws, "_interfaces", lambda: {"lo"})
+    released = []
+    monkeypatch.setattr(interfaceclaims, "release", released.append)
+    monkeypatch.setattr(interfaceclaims, "claim", lambda provider, iface: None)
+
+    assert not ws.WindscribeProvider().connect(_conn("US East - New York - Empire")).success
+    assert released[-1] == "Windscribe"
+
+
 def test_connect_vendor_refusal_surfaces(monkeypatch):
     _frozen_clock(monkeypatch)
     _cli_seq(
@@ -193,9 +294,12 @@ def test_connect_vendor_refusal_surfaces(monkeypatch):
 
 
 def test_disconnect_success_and_failure(monkeypatch):
+    released = []
+    monkeypatch.setattr(interfaceclaims, "release", released.append)
     calls = _cli_seq(monkeypatch, [STATUS_CONNECTED])
     assert ws.WindscribeProvider().disconnect(_conn()).success
     assert calls["disconnect"] == 1
+    assert released == []  # exact ownership remains until the interface disappears
     _cli_seq(monkeypatch, [STATUS_CONNECTED], disconnect=(1, "Error: not connected"))
     r = ws.WindscribeProvider().disconnect(_conn())
     assert not r.success
@@ -331,6 +435,28 @@ def test_best_location_uses_cli_best_keyword(monkeypatch):
         ["connect", "-n", "best", "stealth"],
         ["connect", "-n", "best", "wstunnel"],
     ]
+
+
+def test_connected_status_uses_claimed_interface_and_protocol(monkeypatch):
+    status = REAL_STATUS_CONNECTED.replace(
+        "Location: US East - New York - Empire\n",
+        "Location: US East - New York - Empire\nProtocol: Stealth:443\n",
+    )
+    _present(monkeypatch, status=status, locations=REAL_LOCATIONS)
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: "tun0")
+
+    active = ws.WindscribeProvider().active_connections()
+    assert len(active) == 1
+    assert active[0].interface == "tun0"
+    assert active[0].protocol == "Stealth:443"
+
+
+def test_connected_status_omits_missing_interface_claim(monkeypatch):
+    _present(monkeypatch, status=REAL_STATUS_CONNECTED, locations=REAL_LOCATIONS)
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: None)
+    active = ws.WindscribeProvider().active_connections()
+    assert len(active) == 1
+    assert active[0].interface is None
 
 
 def test_real_connected_status_marks_active(monkeypatch):

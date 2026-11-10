@@ -4,8 +4,11 @@ The root windscribeservice daemon owns all state; the user drives it without sud
 Free-tier accounts work — that is the point of this provider.
 """
 
+import contextlib
 import re
+from pathlib import Path
 
+from providers.common import interfaceclaims
 from providers.common.types import ActionResult, VPNConnection, VPNProvider
 
 _NAME = "Windscribe"
@@ -13,6 +16,7 @@ TIMEOUT = 15
 # `connect -n` only accepts the command — poll for the real state
 # (same async contract as the WARP provider).
 CONNECT_WAIT = 35.0
+DISCONNECT_WAIT = 15.0
 _CONNECT_POLL = 0.5
 _PROTOCOLS: tuple[str | None, ...] = (None, "stealth", "wstunnel")
 # whole words: 'Unlimited' (a normal Pro status) must never read as a failure
@@ -23,6 +27,14 @@ _LOGGED_OUT_MARKERS = ("not logged in", "logged out", "please log in", "login re
 # 'US East - New York - Empire (Pro) (10 Gbps)'.
 _GBPS_SUFFIX = re.compile(r"\s*\(\d+ Gbps\)\s*$")
 _PRO_MARK = " (Pro)"
+_SYS_NET = Path("/sys/class/net")
+
+
+def _interfaces() -> set[str]:
+    try:
+        return {path.name for path in _SYS_NET.iterdir()}
+    except OSError:
+        return set()
 
 
 def _run(args: list[str], timeout: int = TIMEOUT) -> tuple[int, str]:
@@ -112,6 +124,8 @@ class WindscribeProvider(VPNProvider):
             return []
         status = self._status()
         label = self._connected_label(status or "")
+        interface = interfaceclaims.get(self.name) if label is not None else None
+        protocol = _kv(status or "", "protocol") if label is not None else None
         code, out = windscribe._run(["locations"])
         if code != 0:
             return []
@@ -121,9 +135,12 @@ class WindscribeProvider(VPNProvider):
                 provider=self.name,
                 active=(label is not None and row.removesuffix(_PRO_MARK) == label),
                 interface=(
-                    "Windscribe"
+                    interface
                     if label is not None and row.removesuffix(_PRO_MARK) == label
                     else None
+                ),
+                protocol=(
+                    protocol if label is not None and row.removesuffix(_PRO_MARK) == label else None
                 ),
             )
             for row in _locations(out)
@@ -137,7 +154,15 @@ class WindscribeProvider(VPNProvider):
         label = self._connected_label(status or "")
         if label is None:
             return []
-        return [VPNConnection(name=label, provider=self.name, active=True, interface="Windscribe")]
+        return [
+            VPNConnection(
+                name=label,
+                provider=self.name,
+                active=True,
+                interface=interfaceclaims.get(self.name),
+                protocol=_kv(status or "", "protocol"),
+            )
+        ]
 
     def setup_issue(self) -> dict | None:
         if not self._available():
@@ -176,6 +201,9 @@ class WindscribeProvider(VPNProvider):
         if not self._logged_in():
             return ActionResult(False, "Not logged in — run: windscribe-cli login")
         target = _connect_target(connection.name)
+        before = windscribe._interfaces()
+        with contextlib.suppress(OSError):
+            interfaceclaims.release(self.name)
         last = ActionResult(False, "windscribe-cli connect failed")
         for protocol in _PROTOCOLS:
             args = ["connect", "-n", target]
@@ -187,7 +215,15 @@ class WindscribeProvider(VPNProvider):
                 continue
             last = self._await_connected(windscribe, connection.name)
             if last.success:
+                created = windscribe._interfaces() - before
+                with contextlib.suppress(OSError):
+                    if len(created) == 1:
+                        interfaceclaims.claim(self.name, created.pop())
+                    else:
+                        interfaceclaims.release(self.name)
                 return last
+        with contextlib.suppress(OSError):
+            interfaceclaims.release(self.name)
         return last
 
     def _await_connected(self, windscribe, name: str) -> ActionResult:
@@ -208,9 +244,19 @@ class WindscribeProvider(VPNProvider):
                 if _FAILURE_MARKERS.search(out.lower()):
                     break
             windscribe.time.sleep(_CONNECT_POLL)
-        windscribe._run(["disconnect"])
+        self._disconnect_and_wait(windscribe)
         reason = last or "no status"
         return ActionResult(False, f"Windscribe did not connect in {CONNECT_WAIT:.0f}s ({reason})")
+
+    def _disconnect_and_wait(self, windscribe) -> None:
+        """The CLI acknowledges disconnect before its tunnel has stopped."""
+        windscribe._run(["disconnect"])
+        deadline = windscribe.time.monotonic() + DISCONNECT_WAIT
+        while windscribe.time.monotonic() < deadline:
+            code, status = windscribe._run(["status"])
+            if code == 0 and (_kv(status, "connect state") or "").lower() == "disconnected":
+                return
+            windscribe.time.sleep(_CONNECT_POLL)
 
     def disconnect(self, connection: VPNConnection) -> ActionResult:
         from providers import windscribe  # noqa: PLC0415 — tests patch the shim
@@ -218,4 +264,6 @@ class WindscribeProvider(VPNProvider):
         code, out = windscribe._run(["disconnect"])
         if code != 0:
             return ActionResult(False, out or "windscribe-cli disconnect failed")
+        # Keep exact ownership while the daemon tears down asynchronously;
+        # the claim self-expires as soon as the interface disappears.
         return ActionResult(True, "Disconnected")

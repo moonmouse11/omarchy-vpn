@@ -24,6 +24,11 @@ CursorSurface {
   readonly property bool isHeader: isGroup || isProvider
   readonly property bool isAuto: row && row.kind === "auto"
   readonly property var server: row && row.server ? row.server : null
+  readonly property bool pingable: {
+    if (isProvider) return row.provider.pingable === true
+    if (isGroup) return row.group.pingable === true
+    return server !== null && server.pingable === true
+  }
   readonly property bool isActive: row && row.kind === "server" && server && server.active === true
   readonly property bool pending: row && !isHeader && host.pendingKey === host.rowKey(row.group, server)
   readonly property string leftText: {
@@ -136,7 +141,8 @@ CursorSurface {
     Text {
       id: groupPing
       z: 10
-      visible: (serverRow.isGroup || serverRow.isProvider) && !serverRow.hasSetup
+      visible: (serverRow.isGroup || serverRow.isProvider)
+        && serverRow.pingable && !serverRow.hasSetup
       textFormat: Text.PlainText
       text: ""  // nf-fa-refresh
       color: groupPingMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
@@ -246,7 +252,7 @@ CursorSurface {
     // a visible ⟳ (not hover-only) so clicks don't fall through to connect.
     Item {
       id: pingSlot
-      visible: !serverRow.isHeader
+      visible: !serverRow.isHeader && serverRow.pingable
       width: Math.max(pingLabel.implicitWidth, Style.space(44))
       implicitHeight: pingLabel.implicitHeight
 

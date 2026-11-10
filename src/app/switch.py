@@ -483,7 +483,14 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
             result = prepared
             return result
         tuns_before = _tun_interfaces()
-        result = provider.connect(connection)
+        try:
+            result = provider.connect(connection)
+        except SwitchCancelled:
+            # The newer user action owns the machine now. Cancel any vendor daemon
+            # intent accepted before this process was superseded, then stay silent.
+            with contextlib.suppress(Exception):
+                provider.disconnect(connection)
+            raise
         if firewall.bootstrap_open and result.success and provider.name == "OpenVPN":
             # Numeric remotes do not need DNS here; preserve the existing TUN readiness timing.
             _wait_for_new_tun(tuns_before, getattr(_vm(), "OPENVPN_TUN_WAIT", OPENVPN_TUN_WAIT))
@@ -653,6 +660,7 @@ def _disconnect_all(for_switch: bool = False) -> ActionResult:
     if remote is not None and remote is not _disconnect_all:
         return remote(for_switch=for_switch)
     stopped, failed = [], []
+    lockdown_warnings: list[str] = []
     # act on everything, even providers hidden from the menu
     for provider in _provider_pool():
         for conn in provider.connections():
@@ -660,8 +668,19 @@ def _disconnect_all(for_switch: bool = False) -> ActionResult:
                 continue
             if _disconnect_connection(provider, conn):
                 stopped.append(f"{provider.name}: {conn.name}")
+                if for_switch:
+                    hint_fn = getattr(provider, "lockdown_hint", None)
+                    if hint_fn is not None:
+                        try:
+                            hint = hint_fn(conn)
+                        except Exception:  # noqa: BLE001 — a broken provider
+                            hint = None  # must not break the switch
+                        if hint:
+                            lockdown_warnings.append(hint)
             else:
                 failed.append(f"{provider.name}: {conn.name}")
+    for warning in lockdown_warnings:
+        notify("Vendor lockdown — warning", warning)
     if not for_switch:
         _sync_ipv6_guard()
     if failed:

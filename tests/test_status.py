@@ -228,6 +228,22 @@ def test_status_turns_ipv6_off_under_a_tunnel_the_plugin_didnt_start(
     assert (calls == ["disable"]) is disabled
 
 
+def test_windscribe_claimed_interface_supplies_traffic_and_protocol(monkeypatch):
+    conn = VPNConnection(
+        name="US East - New York - Empire",
+        provider="Windscribe",
+        active=True,
+        interface="tun0",
+        protocol="Stealth:443",
+    )
+    patch_env(monkeypatch, [FakeProvider("Windscribe", [conn])])
+    status = vpn_manager.get_status()
+    assert status["panel"]["fields"]["interface"] == "tun0"
+    assert status["panel"]["fields"]["protocol"] == "Stealth:443"
+    assert status["panel"]["rate"] == "↓ 3 KiB/s ↑ 4 KiB/s"
+    assert status["panel"]["total"] == "↓ 1 MiB  ↑ 2 MiB"
+
+
 def test_no_traffic_when_no_interface(monkeypatch):
     conn = VPNConnection(name="de", provider="Happ", active=True, interface=None)
     patch_env(monkeypatch, [FakeProvider("Happ", [conn])], traffic=None)

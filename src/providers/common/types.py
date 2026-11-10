@@ -11,6 +11,7 @@ class VPNConnection:
     provider: str
     active: bool
     interface: str | None = None
+    protocol: str | None = None
     config_path: str | None = None
     uuid: str | None = None  # NetworkManager connection UUID
     # Happ: which subscription this server came from. Server names are only
@@ -45,6 +46,8 @@ class ActionResult:
 
 
 class VPNProvider(ABC):
+    ping_supported: bool = False
+
     @property
     @abstractmethod
     def name(self) -> str:
@@ -79,6 +82,12 @@ class VPNProvider(ABC):
         """{"hint", "command"} when the provider needs user-side setup (install,
         service, login) — shown as a notice group; the command runs in a floating
         terminal (sudo asks there). None when the provider is ready."""
+        return None
+
+    def lockdown_hint(self, connection: VPNConnection) -> str | None:
+        """Text to warn with when the user switches away while the vendor's OWN
+        lockdown would block traffic once disconnected (e.g. Windscribe firewall).
+        None when nothing applies. Never blocks the switch — a warning only."""
         return None
 
     def toggle_autostart(self, connection: VPNConnection) -> ActionResult:

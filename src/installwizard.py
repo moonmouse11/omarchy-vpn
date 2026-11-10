@@ -138,6 +138,7 @@ _PROBES: dict[str, Callable[[], str]] = {
     "Happ": _happ,
     "INCY": _incy,
     "Cloudflare WARP": lambda: "warp-cli" if shutil.which("warp-cli") else "",
+    "Windscribe": lambda: "windscribe-cli" if shutil.which("windscribe-cli") else "",
 }
 
 
@@ -213,6 +214,11 @@ def hints(cfg: Config, det: Detection, switched: bool = False) -> list[str]:
         lines.append(
             "Cloudflare WARP: install from AUR — cloudflare-warp-bin "
             "(the panel's setup row then starts the daemon and registers)"
+        )
+    if cfg.provider_visible("Windscribe") and not shutil.which("windscribe-cli"):
+        lines.append(
+            "Windscribe: install from AUR — windscribe-cli-v2-bin "
+            "(the panel's setup row then asks for your login)"
         )
     if resolved_mismatch(cfg, det) and not switched:
         lines.append(

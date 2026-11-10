@@ -353,6 +353,7 @@ Panel {
   function pingRow(row) {
     if (!row || row.kind === "provider") return
     var g = row.group
+    if (g.pingable !== true || (row.server && row.server.pingable !== true)) return
     if (row.kind === "group" && g.setup) return  // a setup notice has nothing to ping
     var args = ["--ping-now"]
     var key
@@ -503,6 +504,8 @@ Panel {
 
   function pingProvider(name) {
     if (!name) return
+    for (var i = 0; i < serverProviders.length; i++)
+      if (serverProviders[i].name === name && serverProviders[i].pingable !== true) return
     runArgs(["--ping-now", "group", "provider:" + name])
     pingSettle.restart()
   }
@@ -515,11 +518,25 @@ Panel {
   }
 
   // a provider's setup row (hint + command from server_list): the command runs
-  // in a floating terminal, sudo/logins ask there; the next refresh picks it up
+  // in a floating terminal, sudo/logins ask there; the watchdog below reloads
+  // the list so a finished login shows its servers without a manual reload
   function runProviderSetup(command) {
     close()
     Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation",
       String(command)])
+    setupWatch.left = 20
+    setupWatch.start()
+  }
+
+  Timer {
+    id: setupWatch
+    interval: 3000
+    repeat: true
+    property int left: 0
+    onTriggered: {
+      root.loadServers()
+      if (--left <= 0) stop()
+    }
   }
 
   function openWindow() {

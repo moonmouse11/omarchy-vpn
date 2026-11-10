@@ -173,6 +173,16 @@ If a provider still refuses (device limit, unsupported client), the server list 
 other request headers, put them in `~/.config/happ-capture/headers.json` as one JSON object
 (`{"User-Agent": "…", "X-Hwid": "…"}`) and `chmod 600` it; they replace the default ones.
 
+## Windscribe setup
+
+Free tier: 10 GB/month with a confirmed email. Install `windscribe-cli-v2-bin` from the
+AUR (the install wizard hints at it), then click **Set up** in the Locations list — a
+terminal runs `windscribe-cli login` for you. Free locations show as rows; connecting a
+Pro-only location reports Windscribe's own refusal. The kill switch is hidden while a
+Windscribe tunnel is up (vendor daemon, like NetworkManager); Windscribe's own firewall
+setting is untouched — but if it is ON, switching away warns that it may keep blocking
+traffic (never blocks the switch itself).
+
 ## Cloudflare WARP setup
 
 Free, no account, unlimited. Install `cloudflare-warp-bin` from the AUR (the install wizard

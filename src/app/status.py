@@ -254,7 +254,7 @@ def _label_fields_for_connection(
     ms = happmeta.ping_ms(happmeta.ping_key(conn.name, conn.subscription_id))
     if ms is not None:
         fields["ping"] = f"{round(ms)} ms"
-    fields["protocol"] = conn.provider
+    fields["protocol"] = conn.protocol or conn.provider
     if conn.provider == "Happ":
         server_cfg = happmeta.resolve_config(
             conn.name, allow_fetch=False, provider_id=conn.subscription_id

@@ -18,11 +18,11 @@ def _identity(interface: object) -> tuple[str, int, str] | None:
     if not isinstance(interface, str) or not interface or Path(interface).name != interface:
         return None
     try:
-        inode = (SYS_NET / interface).stat().st_ino
+        ifindex = int((SYS_NET / interface / "ifindex").read_text())
         boot_id = BOOT_ID_FILE.read_text().strip()
-    except OSError:
+    except OSError, ValueError:
         return None
-    return (interface, inode, boot_id) if boot_id else None
+    return (interface, ifindex, boot_id) if ifindex > 0 and boot_id else None
 
 
 def _read() -> dict[str, tuple[str, int, str]]:

@@ -32,9 +32,16 @@ _SYS_NET = Path("/sys/class/net")
 
 def _interfaces() -> dict[str, int]:
     try:
-        return {path.name: path.stat().st_ino for path in _SYS_NET.iterdir()}
+        paths = list(_SYS_NET.iterdir())
     except OSError:
         return {}
+    interfaces = {}
+    for path in paths:
+        try:
+            interfaces[path.name] = int((path / "ifindex").read_text())
+        except OSError, ValueError:
+            continue
+    return interfaces
 
 
 def _run(args: list[str], timeout: int = TIMEOUT) -> tuple[int, str]:

@@ -4,8 +4,10 @@ from providers.common import interfaceclaims
 def _net(tmp_path, *names):
     root = tmp_path / "net"
     root.mkdir()
-    for name in names:
-        (root / name).mkdir()
+    for ifindex, name in enumerate(names, 1):
+        interface = root / name
+        interface.mkdir()
+        (interface / "ifindex").write_text(str(ifindex))
     return root
 
 
@@ -29,6 +31,7 @@ def test_stale_missing_interface_is_ignored(tmp_path, monkeypatch):
     monkeypatch.setattr(interfaceclaims, "CLAIM_FILE", tmp_path / "claims.json")
     monkeypatch.setattr(interfaceclaims, "SYS_NET", _net(tmp_path, "utun420"))
     interfaceclaims.claim("Windscribe", "utun420")
+    (interfaceclaims.SYS_NET / "utun420" / "ifindex").unlink()
     (interfaceclaims.SYS_NET / "utun420").rmdir()
     assert interfaceclaims.get("Windscribe") is None
     assert interfaceclaims.claimed_by_others("WireGuard") == set()
@@ -38,8 +41,7 @@ def test_recreated_interface_with_same_name_does_not_revive_stale_claim(tmp_path
     monkeypatch.setattr(interfaceclaims, "CLAIM_FILE", tmp_path / "claims.json")
     monkeypatch.setattr(interfaceclaims, "SYS_NET", _net(tmp_path, "utun420"))
     interfaceclaims.claim("Windscribe", "utun420")
-    (interfaceclaims.SYS_NET / "utun420").rmdir()
-    (interfaceclaims.SYS_NET / "utun420").mkdir()
+    (interfaceclaims.SYS_NET / "utun420" / "ifindex").write_text("99")
     assert interfaceclaims.get("Windscribe") is None
     assert interfaceclaims.claimed_by_others("WireGuard") == set()
 

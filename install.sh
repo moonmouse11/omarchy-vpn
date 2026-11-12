@@ -180,6 +180,10 @@ sudo chmod 755 /etc/openvpn/client
 
 echo "==> Installing backend to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
+# stop the live service before replacing its tree: Restart=on-failure would
+# restart ExecStart against a half-copied src (tolerated on first install:
+# no unit or user bus yet)
+systemctl --user stop omarchy-vpn-backend.service 2>/dev/null || true
 rm -rf "$INSTALL_DIR/src"
 cp -r "$REPO_DIR/src" "$INSTALL_DIR/"
 # the widget compares it with its plugin dir's HEAD after `omarchy plugin update`
@@ -188,6 +192,29 @@ git -C "$REPO_DIR" rev-parse HEAD > "$INSTALL_DIR/installed-commit" 2>/dev/null 
 # autostarted WireGuard tunnels come up before login: a drop-in turns IPv6 off
 # first (⚙ IPv6 guard) — profiles whose autostart predates this release too
 python3 "$INSTALL_DIR/src/vpn_manager.py" --ipv6-boot-sync || echo "    (re-run later: python3 $INSTALL_DIR/src/vpn_manager.py --ipv6-boot-sync)"
+
+# ── systemd user service (status backend) ─────────────────────────────────────
+# Rootless per-user daemon serving --status/--servers over $XDG_RUNTIME_DIR.
+# The unit copies only after the backend copy above is complete, so an upgrade
+# never lets the old service start against a partial copy; daemon-reload →
+# enable → restart is idempotent, the same on first install and upgrade.
+
+# fail-stop, never a silent degrade: without its user service this feature is
+# incomplete, so a lifecycle failure (e.g. no systemd user bus) must say so
+backend_lifecycle() {
+    systemctl --user "$@" && return
+    echo "==> Setup failed: 'systemctl --user $*' did not run — is the systemd user bus" >&2
+    echo "    available (loginctl session, dbus)? The status backend needs its user" >&2
+    echo "    service; fix the bus and re-run setup." >&2
+    exit 1
+}
+
+echo "==> Installing omarchy-vpn-backend user service..."
+mkdir -p "$HOME/.config/systemd/user"
+cp "$REPO_DIR/systemd/omarchy-vpn-backend.service" "$HOME/.config/systemd/user/omarchy-vpn-backend.service"
+backend_lifecycle daemon-reload
+backend_lifecycle enable omarchy-vpn-backend.service
+backend_lifecycle restart omarchy-vpn-backend.service
 
 # ── omarchy-shell bar widget ──────────────────────────────────────────────────
 

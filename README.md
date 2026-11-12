@@ -264,7 +264,17 @@ through the VPN while one is up.
 
 ## Troubleshooting
 
+- Subscription responses are limited to 16 MiB. A malformed or oversized response is rejected;
+  the last cached server list is kept. This is a download-size limit, not a server-count limit.
+
 - Log: `~/.local/state/vpn-manager/vpn-manager.log`
+- Status and server-list reads come from a per-user service (`omarchy-vpn-backend.service`).
+  If it's stopped or unreachable, `--status`/`--servers` fall back to a direct read
+  automatically — nothing to configure. IPC responses over 256 KiB also use direct reads:
+  large server lists stay complete, but do not benefit from the backend fast path.
+  Inspect or restart it with
+  `systemctl --user status omarchy-vpn-backend`, `journalctl --user -u omarchy-vpn-backend`,
+  `systemctl --user restart omarchy-vpn-backend`.
 - Errors (a config the installed xray rejects, a tunnel that died) show as notifications with
   the reason.
 - Settings: `~/.config/vpn-manager/`; caches: `~/.cache/vpn-manager/` (the Clear caches tool
@@ -280,6 +290,22 @@ omarchy plugin remove omarchy-vpn
 Run `uninstall.sh` first: it turns the kill switch off and removes the helpers, the sudoers rule,
 the app and the key binding. Removing the plugin alone would leave them behind. Your settings,
 keys and favourites in `~/.config/vpn-manager` are kept. From a checkout: `make uninstall`.
+
+## Graphical regression gate
+
+Static QML checks do not prove focus or keyboard-action safety. With an existing sealed
+Omarchy test image and its `vm-boot` launcher (temporary COW overlay required), run:
+
+```bash
+bash tests/run_qml_vm.sh /path/to/vm-boot /path/to/sealed-image.qcow2
+```
+
+Requires QEMU/KVM and about 3 GiB guest memory; the image must include Quickshell/Hyprland,
+`wtype`, `grim` and Python. Nothing is installed on the host. The guest refuses to run
+without the explicit disposable-VM boot marker. A fake vendor refuses/logs actions;
+the gate checks real filter text and matching rows in both UI surfaces (also when both
+are visible), empty hidden-list models and the runtime journal. Evidence goes to `.cache/qml-vm-audit.*`. Missing VM
+prerequisites block this gate; ordinary pytest/source checks are not a replacement.
 
 ## Contributing
 

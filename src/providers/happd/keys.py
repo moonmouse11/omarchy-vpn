@@ -19,12 +19,14 @@ share-link query params (reality/tls, grpc/ws/tcp).
 import base64
 import binascii
 import contextlib
+import fcntl
 import json
 import os
 import re
 import secrets
 import sys
 import urllib.parse
+from collections.abc import Iterator
 from pathlib import Path
 
 import fsutil
@@ -296,6 +298,16 @@ def _load_servers() -> list[dict]:
     return [s for s in data if isinstance(s, dict) and s.get("host")]
 
 
+@contextlib.contextmanager
+def _store_lock() -> Iterator[None]:
+    path = _pub().STORE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path.with_suffix(".lock"), os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    with os.fdopen(fd, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def _save_servers(servers: list[dict]) -> None:
     fsutil.write_json_atomic(_pub().STORE, servers, ensure_ascii=False, indent=1)
 
@@ -317,30 +329,32 @@ def _new_uid() -> str:
 def _ensure_uids() -> list[dict]:
     """Give keys imported before uids existed one, saving once. Called on the
     connect path only — the 3-second --status tick never writes the store."""
-    servers = _load_servers()
-    missing = [s for s in servers if not s.get("uid")]
-    if missing:
-        for server in missing:
-            server["uid"] = _new_uid()
-        _save_servers(servers)
-    return servers
+    with _store_lock():
+        servers = _load_servers()
+        missing = [s for s in servers if not s.get("uid")]
+        if missing:
+            for server in missing:
+                server["uid"] = _new_uid()
+            _save_servers(servers)
+        return servers
 
 
 def add_server(parsed: dict) -> ActionResult:
     """Store a parsed key; identical keys dedupe, same-name keys get a suffix."""
-    servers = _load_servers()
-    if any(_key_fields(s) == _key_fields(parsed) for s in servers):
-        return ActionResult(False, f"Already imported: {parsed['name']}")
-    parsed["uid"] = _new_uid()
-    name = parsed["name"]
-    if any(s["name"] == name for s in servers):
-        n = 2
-        while any(s["name"] == f"{name} ({n})" for s in servers):
-            n += 1
-        parsed["name"] = f"{name} ({n})"
-    servers.append(parsed)
-    _save_servers(servers)
-    return ActionResult(True, f"Imported: {parsed['name']}")
+    with _store_lock():
+        servers = _load_servers()
+        if any(_key_fields(s) == _key_fields(parsed) for s in servers):
+            return ActionResult(False, f"Already imported: {parsed['name']}")
+        parsed["uid"] = _new_uid()
+        name = parsed["name"]
+        if any(s["name"] == name for s in servers):
+            n = 2
+            while any(s["name"] == f"{name} ({n})" for s in servers):
+                n += 1
+            parsed["name"] = f"{name} ({n})"
+        servers.append(parsed)
+        _save_servers(servers)
+        return ActionResult(True, f"Imported: {parsed['name']}")
 
 
 def _find_server(name: str) -> dict | None:
@@ -751,11 +765,14 @@ class KeysProvider(VPNProvider):
     def delete_config(self, connection: VPNConnection) -> ActionResult:
         if connection.active:
             return ActionResult(False, f"Disconnect {connection.name} first")
-        servers = _load_servers()
-        kept = [
-            s for s in servers if not (s.get("kind") == self._kind and s["name"] == connection.name)
-        ]
-        if len(kept) == len(servers):
-            return ActionResult(False, f"Unknown {self.name} server: {connection.name}")
-        _save_servers(kept)
-        return ActionResult(True, f"Deleted: {connection.name}")
+        with _store_lock():
+            servers = _load_servers()
+            kept = [
+                s
+                for s in servers
+                if not (s.get("kind") == self._kind and s["name"] == connection.name)
+            ]
+            if len(kept) == len(servers):
+                return ActionResult(False, f"Unknown {self.name} server: {connection.name}")
+            _save_servers(kept)
+            return ActionResult(True, f"Deleted: {connection.name}")

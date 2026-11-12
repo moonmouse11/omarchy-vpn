@@ -444,8 +444,8 @@ def test_fetch_subscription_cache_is_private(tmp_path, monkeypatch):
     monkeypatch.setattr(happmeta, "HEADERS_FILE", headers_file)
 
     class FakeResp:
-        def read(self):
-            return json.dumps([{"remarks": "S", "outbounds": [{}]}]).encode()
+        def read(self, size=-1):
+            return json.dumps([{"remarks": "S", "outbounds": [{}]}]).encode()[:size]
 
         def __enter__(self):
             return self
@@ -478,8 +478,8 @@ def _fresh_sub_cache(tmp_path, monkeypatch):
     calls = []
 
     class FakeResp:
-        def read(self):
-            return json.dumps([{"remarks": "Fetched", "outbounds": [{}]}]).encode()
+        def read(self, size=-1):
+            return json.dumps([{"remarks": "Fetched", "outbounds": [{}]}]).encode()[:size]
 
         def __enter__(self):
             return self
@@ -623,8 +623,8 @@ def test_fetch_subscription_cache_url_revalidation(tmp_path, monkeypatch):
         def __init__(self, remark):
             self._remark = remark
 
-        def read(self):
-            return json.dumps([{"remarks": self._remark, "outbounds": [{}]}]).encode()
+        def read(self, size=-1):
+            return json.dumps([{"remarks": self._remark, "outbounds": [{}]}]).encode()[:size]
 
         def __enter__(self):
             return self
@@ -674,8 +674,8 @@ def test_fetch_subscription_keeps_info_on_headerless_refresh(tmp_path, monkeypat
     )
 
     class FakeResp:
-        def read(self):
-            return json.dumps([{"remarks": "new", "outbounds": [{}]}]).encode()
+        def read(self, size=-1):
+            return json.dumps([{"remarks": "new", "outbounds": [{}]}]).encode()[:size]
 
         def __enter__(self):
             return self
@@ -715,8 +715,8 @@ class _InfoResp:
     def __init__(self, headers: email.message.Message):
         self.headers = headers
 
-    def read(self):
-        return json.dumps([{"remarks": "S", "outbounds": [{}]}]).encode()
+    def read(self, size=-1):
+        return json.dumps([{"remarks": "S", "outbounds": [{}]}]).encode()[:size]
 
     def __enter__(self):
         return self
@@ -1113,8 +1113,8 @@ def _sent_headers(tmp_path, monkeypatch, captured):
     sent = []
 
     class FakeResp:
-        def read(self):
-            return json.dumps([{"remarks": "S", "outbounds": [{}]}]).encode()
+        def read(self, size=-1):
+            return json.dumps([{"remarks": "S", "outbounds": [{}]}]).encode()[:size]
 
         def __enter__(self):
             return self
@@ -1233,8 +1233,8 @@ def _fetch_with_response(tmp_path, monkeypatch, response, cached=None):
         (tmp_path / "subscription-1.json").write_text(json.dumps(cached))
 
     class FakeResp:
-        def read(self):
-            return json.dumps(response).encode()
+        def read(self, size=-1):
+            return json.dumps(response).encode()[:size]
 
         def __enter__(self):
             return self
@@ -1303,8 +1303,8 @@ class _Resp:
     def __init__(self, servers):
         self._body = json.dumps(servers).encode()
 
-    def read(self):
-        return self._body
+    def read(self, size=-1):
+        return self._body[:size]
 
     def __enter__(self):
         return self

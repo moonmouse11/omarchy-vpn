@@ -437,7 +437,9 @@ def test_speed_test_custom_url_is_measured_and_remembered(monkeypatch):
         measure=lambda url, d: called.append(url) or _ok(5.0),
         urls=["http://old/a", "http://new/b"],
     )
-    monkeypatch.setattr(vpn_manager.config, "save_config", saved.append)
+    monkeypatch.setattr(
+        vpn_manager.config, "save_config_changes", lambda previous, updated: saved.append(updated)
+    )
     assert vpn_manager.run_check("speed", "http://new/b").success
     assert called == ["http://new/b"]
     # a remembered URL is a known target: measured, not re-saved
@@ -450,7 +452,9 @@ def test_speed_test_custom_urls_capped_newest_first(monkeypatch):
     saved = []
     old = [f"http://old/{i}" for i in range(vpn_manager.SPEED_TEST_MAX_URLS)]
     _speed_test_env(monkeypatch, measure=lambda url, d: _ok(5.0), urls=old)
-    monkeypatch.setattr(vpn_manager.config, "save_config", saved.append)
+    monkeypatch.setattr(
+        vpn_manager.config, "save_config_changes", lambda previous, updated: saved.append(updated)
+    )
     assert vpn_manager.run_check("speed", "http://new/x").success
     assert saved[0].speed_test_urls == ["http://new/x", *old[:-1]]
 
@@ -469,7 +473,9 @@ def test_speed_test_custom_url_matching_a_preset_is_not_listed_twice(monkeypatch
 
 def test_speed_test_custom_url_rejects_non_http(monkeypatch):
     *_, emitted = _speed_test_env(monkeypatch, measure=lambda url, d: pytest.fail("measured"))
-    monkeypatch.setattr(vpn_manager.config, "save_config", lambda cfg: pytest.fail("saved"))
+    monkeypatch.setattr(
+        vpn_manager.config, "save_config_changes", lambda *args: pytest.fail("saved")
+    )
     result = vpn_manager.run_check("speed", "file:///etc/passwd")
     assert not result.success
     assert result.message == ""  # the card shows it; _report must not notify too

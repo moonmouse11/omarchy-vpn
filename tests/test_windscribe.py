@@ -1,7 +1,14 @@
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from providers import windscribe as ws
 from providers.common import interfaceclaims
+
+_REAL_RUN = subprocess.run
+_REAL_POPEN = subprocess.Popen
 
 LOCATIONS = """\
 Best Location - Empire (10 Gbps)
@@ -63,6 +70,31 @@ def test_lists_locations_when_disconnected(monkeypatch):
         "US Central - Dallas - Ranch (Pro)",
     ]
     assert all(c.provider == "Windscribe" and not c.active for c in conns)
+
+
+def test_location_parser_bounds_whitespace_backtracking(monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+    _REAL_RUN(
+        [
+            sys.executable,
+            "-c",
+            "from providers.vendor.windscribe import _locations\n"
+            "row = 'Region - City - Nickname' + ' ' * 100_000 + 'not a suffix'\n"
+            "assert _locations(row) == [row]\n",
+        ],
+        cwd=Path(ws.__file__).resolve().parents[1],
+        timeout=5,
+        check=True,
+        capture_output=True,
+    )
+
+
+@pytest.mark.parametrize("gap", ["", " ", " \t "])
+def test_location_speed_suffix_trims_only_suffix_whitespace(monkeypatch, gap):
+    _present(monkeypatch, locations=f"Region - City - Nickname (Pro){gap}(10 Gbps)\t\n")
+    assert [c.name for c in ws.WindscribeProvider().connections()] == [
+        "Region - City - Nickname (Pro)"
+    ]
 
 
 def test_connected_marks_only_the_named_location(monkeypatch):
@@ -134,6 +166,49 @@ def test_connect_refuses_when_logged_out(monkeypatch):
     r = ws.WindscribeProvider().connect(_conn())
     assert not r.success
     assert "windscribe-cli login" in r.message
+
+
+@pytest.mark.parametrize("name", ["UnexpectedNotice", "", "Region -  - Nickname"])
+def test_connect_rejects_malformed_location_without_vendor_action(monkeypatch, name):
+    _present(monkeypatch)
+    original = ws._run
+    calls = []
+
+    def record(args, timeout=15):
+        calls.append(args)
+        return original(args, timeout)
+
+    monkeypatch.setattr(ws, "_run", record)
+    result = ws.WindscribeProvider().connect(_conn(name))
+    assert not result.success
+    assert "location" in result.message.lower()
+    assert not any(args[0] == "connect" for args in calls)
+
+
+@pytest.mark.parametrize("label", ["UnexpectedNotice", ""])
+def test_short_connected_label_does_not_crash_or_confirm_target(monkeypatch, label):
+    _frozen_clock(monkeypatch)
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+    state = {"connecting": False, "disconnects": 0}
+
+    def fake_run(args, timeout=15):
+        if args == ["status"]:
+            if state["connecting"]:
+                return 0, STATUS_CONNECTED.replace("Canada East - Toronto - Comfort Zone", label)
+            return 0, STATUS_DISCONNECTED
+        if args[0] == "connect":
+            state["connecting"] = True
+            return 0, "accepted"
+        if args == ["disconnect"]:
+            state["connecting"] = False
+            state["disconnects"] += 1
+            return 0, "disconnecting"
+        return 1, "unexpected"
+
+    monkeypatch.setattr(ws, "_run", fake_run)
+    result = ws.WindscribeProvider().connect(_conn("Canada East - Toronto - Comfort Zone"))
+    assert not result.success
+    assert state["disconnects"] == 3  # every accepted attempt is torn down
 
 
 def test_connect_waits_until_connected(monkeypatch):
@@ -253,9 +328,13 @@ def test_fallback_waits_until_previous_attempt_is_disconnected(monkeypatch):
     assert calls[disconnect_at + 1 : stealth_at] == [["status"], ["status"]]
 
 
-def test_fallback_stops_when_previous_attempt_never_disconnects(monkeypatch):
+@pytest.mark.parametrize("previous", [None, "utun420"])
+def test_fallback_stops_when_previous_attempt_never_disconnects(monkeypatch, previous):
     _frozen_clock(monkeypatch)
     calls = []
+    released = []
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: previous)
+    monkeypatch.setattr(interfaceclaims, "release", released.append)
     monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
 
     def fake_run(args, timeout=15):
@@ -279,6 +358,7 @@ def test_fallback_stops_when_previous_attempt_never_disconnects(monkeypatch):
     assert [call for call in calls if call and call[0] == "connect"] == [
         ["connect", "-n", "New York"]
     ]
+    assert released == ([] if previous is not None else ["Windscribe"])
 
 
 def test_successful_connect_claims_the_only_new_interface(monkeypatch):
@@ -393,10 +473,32 @@ def test_connect_vendor_refusal_surfaces(monkeypatch):
     assert "Upgrade to Pro" in r.message
 
 
+def test_disconnect_waits_for_actual_teardown(monkeypatch):
+    _frozen_clock(monkeypatch)
+    statuses = iter([STATUS_CONNECTED, STATUS_DISCONNECTED])
+    calls = []
+
+    def run(args):
+        calls.append(args)
+        return (0, next(statuses)) if args == ["status"] else (0, "accepted")
+
+    monkeypatch.setattr(ws, "_run", run)
+    assert ws.WindscribeProvider().disconnect(_conn()).success
+    assert calls == [["disconnect"], ["status"], ["status"]]
+
+
+def test_disconnect_timeout_reports_failure(monkeypatch):
+    _frozen_clock(monkeypatch)
+    _cli_seq(monkeypatch, [STATUS_CONNECTED])
+    result = ws.WindscribeProvider().disconnect(_conn())
+    assert not result.success
+    assert "disconnect" in result.message.lower()
+
+
 def test_disconnect_success_and_failure(monkeypatch):
     released = []
     monkeypatch.setattr(interfaceclaims, "release", released.append)
-    calls = _cli_seq(monkeypatch, [STATUS_CONNECTED])
+    calls = _cli_seq(monkeypatch, [STATUS_DISCONNECTED])
     assert ws.WindscribeProvider().disconnect(_conn()).success
     assert calls["disconnect"] == 1
     assert released == []  # exact ownership remains until the interface disappears
@@ -447,7 +549,8 @@ def test_real_v2_status_shape_logged_out(monkeypatch):
     )
     assert ws.WindscribeProvider().connections() == []
     issue = ws.WindscribeProvider().setup_issue()
-    assert issue is not None and issue["command"] == "windscribe-cli login"
+    assert issue is not None
+    assert issue["command"] == "windscribe-cli login"
 
 
 def test_real_v2_status_shape_logged_in(monkeypatch):
@@ -578,4 +681,5 @@ def test_firewall_state_from_status_line(monkeypatch):
     status = REAL_STATUS_CONNECTED.replace("Firewall state: Off", "Firewall state: On")
     _present(monkeypatch, status=status)
     hint = ws.WindscribeProvider().lockdown_hint(_conn())
-    assert hint is not None and "firewall off" in hint
+    assert hint is not None
+    assert "firewall off" in hint

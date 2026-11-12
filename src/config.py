@@ -19,8 +19,11 @@ All keys optional; missing file means defaults:
 """
 
 import contextlib
+import fcntl
 import json
-from dataclasses import dataclass, field
+import os
+from collections.abc import Iterator
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import fsutil
@@ -111,7 +114,44 @@ def load_config() -> Config:
     return cfg
 
 
+@contextlib.contextmanager
+def _config_lock() -> Iterator[None]:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(CONFIG_PATH.with_suffix(".lock"), os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    with os.fdopen(fd, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def save_config(cfg: Config) -> None:
+    """Deliberately replace the complete configuration, serialized with patch saves."""
+    with _config_lock():
+        _write_config(cfg)
+
+
+def _merge_changes(previous: dict, updated: dict, current: dict) -> dict:
+    merged = current.copy()
+    for key in previous.keys() | updated.keys():
+        if key not in updated:
+            merged.pop(key, None)
+        elif key not in previous or previous[key] != updated[key]:
+            before, after, latest = previous.get(key, {}), updated[key], current.get(key, {})
+            if isinstance(before, dict) and isinstance(after, dict) and isinstance(latest, dict):
+                merged[key] = _merge_changes(before, after, latest)
+            else:
+                merged[key] = after
+    return merged
+
+
+def save_config_changes(previous: Config, updated: Config) -> Config:
+    """Apply only edited fields/keys to the latest configuration under a shared lock."""
+    with _config_lock():
+        merged = Config(**_merge_changes(asdict(previous), asdict(updated), asdict(load_config())))
+        _write_config(merged)
+        return merged
+
+
+def _write_config(cfg: Config) -> None:
     raw = {
         "providers": cfg.providers,
         "killswitch_mode": cfg.killswitch_mode,

@@ -712,7 +712,7 @@ Panel {
     loadServers()
     serverCursor = -1
     serverFilter = ""
-    if (panelFlick) panelFlick.contentY = 0
+    panelList.positionViewAtBeginning()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
   onServerRowsChanged: {
@@ -863,7 +863,7 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(400))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(680))
+    contentHeight: panel.fittedContentHeight(panelList.contentHeight, Style.space(680))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -892,23 +892,25 @@ Panel {
         else if (k === "f") root.cycleLabelFormat()
         else if (k === "p" && root.serverCursor >= 0) root.pingRow(root.serverRows[root.serverCursor])
         else if (k === "s" && root.serverCursor >= 0) root.toggleFavourite(root.serverRows[root.serverCursor])
-        else if (k === "/") panelList.filterField.forceActiveFocus()
+        else if (k === "/") panelList.focusFilter()
       }
 
-      Flickable {
-        id: panelFlick
+      ServerList {
+        id: panelList
         anchors.fill: parent
-        contentWidth: width
-        contentHeight: column.implicitHeight
-        clip: true
-        boundsBehavior: Flickable.StopAtBounds
-        flickableDirection: Flickable.VerticalFlick
-        interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        host: root
+        active: root.opened
+        keyTarget: keyCatcher
+        preamble: panelHead
+        tail: panelTail
+      }
 
-      Column {
-        id: column
-        width: panelFlick.width
+      Component {
+        id: panelHead
+
+        Column {
+        width: parent.width
+        height: implicitHeight  // lets the Loader in ServerList track us
         spacing: Style.space(12)
 
         Column {
@@ -959,13 +961,16 @@ Panel {
 
         PanelSeparator { foreground: root.foreground }
 
-        ServerList {
-          id: panelList
-          width: parent.width
-          host: root
-          flick: panelFlick
-          keyTarget: keyCatcher
         }
+      }
+
+      Component {
+        id: panelTail
+
+        Column {
+        width: parent.width
+        height: implicitHeight  // lets the Loader in ServerList track us
+        spacing: Style.space(12)
 
         PanelSeparator { foreground: root.foreground }
 

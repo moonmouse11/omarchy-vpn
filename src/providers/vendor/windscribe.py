@@ -25,7 +25,7 @@ _LOGGED_OUT_MARKERS = ("not logged in", "logged out", "please log in", "login re
 # v2 (2.21.7) pins key-value status lines: 'Login state:', 'Connect state:',
 # 'Location:', 'Firewall state:' — and flat location rows
 # 'US East - New York - Empire (Pro) (10 Gbps)'.
-_GBPS_SUFFIX = re.compile(r"\s*\(\d+ Gbps\)\s*$")
+_GBPS_SUFFIX = re.compile(r"\(\d+ Gbps\)$")
 _PRO_MARK = " (Pro)"
 _SYS_NET = Path("/sys/class/net")
 
@@ -66,7 +66,7 @@ def _locations(text: str) -> list[str]:
     noise, the (Pro) mark stays: free users must see what they can't use."""
     rows: list[str] = []
     for line in text.splitlines():
-        row = _GBPS_SUFFIX.sub("", line.strip())
+        row = _GBPS_SUFFIX.sub("", line.strip()).rstrip()
         if row:
             rows.append(row)
     return rows
@@ -225,25 +225,27 @@ class WindscribeProvider(VPNProvider):
                 continue
             last, stopped = self._await_connected(windscribe, connection.name)
             if last.success:
-                after = windscribe._interfaces()
-                created = {name for name, inode in after.items() if before.get(name) != inode}
-                with contextlib.suppress(OSError):
-                    if previous is not None and interfaceclaims.get(self.name) == previous:
-                        pass
-                    elif len(created) == 1:
-                        interfaceclaims.claim(self.name, created.pop())
-                    else:
-                        interfaceclaims.release(self.name)
+                self._record_interface_claim(windscribe, previous, before)
                 return last
             if not stopped:
-                if previous is None:
-                    with contextlib.suppress(OSError):
-                        interfaceclaims.release(self.name)
-                return last
+                break
         if previous is None:
             with contextlib.suppress(OSError):
                 interfaceclaims.release(self.name)
         return last
+
+    def _record_interface_claim(
+        self, windscribe, previous: str | None, before: dict[str, int]
+    ) -> None:
+        after = windscribe._interfaces()
+        created = {name for name, inode in after.items() if before.get(name) != inode}
+        with contextlib.suppress(OSError):
+            if previous is not None and interfaceclaims.get(self.name) == previous:
+                return
+            if len(created) == 1:
+                interfaceclaims.claim(self.name, created.pop())
+            else:
+                interfaceclaims.release(self.name)
 
     def _await_connected(self, windscribe, name: str) -> tuple[ActionResult, bool]:
         """connect is async: rc 0 = accepted. Poll until this location is the

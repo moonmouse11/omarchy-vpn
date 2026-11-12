@@ -29,7 +29,8 @@ def dispatch(op: str) -> object:
 
         return get_status()
     if op == "servers":
-        from app.servers import server_list  # noqa: PLC0415 — lazy, same reason
+        # Keep the same lazy import boundary as status.
+        from app.servers import server_list  # noqa: PLC0415
 
         return server_list()
     if op == "invalidate":

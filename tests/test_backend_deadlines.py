@@ -72,8 +72,9 @@ def test_expired_deadline_is_checked_before_a_read():
     client, server = socket.socketpair()
     with client, server:
         client.sendall(b"{}\n")
+        deadline = time.monotonic() - 1
         with pytest.raises(TimeoutError):
-            backendipc.read_message(server, max_bytes=1024, deadline=time.monotonic() - 1)
+            backendipc.read_message(server, max_bytes=1024, deadline=deadline)
 
 
 def test_handler_finishing_after_deadline_does_not_send_a_late_success(monkeypatch):

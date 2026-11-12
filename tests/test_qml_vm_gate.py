@@ -83,14 +83,16 @@ def test_runtime_verifier_rejects_the_previous_failures(observations, damage):
         else:
             data["serverNames"] = ["wrong server"]
         path.write_text(json.dumps(data))
+    verify = _verifier()
     with pytest.raises(ValueError):
-        _verifier()(observations)
+        verify(observations)
 
 
 def test_runtime_verifier_rejects_missing_evidence(observations):
     (observations / "actions.log").unlink()
+    verify = _verifier()
     with pytest.raises((ValueError, FileNotFoundError)):
-        _verifier()(observations)
+        verify(observations)
 
 
 @pytest.mark.parametrize("damage", ["empty-window", "stale-window-filter", "window-hidden"])
@@ -105,8 +107,9 @@ def test_runtime_verifier_rejects_broken_simultaneously_visible_lists(observatio
     else:
         data["windowVisible"] = False
     path.write_text(json.dumps(data))
+    verify = _verifier()
     with pytest.raises(ValueError):
-        _verifier()(observations)
+        verify(observations)
 
 
 @pytest.mark.parametrize("claimed_guest", [False, True])

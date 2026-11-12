@@ -655,6 +655,35 @@ def _disconnect_connection(provider, connection: VPNConnection) -> bool:
     return not active_connections(providers=[provider])
 
 
+def _provider_lockdown_hint(provider, connection: VPNConnection) -> str | None:
+    hint_fn = getattr(provider, "lockdown_hint", None)
+    if hint_fn is None:
+        return None
+    try:
+        return hint_fn(connection)
+    except Exception:  # noqa: BLE001 — a broken provider must not break the switch
+        return None
+
+
+def _disconnect_active_connections(for_switch: bool) -> tuple[list[str], list[str]]:
+    stopped, failed = [], []
+    lockdown_warnings: list[str] = []
+    # act on everything, even providers hidden from the menu
+    for provider in _provider_pool():
+        for conn in active_connections(providers=[provider]):
+            if not _disconnect_connection(provider, conn):
+                failed.append(f"{provider.name}: {conn.name}")
+                continue
+            stopped.append(f"{provider.name}: {conn.name}")
+            if for_switch:
+                hint = _provider_lockdown_hint(provider, conn)
+                if hint:
+                    lockdown_warnings.append(hint)
+    for warning in lockdown_warnings:
+        notify("Vendor lockdown — warning", warning)
+    return stopped, failed
+
+
 def _disconnect_all(for_switch: bool = False) -> ActionResult:
     """for_switch: a connect is tearing the old tunnel down — leave IPv6 off;
     the connect's own result decides (else IPv6 came back on between the old
@@ -662,26 +691,7 @@ def _disconnect_all(for_switch: bool = False) -> ActionResult:
     remote = getattr(_vm(), "_disconnect_all", None)
     if remote is not None and remote is not _disconnect_all:
         return remote(for_switch=for_switch)
-    stopped, failed = [], []
-    lockdown_warnings: list[str] = []
-    # act on everything, even providers hidden from the menu
-    for provider in _provider_pool():
-        for conn in active_connections(providers=[provider]):
-            if _disconnect_connection(provider, conn):
-                stopped.append(f"{provider.name}: {conn.name}")
-                if for_switch:
-                    hint_fn = getattr(provider, "lockdown_hint", None)
-                    if hint_fn is not None:
-                        try:
-                            hint = hint_fn(conn)
-                        except Exception:  # noqa: BLE001 — a broken provider
-                            hint = None  # must not break the switch
-                        if hint:
-                            lockdown_warnings.append(hint)
-            else:
-                failed.append(f"{provider.name}: {conn.name}")
-    for warning in lockdown_warnings:
-        notify("Vendor lockdown — warning", warning)
+    stopped, failed = _disconnect_active_connections(for_switch)
     if not for_switch:
         _sync_ipv6_guard()
     if failed:

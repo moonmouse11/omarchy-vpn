@@ -141,8 +141,9 @@ def test_failed_save_preserves_credentials_and_releases_lock(tmp_path, monkeypat
         raise OSError("synthetic disk failure")
 
     monkeypatch.setattr(impl.fsutil, "write_json_atomic", fail)
+    failed_key = _key("failed")
     with pytest.raises(OSError, match="synthetic disk failure"):
-        keys.add_server(_key("failed"))
+        keys.add_server(failed_key)
     assert path.read_bytes() == before
     monkeypatch.setattr(impl.fsutil, "write_json_atomic", original)
     ctx = multiprocessing.get_context("spawn")

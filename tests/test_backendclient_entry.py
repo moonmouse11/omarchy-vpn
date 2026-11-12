@@ -81,7 +81,8 @@ def test_status_falls_back_to_direct_once(monkeypatch, tmp_path, capsys):
     out = _run_manager(monkeypatch, capsys, "--status")
     assert requests == ["status"]
     assert direct_calls == [1]  # direct implementation ran exactly once
-    assert out.endswith("\n") and out.count("\n") == 1
+    assert out.endswith("\n")
+    assert out.count("\n") == 1
     data = json.loads(out)
     assert data["class"] == "vpn-disconnected"
 

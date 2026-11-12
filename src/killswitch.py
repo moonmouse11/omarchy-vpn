@@ -141,7 +141,7 @@ def set_mode(
     apply=False only saves it: with Lockdown off and no VPN up there is
     nothing to protect yet — the next connect puts the rules in place."""
     previous = config.load_config()
-    cfg = replace(previous, killswitch_mode="all" if on else "off")
+    cfg: config.Config = replace(previous, killswitch_mode="all" if on else "off")
     config.save_config_changes(previous, cfg)
     if not on:
         return disable()

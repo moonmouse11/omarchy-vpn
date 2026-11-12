@@ -1,7 +1,14 @@
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from providers import windscribe as ws
 from providers.common import interfaceclaims
+
+_REAL_RUN = subprocess.run
+_REAL_POPEN = subprocess.Popen
 
 LOCATIONS = """\
 Best Location - Empire (10 Gbps)
@@ -63,6 +70,31 @@ def test_lists_locations_when_disconnected(monkeypatch):
         "US Central - Dallas - Ranch (Pro)",
     ]
     assert all(c.provider == "Windscribe" and not c.active for c in conns)
+
+
+def test_location_parser_bounds_whitespace_backtracking(monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+    _REAL_RUN(
+        [
+            sys.executable,
+            "-c",
+            "from providers.vendor.windscribe import _locations\n"
+            "row = 'Region - City - Nickname' + ' ' * 100_000 + 'not a suffix'\n"
+            "assert _locations(row) == [row]\n",
+        ],
+        cwd=Path(ws.__file__).resolve().parents[1],
+        timeout=5,
+        check=True,
+        capture_output=True,
+    )
+
+
+@pytest.mark.parametrize("gap", ["", " ", " \t "])
+def test_location_speed_suffix_trims_only_suffix_whitespace(monkeypatch, gap):
+    _present(monkeypatch, locations=f"Region - City - Nickname (Pro){gap}(10 Gbps)\t\n")
+    assert [c.name for c in ws.WindscribeProvider().connections()] == [
+        "Region - City - Nickname (Pro)"
+    ]
 
 
 def test_connected_marks_only_the_named_location(monkeypatch):
@@ -296,9 +328,13 @@ def test_fallback_waits_until_previous_attempt_is_disconnected(monkeypatch):
     assert calls[disconnect_at + 1 : stealth_at] == [["status"], ["status"]]
 
 
-def test_fallback_stops_when_previous_attempt_never_disconnects(monkeypatch):
+@pytest.mark.parametrize("previous", [None, "utun420"])
+def test_fallback_stops_when_previous_attempt_never_disconnects(monkeypatch, previous):
     _frozen_clock(monkeypatch)
     calls = []
+    released = []
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: previous)
+    monkeypatch.setattr(interfaceclaims, "release", released.append)
     monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
 
     def fake_run(args, timeout=15):
@@ -322,6 +358,7 @@ def test_fallback_stops_when_previous_attempt_never_disconnects(monkeypatch):
     assert [call for call in calls if call and call[0] == "connect"] == [
         ["connect", "-n", "New York"]
     ]
+    assert released == ([] if previous is not None else ["Windscribe"])
 
 
 def test_successful_connect_claims_the_only_new_interface(monkeypatch):
@@ -512,7 +549,8 @@ def test_real_v2_status_shape_logged_out(monkeypatch):
     )
     assert ws.WindscribeProvider().connections() == []
     issue = ws.WindscribeProvider().setup_issue()
-    assert issue is not None and issue["command"] == "windscribe-cli login"
+    assert issue is not None
+    assert issue["command"] == "windscribe-cli login"
 
 
 def test_real_v2_status_shape_logged_in(monkeypatch):
@@ -643,4 +681,5 @@ def test_firewall_state_from_status_line(monkeypatch):
     status = REAL_STATUS_CONNECTED.replace("Firewall state: Off", "Firewall state: On")
     _present(monkeypatch, status=status)
     hint = ws.WindscribeProvider().lockdown_hint(_conn())
-    assert hint is not None and "firewall off" in hint
+    assert hint is not None
+    assert "firewall off" in hint

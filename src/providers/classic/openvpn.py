@@ -121,6 +121,7 @@ def ovpn_endpoint(conf_path) -> tuple[str, int] | None:
 
 
 class OpenVPNProvider(VPNProvider):
+    ping_supported = True
     helper_kind = "ovpn"
 
     @property

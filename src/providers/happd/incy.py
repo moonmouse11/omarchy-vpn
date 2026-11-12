@@ -161,6 +161,8 @@ def incy_server_groups(provider: VPNProvider) -> tuple[list[dict], dict[str, lis
 
 
 class IncyProvider(VPNProvider):
+    ping_supported = True
+
     @property
     def name(self) -> str:
         return "INCY"

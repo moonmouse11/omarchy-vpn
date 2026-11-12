@@ -230,16 +230,20 @@ Panel {
       }
       if (q !== "" && mine.length === 0) continue
       var key = "provider:" + prov.name
-      // a protocol with only notice groups (rejected subscriptions, no headers) opens too
-      var open = mine.length > 0 && isOpen(expanded, key, prov.active, q)
+      var hasSetup = false
+      for (var s2 = 0; s2 < mine.length; s2++) if (mine[s2].group.setup) hasSetup = true
+      // a protocol with only notice groups (rejected subscriptions, no headers,
+      // setup needed) opens too
+      var open = mine.length > 0 && isOpen(expanded, key, prov.active || hasSetup, q)
       rows.push({ kind: "provider", provider: prov, key: key, open: open, count: count, depth: 0 })
       if (!open) continue
       // a subscription is a level of its own; WireGuard's one group is the protocol itself
       var nested = prov.name === "Happ" || prov.name === "INCY"
       for (var n = 0; n < mine.length; n++) {
         var mg = mine[n].group
+        var hdr = nested || !!mg.setup
         pushGroup(rows, mg, mine[n].servers,
-          !nested || isOpen(expanded, mg.id, mg.active, q), 1, nested)
+          !hdr || isOpen(expanded, mg.id, mg.active, q), 1, hdr)
       }
     }
     return rows
@@ -349,6 +353,8 @@ Panel {
   function pingRow(row) {
     if (!row || row.kind === "provider") return
     var g = row.group
+    if (g.pingable !== true || (row.server && row.server.pingable !== true)) return
+    if (row.kind === "group" && g.setup) return  // a setup notice has nothing to ping
     var args = ["--ping-now"]
     var key
     if (row.kind === "group") {
@@ -379,6 +385,7 @@ Panel {
 
   function activateServerRow(row) {
     if (!row) return
+    if (row.kind === "group" && row.group.setup) { runProviderSetup(row.group.setup); return }
     if (row.kind === "group" || row.kind === "provider") { setExpanded(rowOpenKey(row), !row.open); return }
     var g = row.group, s = row.server
     pendingKey = rowKey(g, s)
@@ -497,6 +504,8 @@ Panel {
 
   function pingProvider(name) {
     if (!name) return
+    for (var i = 0; i < serverProviders.length; i++)
+      if (serverProviders[i].name === name && serverProviders[i].pingable !== true) return
     runArgs(["--ping-now", "group", "provider:" + name])
     pingSettle.restart()
   }
@@ -506,6 +515,28 @@ Panel {
     close()
     Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation",
       Util.shellQuote(root.pluginDir + "/install.sh")])
+  }
+
+  // a provider's setup row (hint + command from server_list): the command runs
+  // in a floating terminal, sudo/logins ask there; the watchdog below reloads
+  // the list so a finished login shows its servers without a manual reload
+  function runProviderSetup(command) {
+    close()
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation",
+      String(command)])
+    setupWatch.left = 20
+    setupWatch.start()
+  }
+
+  Timer {
+    id: setupWatch
+    interval: 3000
+    repeat: true
+    property int left: 0
+    onTriggered: {
+      root.loadServers()
+      if (--left <= 0) stop()
+    }
   }
 
   function openWindow() {
@@ -681,7 +712,7 @@ Panel {
     loadServers()
     serverCursor = -1
     serverFilter = ""
-    if (panelFlick) panelFlick.contentY = 0
+    panelList.positionViewAtBeginning()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
   onServerRowsChanged: {
@@ -832,7 +863,7 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(400))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(680))
+    contentHeight: panel.fittedContentHeight(panelList.contentHeight, Style.space(680))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -861,23 +892,25 @@ Panel {
         else if (k === "f") root.cycleLabelFormat()
         else if (k === "p" && root.serverCursor >= 0) root.pingRow(root.serverRows[root.serverCursor])
         else if (k === "s" && root.serverCursor >= 0) root.toggleFavourite(root.serverRows[root.serverCursor])
-        else if (k === "/") panelList.filterField.forceActiveFocus()
+        else if (k === "/") panelList.focusFilter()
       }
 
-      Flickable {
-        id: panelFlick
+      ServerList {
+        id: panelList
         anchors.fill: parent
-        contentWidth: width
-        contentHeight: column.implicitHeight
-        clip: true
-        boundsBehavior: Flickable.StopAtBounds
-        flickableDirection: Flickable.VerticalFlick
-        interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        host: root
+        active: root.opened
+        keyTarget: keyCatcher
+        preamble: panelHead
+        tail: panelTail
+      }
 
-      Column {
-        id: column
-        width: panelFlick.width
+      Component {
+        id: panelHead
+
+        Column {
+        width: parent.width
+        height: implicitHeight  // lets the Loader in ServerList track us
         spacing: Style.space(12)
 
         Column {
@@ -928,13 +961,16 @@ Panel {
 
         PanelSeparator { foreground: root.foreground }
 
-        ServerList {
-          id: panelList
-          width: parent.width
-          host: root
-          flick: panelFlick
-          keyTarget: keyCatcher
         }
+      }
+
+      Component {
+        id: panelTail
+
+        Column {
+        width: parent.width
+        height: implicitHeight  // lets the Loader in ServerList track us
+        spacing: Style.space(12)
 
         PanelSeparator { foreground: root.foreground }
 

@@ -173,6 +173,27 @@ If a provider still refuses (device limit, unsupported client), the server list 
 other request headers, put them in `~/.config/happ-capture/headers.json` as one JSON object
 (`{"User-Agent": "…", "X-Hwid": "…"}`) and `chmod 600` it; they replace the default ones.
 
+## Windscribe setup
+
+Free tier: 10 GB/month with a confirmed email. Install `windscribe-cli-v2-bin` from the
+AUR (the install wizard hints at it), then click **Set up** in the Locations list — a
+terminal runs `windscribe-cli login` for you. Free locations show as rows; connecting a
+Pro-only location reports Windscribe's own refusal. The kill switch is hidden while a
+Windscribe tunnel is up (vendor daemon, like NetworkManager); Windscribe's own firewall
+setting is untouched — but if it is ON, switching away warns that it may keep blocking
+traffic (never blocks the switch itself).
+
+## Cloudflare WARP setup
+
+Free, no account, unlimited. Install `cloudflare-warp-bin` from the AUR (the install wizard
+hints at it). The rest has a **setup row** right in the Locations list — click **Set up**
+and a terminal starts the daemon and runs `warp-cli registration new` for you (one sudo
+password). After that the **Cloudflare WARP** row connects/disconnects like any other.
+
+Consumer WARP has no server picker (Cloudflare picks the nearest exit) and its daemon owns
+the tunnel outside the plugin's kill switch — while WARP is up the kill switch badge is
+hidden, the same as with NetworkManager connections.
+
 ## INCY setup
 
 1. Install **INCY Desktop** yourself: AUR `incy-bin`, or the official Arch `.pkg.tar.zst`
@@ -243,7 +264,17 @@ through the VPN while one is up.
 
 ## Troubleshooting
 
+- Subscription responses are limited to 16 MiB. A malformed or oversized response is rejected;
+  the last cached server list is kept. This is a download-size limit, not a server-count limit.
+
 - Log: `~/.local/state/vpn-manager/vpn-manager.log`
+- Status and server-list reads come from a per-user service (`omarchy-vpn-backend.service`).
+  If it's stopped or unreachable, `--status`/`--servers` fall back to a direct read
+  automatically — nothing to configure. IPC responses over 256 KiB also use direct reads:
+  large server lists stay complete, but do not benefit from the backend fast path.
+  Inspect or restart it with
+  `systemctl --user status omarchy-vpn-backend`, `journalctl --user -u omarchy-vpn-backend`,
+  `systemctl --user restart omarchy-vpn-backend`.
 - Errors (a config the installed xray rejects, a tunnel that died) show as notifications with
   the reason.
 - Settings: `~/.config/vpn-manager/`; caches: `~/.cache/vpn-manager/` (the Clear caches tool
@@ -259,6 +290,22 @@ omarchy plugin remove omarchy-vpn
 Run `uninstall.sh` first: it turns the kill switch off and removes the helpers, the sudoers rule,
 the app and the key binding. Removing the plugin alone would leave them behind. Your settings,
 keys and favourites in `~/.config/vpn-manager` are kept. From a checkout: `make uninstall`.
+
+## Graphical regression gate
+
+Static QML checks do not prove focus or keyboard-action safety. With an existing sealed
+Omarchy test image and its `vm-boot` launcher (temporary COW overlay required), run:
+
+```bash
+bash tests/run_qml_vm.sh /path/to/vm-boot /path/to/sealed-image.qcow2
+```
+
+Requires QEMU/KVM and about 3 GiB guest memory; the image must include Quickshell/Hyprland,
+`wtype`, `grim` and Python. Nothing is installed on the host. The guest refuses to run
+without the explicit disposable-VM boot marker. A fake vendor refuses/logs actions;
+the gate checks real filter text and matching rows in both UI surfaces (also when both
+are visible), empty hidden-list models and the runtime journal. Evidence goes to `.cache/qml-vm-audit.*`. Missing VM
+prerequisites block this gate; ordinary pytest/source checks are not a replacement.
 
 ## Contributing
 

@@ -161,10 +161,13 @@ def _server_group(
     sub_id=None,
     *,
     pinging: PingState = NOTHING_PINGING,
+    pingable: bool = True,
 ):
     group_scope = {"group": group_id}
     group_pinging = pinging.every or group_scope in pinging.queued
     rows = [_server_row(e) for e in entries]
+    for row in rows:
+        row["pingable"] = pingable
     for row, entry in zip(rows, entries, strict=True):
         server_scope = {"server": [provider, entry["name"], entry.get("provider_id") or ""]}
         scopes = [group_scope, server_scope]
@@ -186,6 +189,7 @@ def _server_group(
         "summary": summary,
         "active": any(r["active"] for r in rows),
         "pinging": group_pinging,
+        "pingable": pingable,
         "servers": rows,
     }
 
@@ -220,12 +224,14 @@ def server_list() -> dict:
     providers: list[dict] = []
     for provider in visible_providers():
         first = len(groups)
+        pingable = bool(getattr(provider, "ping_supported", False))
         providers.append(
             {
                 "name": provider.name,
                 "importer": _IMPORT_KINDS.get(provider.name),
                 "manage": provider.name in _MANAGED_PROVIDERS,
                 "autostart": provider.name in _AUTOSTART_PROVIDERS,
+                "pingable": pingable,
             }
         )
         if provider.name == "Happ":
@@ -287,9 +293,26 @@ def server_list() -> dict:
                 ]
                 groups.append(
                     _server_group(
-                        provider.name, provider.name, provider.name, entries, pinging=pinging
+                        provider.name,
+                        provider.name,
+                        provider.name,
+                        entries,
+                        pinging=pinging,
+                        pingable=pingable,
                     )
                 )
+            elif (issue := _setup_issue(provider)) is not None:
+                # no rows to show and setup is needed: the hint IS the group
+                # (the Happ no-headers notice is the same pattern)
+                group = _server_group(
+                    f"setup:{provider.name}",
+                    provider.name,
+                    issue["hint"],
+                    [],
+                    pingable=False,
+                )
+                group["setup"] = issue["command"]
+                groups.append(group)
         mine = groups[first:]
         providers[-1]["total"] = sum(len(g["servers"]) for g in mine)
         providers[-1]["active"] = any(g["active"] for g in mine)
@@ -299,6 +322,18 @@ def server_list() -> dict:
         "layout": config.load_config().locations_layout,
         "quick": _quick_connect(groups),
     }
+
+
+def _setup_issue(provider) -> dict | None:
+    """A broken setup probe must not empty the list (same rule as connections())."""
+    try:
+        issue = provider.setup_issue()
+    except Exception as e:  # noqa: BLE001
+        logutil.log(f"server list: {provider.name} setup probe: {e!r}")
+        return None
+    if isinstance(issue, dict) and issue.get("hint") and issue.get("command"):
+        return issue
+    return None
 
 
 def _quick_connect(groups: list[dict]) -> dict:

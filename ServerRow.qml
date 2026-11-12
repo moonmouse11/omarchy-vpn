@@ -18,11 +18,17 @@ CursorSurface {
   readonly property bool isIncyProvider: isProvider && row.provider && row.provider.name === "INCY"
   readonly property bool isSubProvider: isHappProvider || isIncyProvider
   readonly property bool isGroup: row && row.kind === "group"
+  readonly property bool hasSetup: isGroup && row.group.setup !== undefined && row.group.setup !== ""
   // the tree layout's top level: a protocol (Happ, WireGuard, …)
   readonly property bool isProvider: row && row.kind === "provider"
   readonly property bool isHeader: isGroup || isProvider
   readonly property bool isAuto: row && row.kind === "auto"
   readonly property var server: row && row.server ? row.server : null
+  readonly property bool pingable: {
+    if (isProvider) return row.provider.pingable === true
+    if (isGroup) return row.group.pingable === true
+    return server !== null && server.pingable === true
+  }
   readonly property bool isActive: row && row.kind === "server" && server && server.active === true
   readonly property bool pending: row && !isHeader && host.pendingKey === host.rowKey(row.group, server)
   readonly property string leftText: {
@@ -39,7 +45,7 @@ CursorSurface {
     if (!row) return ""
     if (isProvider) return row.provider.total > 0 ? countText : "empty"
     if (pending || pinging) return "…"
-    if (isGroup) return row.group.summary || countText
+    if (isGroup) return row.group.setup ? "" : (row.group.summary || countText)
     return String(server.ping || "")
   }
 
@@ -122,7 +128,7 @@ CursorSurface {
 
     Text {
       id: rightLabel
-      visible: serverRow.isHeader
+      visible: serverRow.isHeader && !serverRow.hasSetup
       textFormat: Text.PlainText
       text: serverRow.rightText !== "" ? serverRow.rightText : serverRow.countText
       color: serverRow.host.dim
@@ -130,11 +136,13 @@ CursorSurface {
       font.pixelSize: Style.font.caption
     }
 
-    // a group's ping button, next to its summary (above the row click target)
+    // a provider/group ping button, next to its summary (above the row click target);
+    // a setup notice has nothing to ping — it gets the Set up button instead
     Text {
       id: groupPing
       z: 10
-      visible: serverRow.isGroup
+      visible: (serverRow.isGroup || serverRow.isProvider)
+        && serverRow.pingable && !serverRow.hasSetup
       textFormat: Text.PlainText
       text: ""  // nf-fa-refresh
       color: groupPingMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
@@ -145,12 +153,40 @@ CursorSurface {
         id: groupPingMouse
         anchors.fill: parent
         anchors.margins: -Style.space(4)
-        enabled: serverRow.isGroup
+        enabled: groupPing.visible
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         onClicked: function(mouse) {
           mouse.accepted = true
-          serverRow.host.pingRow(serverRow.row)
+          if (serverRow.isProvider)
+            serverRow.host.pingProvider(String(serverRow.row.provider.name))
+          else
+            serverRow.host.pingRow(serverRow.row)
+        }
+      }
+    }
+
+    // a setup notice's action: runs the provider's command in a terminal
+    Text {
+      id: setupButton
+      z: 10
+      visible: serverRow.hasSetup
+      textFormat: Text.PlainText
+      text: "Set up"
+      color: setupMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
+      font.family: serverRow.host.fontFamily
+      font.pixelSize: Style.font.caption
+
+      MouseArea {
+        id: setupMouse
+        anchors.fill: parent
+        anchors.margins: -Style.space(4)
+        enabled: setupButton.visible
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: function(mouse) {
+          mouse.accepted = true
+          serverRow.host.runProviderSetup(serverRow.row.group.setup)
         }
       }
     }
@@ -216,7 +252,7 @@ CursorSurface {
     // a visible ⟳ (not hover-only) so clicks don't fall through to connect.
     Item {
       id: pingSlot
-      visible: !serverRow.isHeader
+      visible: !serverRow.isHeader && serverRow.pingable
       width: Math.max(pingLabel.implicitWidth, Style.space(44))
       implicitHeight: pingLabel.implicitHeight
 

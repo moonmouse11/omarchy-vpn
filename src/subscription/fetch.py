@@ -15,6 +15,8 @@ import lazyimports  # noqa: F401 — lazy urllib.request
 from happ.constants import SUB_MAX_AGE
 from happ.subscriptions import is_stub_server
 
+MAX_SUBSCRIPTION_BYTES = 16 * 1024 * 1024
+
 
 def download_subscription(url: str, headers: dict[str, str]) -> tuple[object, dict | None]:
     """(parsed JSON body, panel info) — retried once on network failure."""
@@ -26,7 +28,10 @@ def download_subscription(url: str, headers: dict[str, str]) -> tuple[object, di
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-                data = json.loads(resp.read().decode())
+                payload = resp.read(MAX_SUBSCRIPTION_BYTES + 1)
+                if len(payload) > MAX_SUBSCRIPTION_BYTES:
+                    raise ValueError("subscription exceeds 16 MiB size limit")
+                data = json.loads(payload.decode())
                 return data, _parse_sub_info(resp)
         except urllib.error.HTTPError as e:
             if e.code < 500 or attempt + 1 == attempts:
@@ -103,7 +108,7 @@ def fetch_subscription_to_cache(
         data, info = download_subscription(url, headers)
     except (OSError, ValueError) as e:
         return fallback, _fetch_error_reason(e)
-    if not (isinstance(data, list) and data and isinstance(data[0], dict)):
+    if not (isinstance(data, list) and data and all(isinstance(s, dict) for s in data)):
         return fallback, "not a subscription answer"
 
     configs = [s for s in data if s.get("outbounds")]

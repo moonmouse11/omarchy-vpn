@@ -5,6 +5,7 @@ Usage:
   vpn_manager.py --status   Output JSON status for the omarchy-shell bar widget
 """
 
+import json
 import os  # noqa: F401 — tests patch vpn_manager.os
 import shutil  # noqa: F401
 import subprocess  # noqa: F401
@@ -15,10 +16,30 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 if __name__ == "__main__":
-    if len(sys.argv) == 2 and sys.argv[1] == "--status":
-        from app.status import emit_status_json
+    if len(sys.argv) == 2 and sys.argv[1] == "--backend-service":
+        import backendservice
 
-        emit_status_json()
+        backendservice.serve()
+    elif len(sys.argv) == 2 and sys.argv[1] == "--status":
+        import backendipc
+
+        status = backendipc.request("status", timeout=backendipc.STATUS_TIMEOUT)
+        if status is not None:
+            print(json.dumps(status))
+        else:
+            from app.status import emit_status_json
+
+            emit_status_json()
+    elif len(sys.argv) == 2 and sys.argv[1] == "--servers":
+        import backendipc
+
+        servers = backendipc.request("servers", timeout=backendipc.SERVERS_TIMEOUT)
+        if servers is not None:
+            print(json.dumps(servers, ensure_ascii=False))
+        else:
+            from app.cli import main
+
+            main()
     else:
         from app.cli import main
 

@@ -5,6 +5,7 @@ import json
 import re
 import signal
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import NoReturn
 
@@ -403,9 +404,13 @@ def _ip_check(progress: _CheckProgress) -> dict:
         if finding.abuse_score is not None:
             parts.append(f"abuse {finding.abuse_score}/100")
         texts.append(f"{finding.source}: {' · '.join(parts)}" if parts else finding.source)
-    texts.append(_ip_info_flag_row("🏢 Datacenter/Hosting", any(f.hosting for f in findings)))
-    texts.append(_ip_info_flag_row("🕵️ Proxy/VPN detected", any(f.proxy for f in findings)))
-    texts.append(_ip_info_flag_row("📱 Mobile network", any(f.mobile for f in findings)))
+    texts.extend(
+        [
+            _ip_info_flag_row("🏢 Datacenter/Hosting", any(f.hosting for f in findings)),
+            _ip_info_flag_row("🕵️ Proxy/VPN detected", any(f.proxy for f in findings)),
+            _ip_info_flag_row("📱 Mobile network", any(f.mobile for f in findings)),
+        ]
+    )
     first = findings[0]
     where = " · ".join(p for p in (first.country_name, first.org) if p)
     return {
@@ -456,11 +461,14 @@ def _speed_targets(target: str) -> tuple[list[tuple[str, str]], float]:
         return known, speedtest.DURATION
     if not speedtest.is_valid_url(target):
         raise CheckFailed(f"Not an http(s) URL: {target}")
-    cfg = config.load_config()
-    cfg.speed_test_urls = [target, *(u for u in cfg.speed_test_urls if u != target)][
-        :SPEED_TEST_MAX_URLS
-    ]
-    config.save_config(cfg)
+    previous = config.load_config()
+    cfg: config.Config = replace(
+        previous,
+        speed_test_urls=[target, *(u for u in previous.speed_test_urls if u != target)][
+            :SPEED_TEST_MAX_URLS
+        ],
+    )
+    config.save_config_changes(previous, cfg)
     return [(target, target)], speedtest.DURATION
 
 

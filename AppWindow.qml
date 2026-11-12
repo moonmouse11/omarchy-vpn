@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import Quickshell
 import qs.Commons
 import qs.Ui
@@ -89,7 +88,7 @@ FloatingWindow {
         win.host.loadServers()
       }
       else if (k === "p" && win.host.serverCursor >= 0) win.host.pingRow(win.host.serverRows[win.host.serverCursor])
-      else if (k === "/") locations.filterField.forceActiveFocus()
+      else if (k === "/") locations.focusFilter()
       else if (k === "s") win.host.toggleFavourite(win.cursorRow())
       else if (k === "i") win.host.startImport(win.importTarget())
       else if (k === "a" && win.host.showProfile(win.cursorRow()) && !win.cursorRow().server.active)
@@ -147,29 +146,19 @@ FloatingWindow {
           anchors.right: parent.right
         }
 
-        Flickable {
-          id: locationsFlick
+        ServerList {
+          id: locations
           anchors.top: profileBar.bottom
           anchors.topMargin: tabs.visible || profileBar.visible ? Style.space(12) : 0
           anchors.bottom: parent.bottom
           anchors.left: sidebar.right
           anchors.leftMargin: sidebar.visible ? Style.space(16) : 0
           anchors.right: parent.right
-          contentWidth: width
-          contentHeight: locations.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          ServerList {
-            id: locations
-            width: locationsFlick.width - Style.space(8)
-            host: win.host
-            flick: locationsFlick
-            keyTarget: keyCatcher
-            inWindow: true
-          }
+          anchors.rightMargin: Style.space(8)
+          host: win.host
+          active: win.host.windowOpen
+          keyTarget: keyCatcher
+          inWindow: true
         }
       }
 

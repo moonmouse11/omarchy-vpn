@@ -19,7 +19,15 @@ omarchy plugin disable "$PLUGIN_ID" || true
 # a clone from `omarchy plugin add` is removed with `omarchy plugin remove`
 [[ "$REPO_DIR" -ef "$PLUGIN_DIR" ]] || rm -rf "$PLUGIN_DIR"
 omarchy-shell -q shell rescanPlugins || true
+# stop the status backend before its files go away (no-op without a user manager)
+systemctl --user disable --now omarchy-vpn-backend.service 2>/dev/null || true
 rm -rf "$HOME/.local/share/omarchy-vpn"
+rm -f "$HOME/.config/systemd/user/omarchy-vpn-backend.service"
+systemctl --user daemon-reload 2>/dev/null || true
+# only the exact user-owned socket the backend created, and only if it is one
+if [[ -n ${XDG_RUNTIME_DIR:-} ]]; then
+    [[ ! -S "$XDG_RUNTIME_DIR/omarchy-vpn/backend.sock" ]] || rm -f "$XDG_RUNTIME_DIR/omarchy-vpn/backend.sock"
+fi
 sed -i '/^-- >>> omarchy-vpn$/,/^-- <<< omarchy-vpn$/d' "$HOME/.config/hypr/bindings.lua" 2>/dev/null || true
 sudo rm -f /usr/local/bin/happ-killswitch /usr/local/bin/openvpn-dns-updown /usr/local/bin/omarchy-vpn-helper /usr/local/bin/omarchy-vpn-incy-network /usr/local/bin/omarchy-vpn-dns-bootstrap
 sudo rm -rf /usr/local/lib/omarchy-vpn

@@ -10,8 +10,26 @@ from test_menu import FakeProvider
 import happmeta
 import vpn_manager
 from providers import base
-from providers.openvpn import ovpn_endpoint
-from providers.wireguard import wg_endpoint
+from providers.happ import HappProvider
+from providers.incy import IncyProvider
+from providers.keys import KeysProvider
+from providers.networkmanager import NetworkManagerProvider
+from providers.openvpn import OpenVPNProvider, ovpn_endpoint
+from providers.warp import WarpProvider
+from providers.windscribe import WindscribeProvider
+from providers.wireguard import WireGuardProvider, wg_endpoint
+
+
+def test_only_providers_with_real_measurement_paths_support_ping():
+    assert WireGuardProvider.ping_supported
+    assert OpenVPNProvider.ping_supported
+    assert HappProvider.ping_supported
+    assert IncyProvider.ping_supported
+    assert KeysProvider.ping_supported
+    assert not WindscribeProvider.ping_supported
+    assert not WarpProvider.ping_supported
+    assert not NetworkManagerProvider.ping_supported
+
 
 # ── wg_endpoint ───────────────────────────────────────────────────────────────
 
@@ -90,6 +108,7 @@ def test_amneziawg_lists_its_own_dir_independently(tmp_path, monkeypatch):
     (awg_dir / "amneziawg.conf").write_text("[Peer]\nEndpoint = 1.2.3.4:51821\nJc = 4\n")
 
     monkeypatch.setattr(wireguard, "_active_interfaces", lambda *_: [])
+    monkeypatch.setattr(wireguard, "_awg_interface_names", set)
 
     wg = WireGuardProvider()
     wg.config_dir = wg_dir

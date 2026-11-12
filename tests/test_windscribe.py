@@ -136,6 +136,49 @@ def test_connect_refuses_when_logged_out(monkeypatch):
     assert "windscribe-cli login" in r.message
 
 
+@pytest.mark.parametrize("name", ["UnexpectedNotice", "", "Region -  - Nickname"])
+def test_connect_rejects_malformed_location_without_vendor_action(monkeypatch, name):
+    _present(monkeypatch)
+    original = ws._run
+    calls = []
+
+    def record(args, timeout=15):
+        calls.append(args)
+        return original(args, timeout)
+
+    monkeypatch.setattr(ws, "_run", record)
+    result = ws.WindscribeProvider().connect(_conn(name))
+    assert not result.success
+    assert "location" in result.message.lower()
+    assert not any(args[0] == "connect" for args in calls)
+
+
+@pytest.mark.parametrize("label", ["UnexpectedNotice", ""])
+def test_short_connected_label_does_not_crash_or_confirm_target(monkeypatch, label):
+    _frozen_clock(monkeypatch)
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+    state = {"connecting": False, "disconnects": 0}
+
+    def fake_run(args, timeout=15):
+        if args == ["status"]:
+            if state["connecting"]:
+                return 0, STATUS_CONNECTED.replace("Canada East - Toronto - Comfort Zone", label)
+            return 0, STATUS_DISCONNECTED
+        if args[0] == "connect":
+            state["connecting"] = True
+            return 0, "accepted"
+        if args == ["disconnect"]:
+            state["connecting"] = False
+            state["disconnects"] += 1
+            return 0, "disconnecting"
+        return 1, "unexpected"
+
+    monkeypatch.setattr(ws, "_run", fake_run)
+    result = ws.WindscribeProvider().connect(_conn("Canada East - Toronto - Comfort Zone"))
+    assert not result.success
+    assert state["disconnects"] == 3  # every accepted attempt is torn down
+
+
 def test_connect_waits_until_connected(monkeypatch):
     _frozen_clock(monkeypatch)
     _cli_seq(monkeypatch, [STATUS_DISCONNECTED, "Windscribe: Connecting\n", STATUS_CONNECTED])
@@ -393,10 +436,32 @@ def test_connect_vendor_refusal_surfaces(monkeypatch):
     assert "Upgrade to Pro" in r.message
 
 
+def test_disconnect_waits_for_actual_teardown(monkeypatch):
+    _frozen_clock(monkeypatch)
+    statuses = iter([STATUS_CONNECTED, STATUS_DISCONNECTED])
+    calls = []
+
+    def run(args):
+        calls.append(args)
+        return (0, next(statuses)) if args == ["status"] else (0, "accepted")
+
+    monkeypatch.setattr(ws, "_run", run)
+    assert ws.WindscribeProvider().disconnect(_conn()).success
+    assert calls == [["disconnect"], ["status"], ["status"]]
+
+
+def test_disconnect_timeout_reports_failure(monkeypatch):
+    _frozen_clock(monkeypatch)
+    _cli_seq(monkeypatch, [STATUS_CONNECTED])
+    result = ws.WindscribeProvider().disconnect(_conn())
+    assert not result.success
+    assert "disconnect" in result.message.lower()
+
+
 def test_disconnect_success_and_failure(monkeypatch):
     released = []
     monkeypatch.setattr(interfaceclaims, "release", released.append)
-    calls = _cli_seq(monkeypatch, [STATUS_CONNECTED])
+    calls = _cli_seq(monkeypatch, [STATUS_DISCONNECTED])
     assert ws.WindscribeProvider().disconnect(_conn()).success
     assert calls["disconnect"] == 1
     assert released == []  # exact ownership remains until the interface disappears

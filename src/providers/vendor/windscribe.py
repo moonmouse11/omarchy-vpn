@@ -72,10 +72,12 @@ def _locations(text: str) -> list[str]:
     return rows
 
 
-def _connect_target(name: str) -> str:
-    """Use the city: nicknames need not be unique (e.g. Empire is also Best Location)."""
-    parts = name.removesuffix(_PRO_MARK).split(" - ")
-    return "best" if parts[0] == "Best Location" else parts[-2]
+def _connect_target(name: str) -> str | None:
+    """Use the city, or reject a row/status label with no recognizable target."""
+    parts = [part.strip() for part in name.removesuffix(_PRO_MARK).split(" - ")]
+    if parts[0] == "Best Location":
+        return "best"
+    return parts[-2] if len(parts) >= 2 and all(parts) else None
 
 
 def _kv(status: str, key: str) -> str | None:
@@ -208,6 +210,8 @@ class WindscribeProvider(VPNProvider):
         if not self._logged_in():
             return ActionResult(False, "Not logged in — run: windscribe-cli login")
         target = _connect_target(connection.name)
+        if target is None:
+            return ActionResult(False, "Unrecognized Windscribe location; refresh the server list")
         previous = interfaceclaims.get(self.name)
         before = windscribe._interfaces()
         last = ActionResult(False, "windscribe-cli connect failed")
@@ -245,21 +249,23 @@ class WindscribeProvider(VPNProvider):
         """connect is async: rc 0 = accepted. Poll until this location is the
         connected one; disconnect on vendor refusal/timeout (no half-up state)."""
         deadline = windscribe.time.monotonic() + CONNECT_WAIT
+        target = _connect_target(name)
         last = ""
         while windscribe.time.monotonic() < deadline:
             code, out = windscribe._run(["status"])
             if code == 0:
                 label = self._connected_label(out)
-                if label is not None and (
-                    label == name.removesuffix(_PRO_MARK)
-                    or _connect_target(label) == _connect_target(name)
+                if (
+                    label is not None
+                    and target is not None
+                    and (label == name.removesuffix(_PRO_MARK) or _connect_target(label) == target)
                 ):
                     return ActionResult(True, f"Connected to {label}"), True
                 last = out
                 if _FAILURE_MARKERS.search(out.lower()):
                     break
             windscribe.time.sleep(_CONNECT_POLL)
-        if not self._disconnect_and_wait(windscribe):
+        if not self._disconnect_and_wait(windscribe).success:
             return ActionResult(False, "Windscribe did not disconnect; fallback stopped"), False
         reason = last or "no status"
         return (
@@ -267,23 +273,22 @@ class WindscribeProvider(VPNProvider):
             True,
         )
 
-    def _disconnect_and_wait(self, windscribe) -> bool:
+    def _disconnect_and_wait(self, windscribe) -> ActionResult:
         """The CLI acknowledges disconnect before its tunnel has stopped."""
-        windscribe._run(["disconnect"])
+        code, out = windscribe._run(["disconnect"])
+        if code != 0:
+            return ActionResult(False, out or "windscribe-cli disconnect failed")
         deadline = windscribe.time.monotonic() + DISCONNECT_WAIT
         while windscribe.time.monotonic() < deadline:
             code, status = windscribe._run(["status"])
             if code == 0 and (_kv(status, "connect state") or "").lower() == "disconnected":
-                return True
+                return ActionResult(True, "Disconnected")
             windscribe.time.sleep(_CONNECT_POLL)
-        return False
+        return ActionResult(False, "Windscribe did not disconnect; tunnel may still be active")
 
     def disconnect(self, connection: VPNConnection) -> ActionResult:
         from providers import windscribe  # noqa: PLC0415 — tests patch the shim
 
-        code, out = windscribe._run(["disconnect"])
-        if code != 0:
-            return ActionResult(False, out or "windscribe-cli disconnect failed")
-        # Keep exact ownership while the daemon tears down asynchronously;
-        # the claim self-expires as soon as the interface disappears.
-        return ActionResult(True, "Disconnected")
+        # Keep ownership until the interface disappears, and don't let a
+        # provider switch proceed on an acknowledgement before actual teardown.
+        return self._disconnect_and_wait(windscribe)

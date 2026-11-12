@@ -53,6 +53,48 @@ def _hold_lock(text):
     return fd
 
 
+def test_disconnect_all_does_not_need_the_server_catalogue(env, monkeypatch):
+    up = VPNConnection(name="old", provider="Windscribe", active=True)
+
+    class NoCatalogue(FakeProvider):
+        def connections(self):
+            raise AssertionError("teardown must not enumerate locations")
+
+        def active_connections(self):
+            return [up] if up.active else []
+
+    provider = NoCatalogue("Windscribe", [up])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
+    assert vpn_manager.disconnect_all().success
+    assert provider.disconnected == ["old"]
+
+
+@pytest.mark.parametrize("status_unavailable", [False, True])
+def test_failed_teardown_stops_the_next_provider(env, monkeypatch, status_unavailable):
+    up = VPNConnection(name="old", provider="Windscribe", active=True)
+    target = VPNConnection(name="new", provider="WireGuard", active=False)
+
+    class StillConnected(FakeProvider):
+        failed = False
+
+        def connections(self):
+            return []  # a failed locations request is not proof of teardown
+
+        def active_connections(self):
+            # Windscribe's status failure also yields no active observations.
+            return [] if status_unavailable and self.failed else [up]
+
+        def disconnect(self, conn):
+            self.failed = True
+            return ActionResult(False, "Windscribe did not disconnect")
+
+    old, new = StillConnected("Windscribe", [up]), FakeProvider("WireGuard", [target])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [old, new])
+    result = vpn_manager.guarded_connect(new, target)
+    assert not result.success
+    assert new.connected == []
+
+
 def test_a_holder_that_is_not_a_switch_process_is_not_touched(env, monkeypatch):
     """No pid in the lock (or not our program): refuse, never signal it."""
     monkeypatch.setattr(vpn_manager, "HANDOVER_WAIT", 0.2)

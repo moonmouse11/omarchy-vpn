@@ -14,6 +14,7 @@ _REAL_RUN = subprocess.run
 _REAL_POPEN = subprocess.Popen
 
 INSTALL = Path(__file__).resolve().parent.parent / "install.sh"
+UNIT = INSTALL.parent / "systemd" / "omarchy-vpn-backend.service"
 
 
 def lines() -> list[str]:
@@ -164,7 +165,7 @@ def _run_install(monkeypatch, tmp_path, failing):
     monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
     shims = tmp_path / "bin"
     shims.mkdir()
-    for cmd in ("omarchy-shell", "python3", "sudo"):
+    for cmd in ("omarchy-shell", "python3", "sudo", "systemctl"):
         (shims / cmd).write_text(f"#!/bin/sh\nexit {int(cmd == failing)}\n")
         (shims / cmd).chmod(0o755)
     env = {"PATH": f"{shims}:/usr/bin:/bin", "HOME": str(tmp_path)}
@@ -217,7 +218,7 @@ DNS_ROOT_MODULES = ("__init__.py", "control.py", "resolvers.py", "profiles.py", 
 ROOT_MODULES = ("__init__.py", "broker.py", "network.py", "privileged.py")
 
 
-def _install_from_checkout(monkeypatch, tmp_path, missing=()):
+def _install_from_checkout(monkeypatch, tmp_path, missing=(), systemctl_body=None):
     """The real install.sh from a copy of the checkout (`missing` helpers left
     out), root steps through SWAPPING_SUDO. Returns (result, repo, root)."""
     monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
@@ -233,6 +234,8 @@ def _install_from_checkout(monkeypatch, tmp_path, missing=()):
         (repo / "src" / "vpn_dns" / name).write_text(
             (INSTALL.parent / "src" / "vpn_dns" / name).read_text()
         )
+    (repo / "systemd").mkdir()
+    (repo / "systemd" / "omarchy-vpn-backend.service").write_text(UNIT.read_text())
     (repo / "manifest.json").write_text("{}")
     (repo / "Widget.qml").write_text("")
     (repo / "install.sh").write_text(INSTALL.read_text())
@@ -240,7 +243,14 @@ def _install_from_checkout(monkeypatch, tmp_path, missing=()):
         (repo / "scripts" / name).write_text((INSTALL.parent / "scripts" / name).read_text())
     root.mkdir()
     shims.mkdir()
-    for cmd, body in (("omarchy-shell", "exit 0"), ("python3", "exit 0"), ("omarchy", "exit 0")):
+    log = tmp_path / "log"
+    log.mkdir()
+    for cmd, body in (
+        ("omarchy-shell", "exit 0"),
+        ("python3", "exit 0"),
+        ("omarchy", "exit 0"),
+        ("systemctl", systemctl_body or 'echo "$@" >> "$LOG/systemctl.log"'),
+    ):
         (shims / cmd).write_text(f"#!/bin/sh\n{body}\n")
     (shims / "sudo").write_text(SWAPPING_SUDO)
     for shim in shims.iterdir():
@@ -250,6 +260,7 @@ def _install_from_checkout(monkeypatch, tmp_path, missing=()):
         "HOME": str(tmp_path),
         "REPO": str(repo),
         "ROOT": str(root),
+        "LOG": str(log),
     }
     result = _REAL_RUN(["bash", str(repo / "install.sh")], capture_output=True, text=True, env=env)
     return result, repo, root
@@ -308,3 +319,107 @@ def test_sudoers_subject_is_the_numeric_uid():
     rule = lines()[index("NOPASSWD:")]
     assert rule.startswith('echo "#$(id -u) ALL=(root) NOPASSWD:')
     assert "$USER" not in rule
+
+
+def test_backend_unit_is_rootless_and_restarts_on_failure():
+    text = UNIT.read_text()
+    assert (
+        "ExecStart=/usr/bin/python3 -B "
+        "%h/.local/share/omarchy-vpn/src/vpn_manager.py --backend-service"
+    ) in text
+    assert "Restart=on-failure" in text
+    assert "WantedBy=default.target" in text
+    assert "User=" not in text  # rootless user unit only
+    assert "sudo" not in text
+
+
+def test_backend_unit_is_installed_after_the_backend_copy():
+    # an upgrade must not let the old service start against a partial copy
+    assert index('cp -r "$REPO_DIR/src" "$INSTALL_DIR/"') < index(
+        "systemd/omarchy-vpn-backend.service"
+    )
+
+
+def test_backend_service_lifecycle_order():
+    # same idempotent order on first install and upgrade
+    copy = index("systemd/omarchy-vpn-backend.service")
+    reload = index("backend_lifecycle daemon-reload")
+    enable = index("backend_lifecycle enable omarchy-vpn-backend.service")
+    restart = index("backend_lifecycle restart omarchy-vpn-backend.service")
+    assert copy < reload < enable < restart
+
+
+def test_install_stops_the_backend_before_replacing_it():
+    # a live service with Restart=on-failure must not restart ExecStart
+    # against a half-copied tree
+    stop = index("systemctl --user stop omarchy-vpn-backend.service")
+    assert stop < index('rm -rf "$INSTALL_DIR/src"')
+    assert "|| true" in lines()[stop]  # first install: no unit/bus yet, tolerated
+
+
+def test_lifecycle_failure_error_is_specific_not_generic():
+    # fail-stop with a specific message; never a silent degrade, never the
+    # generic ERR trap alone
+    die = index("backend_lifecycle() ")
+    body = " ".join(lines()[die : die + 6])
+    assert "systemctl --user" in body
+    assert "user bus" in body
+    assert "exit 1" in body
+
+
+def test_backend_service_needs_no_root():
+    cmds = lines()
+    assert not any("sudo systemctl" in c for c in cmds)
+    assert not any("systemctl --system" in c for c in cmds)
+
+
+def test_install_copies_unit_and_runs_the_lifecycle_in_order(monkeypatch, tmp_path):
+    result, _, _ = _install_from_checkout(monkeypatch, tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    unit = tmp_path / ".config" / "systemd" / "user" / "omarchy-vpn-backend.service"
+    assert unit.read_text() == UNIT.read_text()
+    log = (tmp_path / "log" / "systemctl.log").read_text().splitlines()
+    assert log == [
+        "--user stop omarchy-vpn-backend.service",
+        "--user daemon-reload",
+        "--user enable omarchy-vpn-backend.service",
+        "--user restart omarchy-vpn-backend.service",
+    ]
+
+
+def test_install_lifecycle_is_idempotent_on_rerun(monkeypatch, tmp_path):
+    first, repo, _ = _install_from_checkout(monkeypatch, tmp_path)
+    assert first.returncode == 0, first.stdout + first.stderr
+    again = _REAL_RUN(
+        ["bash", str(repo / "install.sh")],
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": f"{tmp_path / 'bin'}:/usr/bin:/bin",
+            "HOME": str(tmp_path),
+            "REPO": str(repo),
+            "ROOT": str(tmp_path / "root"),
+            "LOG": str(tmp_path / "log"),
+        },
+    )
+    assert again.returncode == 0, again.stdout + again.stderr
+
+
+def test_upgrade_replaces_the_backend_with_the_service_stopped(monkeypatch, tmp_path):
+    old = tmp_path / ".local" / "share" / "omarchy-vpn" / "src"
+    old.mkdir(parents=True)
+    (old / "old-marker.py").write_text("old")
+    result, _, _ = _install_from_checkout(monkeypatch, tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (old / "old-marker.py").exists()  # stale tree replaced…
+    assert (old / "incy" / "broker.py").exists()  # …by the fresh copy
+    log = (tmp_path / "log" / "systemctl.log").read_text().splitlines()
+    assert log[0] == "--user stop omarchy-vpn-backend.service"  # stopped first
+
+
+def test_a_failed_lifecycle_command_fails_setup_with_a_clear_error(monkeypatch, tmp_path):
+    result, _, _ = _install_from_checkout(monkeypatch, tmp_path, systemctl_body="exit 1")
+    assert result.returncode != 0
+    assert "systemctl --user daemon-reload" in result.stderr
+    assert "user bus" in result.stderr
+    assert "Done!" not in result.stdout

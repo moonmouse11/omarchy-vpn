@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Serialize key imports, deletion and legacy UID assignment so parallel operations do not
+  silently discard imported credentials; keep the existing private store format.
+- Report malformed Windscribe locations as errors instead of crashing; unknown connected
+  labels cannot confirm a target or bypass disconnect-before-fallback handling.
+- Keep server lists populated when the panel and app window are simultaneously visible;
+  synchronize their applied filter text while keeping typing local until Enter.
+- Settings, setup, kill-switch preferences and remembered speed-test URLs merge only
+  their edits under a shared file lock, preserving unrelated concurrent configuration changes.
+- Windscribe disconnect waits for confirmed teardown; provider switching and Disconnect All
+  find live tunnels even when fetching a provider's server catalogue fails.
+- Subscription refresh rejects mixed invalid entries and responses over 16 MiB without
+  replacing the last good cache. Removed unused duplicate subscription helpers.
+- Backend IPC applies a shared monotonic deadline across each request's socket operations,
+  so a peer sending one byte at a time cannot extend the wait indefinitely. Provider
+  handlers themselves are not forcibly interrupted.
+
+### Tests
+
+- A disposable Omarchy VM gate verifies actual filter input/results in the panel and
+  window, simultaneous visibility and shared filter updates, empty hidden-list models,
+  zero vendor actions and absence of QML runtime errors.
+
 ## [0.4.0] - Unreleased
 
 ### Upgrade notes

@@ -1,6 +1,5 @@
 """Happ subscription metadata (subscriptions, xray runtime config, server registry)."""
 
-import base64
 import contextlib
 import functools
 import hashlib
@@ -289,12 +288,6 @@ def fetch_subscription(sub_id: str, url: str, force: bool = False) -> list[dict]
     return _fetch_subscription(sub_id, url, force)[0]
 
 
-def _download_subscription(url: str) -> tuple[object, dict | None]:
-    from subscription.fetch import download_subscription  # noqa: PLC0415
-
-    return download_subscription(url, _headers())
-
-
 def _fetch_subscription(sub_id: str, url: str, force: bool) -> tuple[list[dict], str | None]:
     """fetch_subscription() plus why it didn't update: None when the servers
     are fresh (fetched now or within SUB_MAX_AGE), else a short reason."""
@@ -310,37 +303,6 @@ def _fetch_subscription(sub_id: str, url: str, force: bool) -> tuple[list[dict],
         force=force,
         max_age=hm.SUB_MAX_AGE,
     )
-
-
-def _parse_sub_info(resp) -> dict | None:
-    """Panel card info from response headers: traffic, expiry, display title.
-
-    'Subscription-Userinfo: upload=0; download=…; total=0; expire=…'
-    (total=0 means unlimited; expire is a unix epoch) and 'Profile-Title'
-    (some panels base64-encode it with a 'base64:' prefix). Returns None when
-    no field parsed; individual fields stay None when missing or malformed.
-    """
-    info: dict = {"upload": None, "download": None, "total": None, "expire": None, "title": None}
-    headers = getattr(resp, "headers", None)
-    if headers is None:
-        return None
-    raw = headers.get("Subscription-Userinfo")
-    if raw:
-        for part in raw.split(";"):
-            key, _, val = part.strip().partition("=")
-            if key in ("upload", "download", "total", "expire"):
-                with contextlib.suppress(ValueError):
-                    info[key] = int(val)  # tolerate malformed values, keep None
-    title = headers.get("Profile-Title")
-    if title:
-        title = title.strip()
-        if title.startswith("base64:"):
-            try:
-                title = base64.b64decode(title[len("base64:") :]).decode("utf-8", errors="replace")
-            except ValueError, TypeError:
-                title = None
-        info["title"] = title or None
-    return info if any(v is not None for v in info.values()) else None
 
 
 def subscription_info(sub_id: str) -> dict | None:

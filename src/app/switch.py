@@ -648,8 +648,11 @@ def disconnect_all() -> ActionResult:
 
 def _disconnect_connection(provider, connection: VPNConnection) -> bool:
     result = provider.disconnect(connection)
+    # Windscribe already polls: an unavailable status is not proof of teardown.
+    if result.success or provider.name == "Windscribe":
+        return result.success
     # A failed reply may still mean stopped, e.g. one Happ stop ends every happd process.
-    return result.success or not any(c.active for c in provider.connections())
+    return not active_connections(providers=[provider])
 
 
 def _disconnect_all(for_switch: bool = False) -> ActionResult:
@@ -663,9 +666,7 @@ def _disconnect_all(for_switch: bool = False) -> ActionResult:
     lockdown_warnings: list[str] = []
     # act on everything, even providers hidden from the menu
     for provider in _provider_pool():
-        for conn in provider.connections():
-            if not conn.active:
-                continue
+        for conn in active_connections(providers=[provider]):
             if _disconnect_connection(provider, conn):
                 stopped.append(f"{provider.name}: {conn.name}")
                 if for_switch:

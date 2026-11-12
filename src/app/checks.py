@@ -5,6 +5,7 @@ import json
 import re
 import signal
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import NoReturn
 
@@ -456,11 +457,14 @@ def _speed_targets(target: str) -> tuple[list[tuple[str, str]], float]:
         return known, speedtest.DURATION
     if not speedtest.is_valid_url(target):
         raise CheckFailed(f"Not an http(s) URL: {target}")
-    cfg = config.load_config()
-    cfg.speed_test_urls = [target, *(u for u in cfg.speed_test_urls if u != target)][
-        :SPEED_TEST_MAX_URLS
-    ]
-    config.save_config(cfg)
+    previous = config.load_config()
+    cfg = replace(
+        previous,
+        speed_test_urls=[target, *(u for u in previous.speed_test_urls if u != target)][
+            :SPEED_TEST_MAX_URLS
+        ],
+    )
+    config.save_config_changes(previous, cfg)
     return [(target, target)], speedtest.DURATION
 
 

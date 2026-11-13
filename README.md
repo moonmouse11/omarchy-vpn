@@ -15,8 +15,8 @@
 ![nftables](https://img.shields.io/badge/nftables-kill_switch-555)
 
 A VPN manager for the [Omarchy](https://omarchy.org/) 4 shell: a bar widget, a panel and an app
-window for **WireGuard, AmneziaWG, OpenVPN, VLESS and Shadowsocks keys, Happ/INCY subscriptions** and
-any VPN managed by **NetworkManager**.
+window for **WireGuard, AmneziaWG, OpenVPN, Windscribe, Cloudflare WARP, VLESS and Shadowsocks
+keys, Happ/INCY subscriptions** and any VPN managed by **NetworkManager**.
 
 > Omarchy 3 (Waybar + Walker) is served by
 > [waybar-vpn-manager](https://github.com/moonmouse11/waybar-vpn-manager) (archived at v0.3.0).
@@ -26,7 +26,8 @@ any VPN managed by **NetworkManager**.
 - **Bar widget** — a lock icon with the active connection; a left click opens the panel, a right
   click (or **SUPER+Shift+V**) the app window.
 - **Every server in one list** — Happ/INCY grouped by subscription, WireGuard, AmneziaWG, OpenVPN,
-  imported keys and NetworkManager VPNs. Filter with `/` (by name, protocol or country code),
+  Windscribe, Cloudflare WARP, imported keys and NetworkManager VPNs. Filter with `/` (by name,
+  protocol or country code),
   connect with a click or Enter, star favourites for quick connect.
 - **Happ without the Happ window** — servers come straight from your subscriptions and connect
   in the background; the Happ app keeps working alongside.
@@ -173,15 +174,29 @@ If a provider still refuses (device limit, unsupported client), the server list 
 other request headers, put them in `~/.config/happ-capture/headers.json` as one JSON object
 (`{"User-Agent": "…", "X-Hwid": "…"}`) and `chmod 600` it; they replace the default ones.
 
+Subscription URLs must use HTTPS. Redirects back to HTTP are rejected before device or custom
+headers can be resent. Existing safe subscription IDs keep their cache filenames; unsafe IDs are
+stored under deterministic hashed names so punctuation cannot create filename collisions.
+
 ## Windscribe setup
 
 Free tier: 10 GB/month with a confirmed email. Install `windscribe-cli-v2-bin` from the
 AUR (the install wizard hints at it), then click **Set up** in the Locations list — a
-terminal runs `windscribe-cli login` for you. Free locations show as rows; connecting a
-Pro-only location reports Windscribe's own refusal. The kill switch is hidden while a
-Windscribe tunnel is up (vendor daemon, like NetworkManager); Windscribe's own firewall
-setting is untouched — but if it is ON, switching away warns that it may keep blocking
-traffic (never blocks the switch itself).
+terminal runs `windscribe-cli login` for you. Both CLI 2.21.x and the official 2.25.x
+status formats are supported. **Best Location** asks Windscribe to choose the exit;
+location rows retain Windscribe's Pro, Disabled and 10 Gbps flags. Disabled locations
+are refused locally, while connecting a Pro-only location reports Windscribe's own
+account refusal.
+
+The default connection mode remains Automatic (default, then Stealth, then WStunnel after
+confirmed teardown). An explicit one-attempt protocol can be stored in `config.json` as
+`"windscribe": {"protocol": "udp", "port": "443"}`; valid protocols are `wireguard`,
+`udp`, `tcp`, `stealth` and `wstunnel`, and an empty port uses the CLI default. The QML
+controls for these preferences are not part of this core update.
+
+The kill switch is hidden while a Windscribe tunnel is up (vendor daemon, like
+NetworkManager); Windscribe's own firewall setting is untouched — but if it is ON,
+switching away warns that it may keep blocking traffic (never blocks the switch itself).
 
 ## Cloudflare WARP setup
 

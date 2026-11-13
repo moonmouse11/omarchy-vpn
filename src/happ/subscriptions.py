@@ -9,6 +9,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 import fsutil
 from app.spawn import spawn_manager
@@ -266,11 +267,13 @@ def is_stub_server(cfg: dict) -> bool:
 
 
 def _sub_cache_path(sub_id: str) -> Path:
-    # sub_id is usually a log-derived digit string or a sha1 hash (both
-    # already safe), but a routing.json "subscriptionId" fallback is not
-    # validated on the way in — strip anything but word chars/hyphen so a
-    # crafted id (e.g. containing "../") can't escape SUB_CACHE_DIR.
-    safe_id = re.sub(r"[^\w-]", "_", sub_id)
+    # Keep established safe filenames; hash every unsafe id because replacing
+    # punctuation makes distinct subscriptions such as a/b and a?b collide.
+    safe_id = (
+        sub_id
+        if re.fullmatch(r"[\w-]+", sub_id)
+        else f"unsafe-{hashlib.sha256(sub_id.encode()).hexdigest()}"
+    )
     return _happmeta().SUB_CACHE_DIR / f"subscription-{safe_id}.json"
 
 
@@ -302,17 +305,15 @@ def _fetch_subscription(sub_id: str, url: str, force: bool) -> tuple[list[dict],
         _headers(),
         force=force,
         max_age=hm.SUB_MAX_AGE,
+        open_https=hm._open_https,
     )
 
 
 def subscription_info(sub_id: str) -> dict | None:
     """Cache-only panel info (traffic/expiry/title) for a provider's
     subscription; None when absent (older caches lack the "info" record)."""
-    try:
-        cached = json.loads(_sub_cache_path(sub_id).read_text())
-    except OSError, json.JSONDecodeError:
-        return None
-    if not isinstance(cached, dict):
+    cached = _read_sub_cache(sub_id)
+    if cached is None:
         return None
     info = cached.get("info")
     return info if isinstance(info, dict) else None
@@ -350,10 +351,10 @@ def fmt_expire(epoch: int | None) -> str:
 # subscription cache (~1 MB of JSON) twice — freshness check, then the server
 # list — ~40 ms of a 3-second tick. Writes go through os.replace, so a new
 # file always has a new inode and a stale entry can't match.
-_SUB_CACHE_MEMO: dict[Path, tuple[tuple[int, int, int], object]] = {}
+_SUB_CACHE_MEMO: dict[Path, tuple[tuple[int, int, int], dict[str, object] | None]] = {}
 
 
-def _read_sub_cache(sub_id: str) -> object:
+def _read_sub_cache(sub_id: str) -> dict[str, object] | None:
     """Parsed subscription cache file, or None if missing/unreadable."""
     path = _sub_cache_path(sub_id)
     try:
@@ -362,7 +363,9 @@ def _read_sub_cache(sub_id: str) -> object:
         memo = _SUB_CACHE_MEMO.get(path)
         if memo and memo[0] == key:
             return memo[1]
-        data = json.loads(path.read_text())
+        from subscription.cache import normalize_record  # noqa: PLC0415 — pure hot-path helper
+
+        data = normalize_record(json.loads(path.read_text()))
     except OSError, json.JSONDecodeError:
         return None
     _SUB_CACHE_MEMO[path] = (key, data)
@@ -373,7 +376,7 @@ def fetch_subscription_cached(sub_id: str) -> list[dict]:
     """Cache-only read: fresh or stale servers, never touches the network.
     Used on the bar widget's --status path so a 3 s tick never blocks on I/O."""
     cached = _read_sub_cache(sub_id)
-    return cached.get("servers", []) if isinstance(cached, dict) else []
+    return cast(list[dict], cached["servers"]) if cached is not None else []
 
 
 def subscription_rejection(sub_id: str) -> list[str]:
@@ -387,9 +390,9 @@ def _sub_cache_fresh(sub_id: str, url: str) -> bool:
     cached = _read_sub_cache(sub_id)
     try:
         return (
-            isinstance(cached, dict)
+            cached is not None
             and cached.get("url", url) == url  # legacy records without url match
-            and time.time() - cached.get("at", 0) < _happmeta().SUB_MAX_AGE
+            and time.time() - cast(float, cached["at"]) < _happmeta().SUB_MAX_AGE
         )
     except AttributeError, TypeError:
         return False

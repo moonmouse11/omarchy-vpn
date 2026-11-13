@@ -22,6 +22,7 @@ class VPNConnection:
     # Per-connect bootstrap result, not connection identity or persisted configuration.
     endpoint_addresses: dict[str, str] | None = field(default=None, repr=False, compare=False)
     endpoint_ipv4: list[str] | None = field(default=None, repr=False, compare=False)
+    metadata: dict[str, object] = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def protection_key(self) -> str:

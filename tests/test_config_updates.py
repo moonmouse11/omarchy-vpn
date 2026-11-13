@@ -103,6 +103,21 @@ def test_independent_processes_merge_their_changes(saved_config):
         finished.close()
 
 
+def test_concurrent_save_preserves_windscribe_preferences(saved_config):
+    previous = config.load_config()
+    updated = copy.deepcopy(previous)
+    updated.panel_key_hints = False
+    newer = copy.deepcopy(previous)
+    newer.windscribe_protocol = "wstunnel"
+    newer.windscribe_port = "443"
+    config.save_config(newer)
+
+    merged = config.save_config_changes(previous, updated)
+
+    assert (merged.windscribe_protocol, merged.windscribe_port) == ("wstunnel", "443")
+    assert merged.panel_key_hints is False
+
+
 def test_full_save_uses_the_same_lock(saved_config, monkeypatch):
     real_write = config.fsutil.write_json_atomic
 

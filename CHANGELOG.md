@@ -7,8 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Support both Windscribe CLI 2.21.x and official 2.25.x status output, serialize vendor
+  CLI calls across processes, and fail closed on unknown successful output.
+- Add a canonical Best Location row, structured Pro/Disabled/10 Gbps location metadata,
+  and validated persisted protocol/port preferences. Explicit protocols make one attempt;
+  Automatic retains the confirmed-teardown fallback sequence.
+
+### Security
+
+- Require HTTPS for Happ/INCY subscription downloads and reject HTTPS-to-HTTP redirects before
+  sensitive device or custom headers are resent. Unsafe subscription IDs use collision-free
+  hashed cache filenames while established safe filenames remain unchanged.
+
 ### Fixed
 
+- Normalize subscription cache records before freshness or server-list use, so malformed
+  timestamps and server arrays cannot crash refreshes or escape as invalid rows.
+- Merge duplicate Windscribe location restrictions conservatively, reject incomplete catalogue
+  rows, and reuse one status snapshot for catalogue login, active, interface and protocol state.
+- Ignore non-boolean configuration values instead of converting strings, numbers or containers
+  by truthiness; the existing numeric compatibility for `exit_ip.enabled` remains.
 - Serialize key imports, deletion and legacy UID assignment so parallel operations do not
   silently discard imported credentials; keep the existing private store format.
 - Report malformed Windscribe locations as errors instead of crashing; unknown connected

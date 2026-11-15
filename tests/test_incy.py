@@ -304,6 +304,21 @@ def test_update_subscriptions_skips_fresh_cache(tmp_path, monkeypatch):
     assert fetched == []
 
 
+def test_invalid_cache_record_is_never_fresh_or_returned_as_servers(tmp_path, monkeypatch):
+    from incy import subscriptions as incy_subs
+
+    _incy_db_with_sub(tmp_path)
+    monkeypatch.setattr(incy_mod, "INCY_DB", tmp_path / "incy.db")
+    _patch_sub_cache(monkeypatch, tmp_path)
+    path = incy_subs.cache_path("sub1")
+    path.write_text(
+        json.dumps({"at": time.time(), "url": "https://sub.example/v", "servers": "broken"})
+    )
+
+    assert incy_subs._servers_from_cache("sub1") == []
+    assert incy_subs._sub_cache_fresh("sub1") is False
+
+
 def test_update_subscriptions_force_refreshes(tmp_path, monkeypatch):
     from incy import subscriptions as incy_subs
 

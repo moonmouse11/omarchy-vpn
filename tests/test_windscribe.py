@@ -1,9 +1,12 @@
 import subprocess
 import sys
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import config
 from providers import windscribe as ws
 from providers.common import interfaceclaims
 
@@ -63,7 +66,7 @@ def test_lists_locations_when_disconnected(monkeypatch):
     _present(monkeypatch)
     conns = ws.WindscribeProvider().connections()
     assert [c.name for c in conns] == [
-        "Best Location - Empire",
+        "Best Location",
         "Canada East - Toronto - Comfort Zone",
         "Canada East - Montreal - Old Port",
         "US Central - Chicago - Cubby",
@@ -78,9 +81,9 @@ def test_location_parser_bounds_whitespace_backtracking(monkeypatch):
         [
             sys.executable,
             "-c",
-            "from providers.vendor.windscribe import _locations\n"
+            "from providers.vendor.windscribe import _location_rows\n"
             "row = 'Region - City - Nickname' + ' ' * 100_000 + 'not a suffix'\n"
-            "assert _locations(row) == [row]\n",
+            "assert [location.name for location in _location_rows(row)] == [row]\n",
         ],
         cwd=Path(ws.__file__).resolve().parents[1],
         timeout=5,
@@ -93,7 +96,8 @@ def test_location_parser_bounds_whitespace_backtracking(monkeypatch):
 def test_location_speed_suffix_trims_only_suffix_whitespace(monkeypatch, gap):
     _present(monkeypatch, locations=f"Region - City - Nickname (Pro){gap}(10 Gbps)\t\n")
     assert [c.name for c in ws.WindscribeProvider().connections()] == [
-        "Region - City - Nickname (Pro)"
+        "Best Location",
+        "Region - City - Nickname (Pro)",
     ]
 
 
@@ -104,6 +108,37 @@ def test_connected_marks_only_the_named_location(monkeypatch):
     active = [c for c in conns if c.active]
     assert [c.name for c in active] == ["Canada East - Toronto - Comfort Zone"]
     assert active[0].interface is not None
+
+
+def test_catalogue_status_snapshot_is_called_once_and_reused(monkeypatch):
+    calls = []
+    statuses = [
+        "Login: Logged in\nConnection: Connected to Canada East - Toronto - Comfort Zone\n"
+        "Protocol: WireGuard:443\nIP: 203.0.113.4 (VPN)\nFirewall: Off\nInternet: Available\n",
+        STATUS_LOGGED_OUT,
+    ]
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: "tun-snapshot")
+
+    def fake_run(args, timeout=15):
+        calls.append(args)
+        if args == ["status"]:
+            return 0, statuses.pop(0)
+        if args == ["locations"]:
+            return 0, LOCATIONS
+        return 1, "unexpected"
+
+    monkeypatch.setattr(ws, "_run", fake_run)
+
+    active = [
+        connection for connection in ws.WindscribeProvider().connections() if connection.active
+    ]
+
+    assert calls == [["status"], ["locations"]]
+    assert statuses == [STATUS_LOGGED_OUT]
+    assert [
+        (connection.name, connection.interface, connection.protocol) for connection in active
+    ] == [("Canada East - Toronto - Comfort Zone", "tun-snapshot", "WireGuard:443")]
 
 
 def test_active_connections_is_a_single_status_call(monkeypatch):
@@ -213,7 +248,10 @@ def test_short_connected_label_does_not_crash_or_confirm_target(monkeypatch, lab
 
 def test_connect_waits_until_connected(monkeypatch):
     _frozen_clock(monkeypatch)
-    _cli_seq(monkeypatch, [STATUS_DISCONNECTED, "Windscribe: Connecting\n", STATUS_CONNECTED])
+    connecting = STATUS_DISCONNECTED.replace(
+        "Connect state: Disconnected", "Connect state: Connecting"
+    )
+    _cli_seq(monkeypatch, [STATUS_DISCONNECTED, connecting, STATUS_CONNECTED])
     r = ws.WindscribeProvider().connect(_conn())
     assert r.success
 
@@ -247,7 +285,7 @@ def test_connect_timeout_disconnects_and_reports(monkeypatch):
     assert calls["disconnect"] == 3
 
 
-def test_connect_falls_back_from_auto_to_stealth_then_wstunnel(monkeypatch):
+def test_automatic_protocol_falls_back_from_auto_to_stealth_then_wstunnel(monkeypatch):
     _frozen_clock(monkeypatch)
     calls = []
     statuses = iter(
@@ -279,6 +317,88 @@ def test_connect_falls_back_from_auto_to_stealth_then_wstunnel(monkeypatch):
         ["connect", "-n", "New York"],
         ["connect", "-n", "New York", "stealth"],
         ["connect", "-n", "New York", "wstunnel"],
+    ]
+
+
+def test_explicit_protocol_uses_one_attempt_and_loads_config_once(monkeypatch):
+    _frozen_clock(monkeypatch)
+    calls = []
+    loads = []
+    statuses = iter([REAL_STATUS_DISCONNECTED, REAL_STATUS_CONNECTED])
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+    monkeypatch.setattr(
+        config,
+        "load_config",
+        lambda: loads.append(True) or config.Config(windscribe_protocol="udp"),
+    )
+
+    def fake_run(args, timeout=15):
+        calls.append(args)
+        if args == ["status"]:
+            return 0, next(statuses)
+        return 0, ""
+
+    monkeypatch.setattr(ws, "_run", fake_run)
+
+    result = ws.WindscribeProvider().connect(_conn("US East - New York - Empire"))
+
+    assert result.success
+    assert [call for call in calls if call[0] == "connect"] == [
+        ["connect", "-n", "New York", "udp"]
+    ]
+    assert loads == [True]
+
+
+def test_configured_port_is_appended_to_explicit_protocol(monkeypatch):
+    _frozen_clock(monkeypatch)
+    calls = []
+    statuses = iter([REAL_STATUS_DISCONNECTED, REAL_STATUS_CONNECTED])
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+    monkeypatch.setattr(
+        config,
+        "load_config",
+        lambda: config.Config(windscribe_protocol="stealth", windscribe_port="443"),
+    )
+
+    def fake_run(args, timeout=15):
+        calls.append(args)
+        if args == ["status"]:
+            return 0, next(statuses)
+        return 0, ""
+
+    monkeypatch.setattr(ws, "_run", fake_run)
+
+    assert ws.WindscribeProvider().connect(_conn("US East - New York - Empire")).success
+    assert [call for call in calls if call[0] == "connect"] == [
+        ["connect", "-n", "New York", "stealth:443"]
+    ]
+
+
+def test_explicit_protocol_failure_never_falls_back(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+    monkeypatch.setattr(
+        config,
+        "load_config",
+        lambda: config.Config(windscribe_protocol="tcp"),
+    )
+
+    def fake_run(args, timeout=15):
+        calls.append(args)
+        if args == ["status"]:
+            return 0, REAL_STATUS_DISCONNECTED
+        if args[0] == "connect":
+            return 1, "TCP blocked"
+        return 0, ""
+
+    monkeypatch.setattr(ws, "_run", fake_run)
+
+    result = ws.WindscribeProvider().connect(_conn("US East - New York - Empire"))
+
+    assert not result.success
+    assert result.message == "TCP blocked"
+    assert [call for call in calls if call[0] == "connect"] == [
+        ["connect", "-n", "New York", "tcp"]
     ]
 
 
@@ -590,13 +710,113 @@ def test_real_locations_rows(monkeypatch):
     _present(monkeypatch, status=REAL_STATUS_DISCONNECTED, locations=REAL_LOCATIONS)
     conns = ws.WindscribeProvider().connections()
     assert [c.name for c in conns] == [
-        "Best Location - Empire",
+        "Best Location",
         "US Central - Atlanta - Magic City (Pro)",
         "US Central - Atlanta - Peachtree",
         "US East - Miami - Vice",
         "US East - New York - Empire",
         "US East - New York - Insomnia (Pro)",
     ]
+
+
+def test_malformed_location_rows_are_rejected_but_nickname_dashes_survive():
+    from providers.vendor.windscribe import _location_rows
+
+    rows = _location_rows(
+        "US East - New York\n"
+        " - New York - Empire\n"
+        "US East -  - Empire\n"
+        "US East - New York - \n"
+        "US East - New York - Empire - Extra\n"
+    )
+
+    assert [(row.region, row.city, row.nickname) for row in rows] == [
+        ("US East", "New York", "Empire - Extra")
+    ]
+
+
+def test_duplicate_location_rows_merge_restrictive_flags_in_first_seen_order():
+    from providers.vendor.windscribe import _location_rows
+
+    rows = _location_rows(
+        "Canada East - Toronto - Comfort Zone\n"
+        "US East - New York - Empire\n"
+        "us east - new york - empire (Disabled)\n"
+        "US EAST - NEW YORK - EMPIRE (10 Gbps) (Pro)\n"
+        "US West - Seattle - Cobain\n"
+    )
+
+    assert [row.name for row in rows] == [
+        "Canada East - Toronto - Comfort Zone",
+        "US East - New York - Empire (Pro)",
+        "US West - Seattle - Cobain",
+    ]
+    assert (rows[1].pro, rows[1].disabled, rows[1].ten_gbps) == (True, True, True)
+
+
+def test_duplicate_location_rows_keep_disabled_when_it_appears_first():
+    from providers.vendor.windscribe import _location_rows
+
+    [row] = _location_rows("US East - New York - Empire (Disabled)\nUS East - New York - Empire\n")
+
+    assert row.disabled is True
+
+
+def test_location_metadata_parser_handles_flags_duplicates_and_malformed_rows():
+    from providers.vendor.windscribe import _location_rows
+
+    rows = _location_rows(
+        "Best Location - Empire (10 Gbps)\n"
+        "US East - New York - Empire (Disabled) (10 Gbps) (Pro)\n"
+        "US East - New York - Empire (Pro) (10 Gbps) (Disabled)\n"
+        "Canada East - Toronto - Comfort Zone (10 Gbps)\n"
+        "broken\n"
+        "Region -  - Nickname\n"
+    )
+
+    assert [(row.name, row.region, row.city, row.nickname) for row in rows] == [
+        ("US East - New York - Empire (Pro)", "US East", "New York", "Empire"),
+        ("Canada East - Toronto - Comfort Zone", "Canada East", "Toronto", "Comfort Zone"),
+    ]
+    assert (rows[0].pro, rows[0].disabled, rows[0].ten_gbps) == (True, True, True)
+    assert (rows[1].pro, rows[1].disabled, rows[1].ten_gbps) == (False, False, True)
+
+
+def test_best_location_is_one_synthetic_inactive_row(monkeypatch):
+    _present(monkeypatch, status=REAL_STATUS_CONNECTED, locations=REAL_LOCATIONS)
+
+    conns = ws.WindscribeProvider().connections()
+
+    assert [connection.name for connection in conns].count("Best Location") == 1
+    best = conns[0]
+    assert best.name == "Best Location"
+    assert best.metadata == {"synthetic": True}
+    assert best.active is False
+    assert [connection.name for connection in conns if connection.active] == [
+        "US East - New York - Empire"
+    ]
+
+
+def test_disabled_location_is_refused_without_vendor_connect(monkeypatch):
+    locations = "US East - New York - Empire (Disabled) (10 Gbps)\n"
+    _present(monkeypatch, status=REAL_STATUS_DISCONNECTED, locations=locations)
+    provider = ws.WindscribeProvider()
+    [best, disabled] = provider.connections()
+    calls = []
+    original = ws._run
+
+    def record(args, timeout=15):
+        calls.append(args)
+        return original(args, timeout)
+
+    monkeypatch.setattr(ws, "_run", record)
+    result = provider.connect(disabled)
+
+    assert best.name == "Best Location"
+    assert disabled.metadata["disabled"] is True
+    assert not result.success
+    assert "disabled" in result.message.lower()
+    assert not any(args[0] == "connect" for args in calls)
 
 
 def test_connect_uses_city_not_ambiguous_nickname(monkeypatch):
@@ -615,6 +835,28 @@ def test_connect_uses_city_not_ambiguous_nickname(monkeypatch):
     monkeypatch.setattr(ws, "_run", fake_run)
     r = ws.WindscribeProvider().connect(_conn("US East - New York - Empire"))
     assert r.success
+    assert sent == [["connect", "-n", "New York"]]
+
+
+def test_connect_uses_city_when_nickname_contains_location_delimiter(monkeypatch):
+    sent = []
+    _frozen_clock(monkeypatch)
+    status = REAL_STATUS_CONNECTED.replace("Empire", "Empire - Extra")
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+
+    def fake_run(args, timeout=15):
+        if args == ["status"]:
+            return 0, status
+        if args and args[0] == "connect":
+            sent.append(args)
+            return 0, ""
+        return 1, "unexpected"
+
+    monkeypatch.setattr(ws, "_run", fake_run)
+
+    result = ws.WindscribeProvider().connect(_conn("US East - New York - Empire - Extra"))
+
+    assert result.success
     assert sent == [["connect", "-n", "New York"]]
 
 
@@ -683,3 +925,139 @@ def test_firewall_state_from_status_line(monkeypatch):
     hint = ws.WindscribeProvider().lockdown_hint(_conn())
     assert hint is not None
     assert "firewall off" in hint
+
+
+STATUS_2258_DISCONNECTED = (
+    "Login: Logged in\nConnection: Disconnected\nFirewall: Off\n"
+    "Data usage: 0 bytes / 2.00 GB\nInternet: Available\n"
+)
+STATUS_2258_CONNECTED = (
+    "Login: Logged in\nConnection: Connected to US East - New York - Empire\n"
+    "Protocol: Stealth:443\nIP: 203.0.113.4 (VPN)\nFirewall: On\n"
+    "Data usage: 100.0 MB / 2.00 GB\nInternet: Available\n"
+)
+
+
+def test_2258_status_drives_connections_and_active_detection(monkeypatch):
+    _present(monkeypatch, status=STATUS_2258_CONNECTED, locations=REAL_LOCATIONS)
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: "tun0")
+    provider = ws.WindscribeProvider()
+
+    active_rows = [connection for connection in provider.connections() if connection.active]
+    assert [connection.name for connection in active_rows] == ["US East - New York - Empire"]
+    assert [connection.name for connection in provider.active_connections()] == [
+        "US East - New York - Empire"
+    ]
+    assert provider.active_connections()[0].protocol == "Stealth:443"
+    assert provider.setup_issue() is None
+    assert "firewall off" in provider.lockdown_hint(_conn())
+
+
+def test_2258_disconnected_status_is_ready_but_inactive(monkeypatch):
+    _present(monkeypatch, status=STATUS_2258_DISCONNECTED, locations=REAL_LOCATIONS)
+    provider = ws.WindscribeProvider()
+
+    assert provider.setup_issue() is None
+    assert provider.active_connections() == []
+    assert not any(connection.active for connection in provider.connections())
+
+
+def test_unknown_output_is_a_compatibility_issue_and_not_ready(monkeypatch):
+    _present(monkeypatch, status="Windscribe status format changed\n")
+    provider = ws.WindscribeProvider()
+
+    issue = provider.setup_issue()
+    assert "not recognized" in issue["hint"]
+    assert issue["command"] == "windscribe-cli status"
+    assert provider.connections() == []
+
+
+def test_partially_known_future_status_fails_closed(monkeypatch):
+    _present(monkeypatch, status="Login: Logged in\nConnection: Established to New York\n")
+    provider = ws.WindscribeProvider()
+
+    assert [connection.name for connection in provider.active_connections()] == [
+        "Windscribe connection (status unknown)"
+    ]
+    assert provider.connections() == []
+    result = provider.connect(_conn())
+    assert not result.success
+    assert "not recognized" in result.message
+
+
+def test_unknown_output_blocks_connect_before_vendor_action(monkeypatch):
+    _present(monkeypatch, status="Windscribe status format changed\n")
+    calls = []
+    original = ws._run
+
+    def record(args, timeout=15):
+        calls.append(args)
+        return original(args, timeout)
+
+    monkeypatch.setattr(ws, "_run", record)
+    result = ws.WindscribeProvider().connect(_conn())
+
+    assert not result.success
+    assert "not recognized" in result.message
+    assert not any(args[0] == "connect" for args in calls)
+
+
+def test_unknown_output_is_conservatively_active_with_exact_claim(monkeypatch):
+    _present(monkeypatch, status="Windscribe status format changed\n")
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: "tun0")
+
+    active = ws.WindscribeProvider().active_connections()
+
+    assert [(connection.name, connection.interface) for connection in active] == [
+        ("Windscribe connection (status unknown)", "tun0")
+    ]
+
+
+def test_unknown_output_never_confirms_disconnect(monkeypatch):
+    _frozen_clock(monkeypatch)
+    _cli_seq(monkeypatch, ["Windscribe status format changed\n"])
+
+    result = ws.WindscribeProvider().disconnect(_conn())
+
+    assert not result.success
+    assert "not recognized" in result.message
+
+
+def test_cli_serializes_concurrent_processes(monkeypatch, tmp_path):
+    from providers.vendor import windscribe_lock
+
+    monkeypatch.setattr(windscribe_lock, "LOCK_FILE", tmp_path / "windscribe.lock")
+    first_entered = threading.Event()
+    second_entered = threading.Event()
+    release_first = threading.Event()
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(args[0])
+        if len(calls) == 1:
+            first_entered.set()
+            assert release_first.wait(2)
+        else:
+            second_entered.set()
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(ws.subprocess, "run", fake_run)
+    results = []
+    first = threading.Thread(target=lambda: results.append(ws._run(["status"])))
+    second = threading.Thread(target=lambda: results.append(ws._run(["locations"])))
+    try:
+        first.start()
+        assert first_entered.wait(1)
+        second.start()
+        assert not second_entered.wait(0.05)
+    finally:
+        release_first.set()
+        first.join(2)
+        second.join(2)
+
+    assert second_entered.is_set()
+    assert calls == [
+        ["windscribe-cli", "status"],
+        ["windscribe-cli", "locations"],
+    ]
+    assert sorted(results) == [(0, "ok"), (0, "ok")]

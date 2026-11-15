@@ -95,6 +95,36 @@ def test_server_row_omits_orphan_when_not_flagged(env):
     assert "orphan" not in row
 
 
+def test_server_list_passes_only_safe_windscribe_location_metadata(env, monkeypatch):
+    connection = VPNConnection(
+        name="US East - New York - Empire (Pro)",
+        provider="Windscribe",
+        active=False,
+        metadata={
+            "region": "US East",
+            "city": "New York",
+            "nickname": "Empire",
+            "pro": True,
+            "disabled": False,
+            "ten_gbps": True,
+            "secret": "must not escape",
+        },
+    )
+    provider = FakeProvider("Windscribe", [connection])
+    provider.ping_supported = False
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
+
+    row = vpn_manager.server_list()["groups"][0]["servers"][0]
+
+    assert {key: row[key] for key in ("region", "city", "nickname")} == {
+        "region": "US East",
+        "city": "New York",
+        "nickname": "Empire",
+    }
+    assert (row["pro"], row["disabled"], row["ten_gbps"]) == (True, False, True)
+    assert "secret" not in row
+
+
 def test_server_list_sets_orphan_on_active_profiles_without_config(env, monkeypatch):
     ghost = VPNConnection(name="ghost", provider="WireGuard", active=True, config_path=None)
     wg = FakeProvider("WireGuard", [ghost])

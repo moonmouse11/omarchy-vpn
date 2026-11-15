@@ -9,11 +9,13 @@ import sqlite3
 import time
 import urllib.parse
 from pathlib import Path
+from typing import cast
 
 import fsutil
 from app.spawn import spawn_manager
 from happ.constants import SUB_CACHE_DIR, SUB_MAX_AGE
 from incy.headers import incy_headers
+from subscription.cache import normalize_record
 from subscription.fetch import fetch_subscription_to_cache
 
 INCY_DB = Path.home() / ".local/share/incy/incy.db"
@@ -168,22 +170,20 @@ def all_db_catalog_entries() -> list[dict]:
 def _servers_from_cache(sub_id: str) -> list[dict]:
     path = cache_path(sub_id)
     try:
-        cached = json.loads(path.read_text())
+        cached = normalize_record(json.loads(path.read_text()))
     except OSError, json.JSONDecodeError:
         return []
-    if not isinstance(cached, dict):
-        return []
-    return list(cached.get("servers") or [])
+    return cast(list[dict], cached["servers"]) if cached is not None else []
 
 
 def _sub_cache_fresh(sub_id: str) -> bool:
     path = cache_path(sub_id)
     try:
-        cached = json.loads(path.read_text())
+        cached = normalize_record(json.loads(path.read_text()))
         return (
-            isinstance(cached, dict)
+            cached is not None
             and cached.get("url") == subscription_url(sub_id)
-            and time.time() - cached.get("at", 0) < SUB_MAX_AGE
+            and time.time() - cast(float, cached["at"]) < SUB_MAX_AGE
         )
     except OSError, json.JSONDecodeError, TypeError:
         return False

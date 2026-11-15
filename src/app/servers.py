@@ -34,6 +34,16 @@ def _guarded_disconnect(provider, connection: VPNConnection) -> ActionResult:
     return guarded_disconnect(provider, connection)
 
 
+_WINDSCRIBE_METADATA_KEYS = (
+    "synthetic",
+    "region",
+    "city",
+    "nickname",
+    "pro",
+    "disabled",
+    "ten_gbps",
+)
+
 # Duplicated from app.tools — keeps server_list() free of tools ↔ servers import cycle.
 _IMPORT_KINDS = {
     "WireGuard": "file",
@@ -118,6 +128,9 @@ def _server_row(entry: dict) -> dict:
     }
     if entry.get("orphan"):
         row["orphan"] = True
+    for key in _WINDSCRIBE_METADATA_KEYS:
+        if key in entry:
+            row[key] = entry[key]
     return row
 
 
@@ -279,18 +292,21 @@ def server_list() -> dict:
                 logutil.log(f"server list: {provider.name} skipped: {e!r}")
                 conns = []
             if conns:
-                entries = [
-                    {
-                        "name": c.name,
-                        "active": c.active,
+                entries = []
+                for connection in conns:
+                    entry = {
+                        "name": connection.name,
+                        "active": connection.active,
                         "orphan": (
-                            c.active
-                            and not c.config_path
-                            and c.provider in ("WireGuard", "AmneziaWG")
+                            connection.active
+                            and not connection.config_path
+                            and connection.provider in ("WireGuard", "AmneziaWG")
                         ),
                     }
-                    for c in conns
-                ]
+                    for key in _WINDSCRIBE_METADATA_KEYS:
+                        if key in connection.metadata:
+                            entry[key] = connection.metadata[key]
+                    entries.append(entry)
                 groups.append(
                     _server_group(
                         provider.name,

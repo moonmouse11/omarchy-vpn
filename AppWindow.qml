@@ -87,7 +87,7 @@ FloatingWindow {
         win.host.refresh()
         win.host.loadServers()
       }
-      else if (k === "p" && win.host.serverCursor >= 0) win.host.pingRow(win.host.serverRows[win.host.serverCursor])
+      else if (k === "p") win.host.run("--ping-now")
       else if (k === "/") locations.focusFilter()
       else if (k === "s") win.host.toggleFavourite(win.cursorRow())
       else if (k === "i") win.host.startImport(win.importTarget())

@@ -55,6 +55,15 @@ jobs:
     - name: Run test suite
       run: pytest
 
+    - name: Windscribe handover process stress
+      timeout-minutes: 2
+      run: |
+        evidence="$RUNNER_TEMP/windscribe-handover"
+        mkdir -p "$evidence"
+        for run in 1 2 3 4 5; do
+          python tests/windscribe_handover_probe.py --output "$evidence/$run.json"
+        done
+
   dns-native:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

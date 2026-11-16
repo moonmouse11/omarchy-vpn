@@ -18,6 +18,8 @@ sudo mount -t 9p -o trans=virtio,version=9p2000.L,ro repo "$REPO"
 sudo mount -t 9p -o trans=virtio,version=9p2000.L out "$OUT"
 sudo chown omarchy:omarchy "$OUT"
 : > "$OUT/actions.log"
+python3 "$REPO/tests/windscribe_handover_probe.py" \
+    --output "$OUT/windscribe-handover.json"
 for _ in $(seq 1 300); do
     pgrep -x quickshell >/dev/null && break
     sleep 0.2
@@ -124,12 +126,32 @@ omarchy-shell omarchy-vpn auditSelectWindscribe
 wtype -k l
 sleep 1
 snapshot expanded
+grim "$OUT/panel-expanded.png"
 python3 - "$OUT/expanded.json" <<'PY'
 import json, sys
 x = json.load(open(sys.argv[1]))
-assert len(x['serverNames']) == 201, x
+assert len(x['serverNames']) == 202, x
+assert x['serverNames'][0] == 'Best Location', x
+PY
+wtype -k h
+sleep 1
+snapshot folded
+grim "$OUT/panel-folded.png"
+python3 - "$OUT/folded.json" <<'PY'
+import json, sys
+x = json.load(open(sys.argv[1]))
+assert not x['serverNames'], x
+PY
+wtype -k l
+sleep 1
+snapshot reexpanded
+python3 - "$OUT/reexpanded.json" <<'PY'
+import json, sys
+x = json.load(open(sys.argv[1]))
+assert len(x['serverNames']) == 202, x
 PY
 for _ in $(seq 1 35); do wtype -k j; done
+grim "$OUT/panel-scrolled.png"
 wtype '/'
 wtype -d 50 'City 200'
 snapshot typed-unapplied

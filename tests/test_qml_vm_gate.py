@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+GUEST_SCRIPT = (ROOT / "tests" / "qml_vm_guest.sh").read_text()
 _REAL_POPEN = subprocess.Popen
 _REAL_RUN = subprocess.run
 
@@ -60,7 +61,31 @@ def observations(tmp_path):
     )
     (tmp_path / "actions.log").write_text("")
     (tmp_path / "shell-journal.txt").write_text("clean runtime\n")
+    (tmp_path / "windscribe-handover.json").write_text(
+        json.dumps(
+            {
+                "events": [
+                    "signal:SIGTERM:4242",
+                    "signal:SIGKILL:4242",
+                    "disconnect:new-owner",
+                    "status:disconnected",
+                    "target-connect",
+                ],
+                "windscribe_state": "disconnected",
+                "target_connected": True,
+                "old_pid": 4242,
+                "old_exitcode": -9,
+                "old_alive": False,
+            }
+        )
+    )
     return tmp_path
+
+
+def test_guest_captures_expanded_folded_and_scrolled_geometry():
+    assert "assert len(x['serverNames']) == 202" in GUEST_SCRIPT
+    for image in ("panel-expanded.png", "panel-folded.png", "panel-scrolled.png"):
+        assert f'grim "$OUT/{image}"' in GUEST_SCRIPT
 
 
 def test_runtime_verifier_accepts_full_filter_on_both_surfaces(observations):
@@ -85,6 +110,44 @@ def test_runtime_verifier_rejects_the_previous_failures(observations, damage):
         path.write_text(json.dumps(data))
     verify = _verifier()
     with pytest.raises(ValueError):
+        verify(observations)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "still-connecting",
+        "target-not-connected",
+        "old-alive",
+        "old-exited-normally",
+        "wrong-order",
+    ],
+)
+def test_runtime_verifier_rejects_failed_windscribe_handover(observations, damage):
+    path = observations / "windscribe-handover.json"
+    data = json.loads(path.read_text())
+    if damage == "still-connecting":
+        data["windscribe_state"] = "connecting"
+    elif damage == "target-not-connected":
+        data["target_connected"] = False
+    elif damage == "old-alive":
+        data["old_alive"] = True
+    elif damage == "old-exited-normally":
+        data["old_exitcode"] = 0
+    else:
+        data["events"] = ["target-connect", "disconnect:new-owner", "status:disconnected"]
+    path.write_text(json.dumps(data))
+
+    verify = _verifier()
+    with pytest.raises(ValueError):
+        verify(observations)
+
+
+def test_runtime_verifier_rejects_missing_windscribe_handover(observations):
+    (observations / "windscribe-handover.json").unlink()
+
+    verify = _verifier()
+    with pytest.raises(FileNotFoundError):
         verify(observations)
 
 

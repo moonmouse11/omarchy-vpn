@@ -212,10 +212,10 @@ class WindscribeProvider(VPNProvider):
         if not self._available():
             return []
         status = self._status_state()
-        if status is None:
+        if status is None or not status.recognized:
             return []
         interface = interfaceclaims.get(self.name)
-        if not status.recognized:
+        if status.connection_state in {"connecting", "disconnecting"}:
             return [
                 VPNConnection(
                     name=_UNKNOWN_CONNECTION,

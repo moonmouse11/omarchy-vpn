@@ -1,5 +1,6 @@
 """Real SCM_RIGHTS transport; privileged socket operations are injected at the boundary."""
 
+import gc
 import os
 import socket
 import threading
@@ -23,6 +24,8 @@ def test_rejects_malformed_requests_without_fd_leaks(payload, count):
         thread = threading.Thread(target=broker.serve, args=(server, applied.append))
         thread.start()
         try:
+            # Exclude unreachable resources finalized from earlier tests.
+            gc.collect()
             before = len(list(Path("/proc/self/fd").iterdir()))
             socket.send_fds(client, [payload], [outgoing.fileno()] * count)
             assert client.recv(2) == b"0"

@@ -890,7 +890,7 @@ Panel {
           root.loadServers()
         }
         else if (k === "f") root.cycleLabelFormat()
-        else if (k === "p" && root.serverCursor >= 0) root.pingRow(root.serverRows[root.serverCursor])
+        else if (k === "p") root.run("--ping-now")
         else if (k === "s" && root.serverCursor >= 0) root.toggleFavourite(root.serverRows[root.serverCursor])
         else if (k === "/") panelList.focusFilter()
       }

@@ -2,6 +2,7 @@
 
 import json
 import re
+import signal
 import sys
 from pathlib import Path
 
@@ -12,7 +13,36 @@ RUNTIME_ERRORS = re.compile(
 )
 
 
+def _verify_windscribe_handover(output: Path) -> None:
+    data = json.loads((output / "windscribe-handover.json").read_text())
+    events = data.get("events")
+    if (
+        data.get("windscribe_state") != "disconnected"
+        or data.get("target_connected") is not True
+        or data.get("old_alive") is not False
+        or data.get("old_exitcode") != -signal.SIGKILL
+        or not isinstance(data.get("old_pid"), int)
+        or data["old_pid"] <= 1
+        or not isinstance(events, list)
+    ):
+        raise ValueError(f"Windscribe handover did not finish safely: {data}")
+    try:
+        disconnect = events.index("disconnect:new-owner")
+        disconnected = events.index("status:disconnected", disconnect + 1)
+        target = events.index("target-connect", disconnected + 1)
+    except ValueError as error:
+        raise ValueError(f"Windscribe handover evidence is incomplete: {data}") from error
+    if not disconnect < disconnected < target:
+        raise ValueError(f"Windscribe target started before teardown: {data}")
+    signals = [event for event in events if event.startswith("signal:")]
+    if not any(event.startswith("signal:SIGKILL:") for event in signals) or any(
+        event.rsplit(":", 1)[-1] != str(data["old_pid"]) for event in signals
+    ):
+        raise ValueError(f"Windscribe probe signalled an unexpected process: {data}")
+
+
 def verify(output: Path) -> None:
+    _verify_windscribe_handover(output)
     if (output / "actions.log").read_text().strip():
         raise ValueError("filter typing invoked a vendor action")
     if RUNTIME_ERRORS.search((output / "shell-journal.txt").read_text()):

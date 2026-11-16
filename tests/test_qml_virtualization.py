@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SERVER_LIST = (ROOT / "ServerList.qml").read_text()
 WIDGET = (ROOT / "Widget.qml").read_text()
 APP = (ROOT / "AppWindow.qml").read_text()
+SERVER_ROW = (ROOT / "ServerRow.qml").read_text()
 
 
 def test_server_list_is_a_listview_without_repeater():
@@ -71,6 +72,12 @@ def test_header_is_a_spacer_and_the_filter_field_is_stable():
     assert "TextField" in SERVER_LIST
 
 
+def test_stable_header_is_parented_and_positioned_by_scroll_header():
+    head = SERVER_LIST.split("id: head", 1)[1].split("Loader {", 1)[0]
+    assert "parent: list.contentItem" in head
+    assert "y: list.headerItem ? list.headerItem.y : 0" in head
+
+
 def test_no_focus_recreation_lifecycle_remains():
     # VM round 3 proved focus restoration after header recreation is too late
     # — the stable-header design deletes that machinery entirely
@@ -79,6 +86,22 @@ def test_no_focus_recreation_lifecycle_remains():
     assert "Component.onDestruction" not in SERVER_LIST
     assert "onActiveFocusChanged" not in SERVER_LIST
     assert "function focusFilter()" in SERVER_LIST
+
+
+def test_subscription_refresh_is_the_only_provider_header_action():
+    assert "HappSubRefresh {" in SERVER_ROW
+    assert "ProviderPing {" not in SERVER_ROW
+    assert "id: groupPing" not in SERVER_ROW
+    assert "host.pingProvider" not in SERVER_ROW
+
+
+def test_ping_action_exists_only_in_the_servers_header():
+    assert SERVER_LIST.count('onClicked: list.host.run("--ping-now")') == 1
+    assert "id: pingMouse" not in SERVER_ROW
+    assert "host.pingRow(" not in SERVER_ROW
+    assert 'k === "p") root.run("--ping-now")' in WIDGET
+    assert 'k === "p") win.host.run("--ping-now")' in APP
+    assert "serverRow.rightText" in SERVER_ROW
 
 
 def test_ping_button_glyph_is_the_escaped_refresh():

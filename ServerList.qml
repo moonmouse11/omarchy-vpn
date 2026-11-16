@@ -96,11 +96,13 @@ ListView {
     height: head.implicitHeight + Style.space(12) - list.spacing
   }
 
-  // The stable header content. Direct children of a ListView live in its
-  // contentItem, so this scrolls with the rows from content y=0 (above the
-  // spacer) — and survives every model rebuild, keeping filter focus.
+  // The stable header follows the scroll header's content position; parenting
+  // alone leaves it at y=0 when ListView changes its non-zero origin.
+  // It survives model rebuilds, keeping filter focus.
   Column {
     id: head
+    parent: list.contentItem
+    y: list.headerItem ? list.headerItem.y : 0
     z: 1  // above the spacer and freshly created delegates
     width: list.width
     spacing: Style.space(12)

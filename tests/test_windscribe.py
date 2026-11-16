@@ -62,6 +62,19 @@ def test_unknown_status_counts_as_logged_out(monkeypatch):
     assert ws.WindscribeProvider().connections() == []
 
 
+def test_status_failure_does_not_claim_an_active_connection(monkeypatch):
+    _present(monkeypatch, status="daemon unavailable", rc=1)
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: "tun0")
+
+    assert ws.WindscribeProvider().active_connections() == []
+
+
+def test_uninstalled_windscribe_does_not_claim_an_active_connection(monkeypatch):
+    monkeypatch.setattr(ws.shutil, "which", lambda _: None)
+
+    assert ws.WindscribeProvider().active_connections() == []
+
+
 def test_lists_locations_when_disconnected(monkeypatch):
     _present(monkeypatch)
     conns = ws.WindscribeProvider().connections()
@@ -911,6 +924,31 @@ def test_real_connected_status_marks_active(monkeypatch):
     assert [c.name for c in active] == ["US East - New York - Empire"]
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        REAL_STATUS_DISCONNECTED.replace(
+            "Connect state: Disconnected", "Connect state: Connecting"
+        ),
+        REAL_STATUS_DISCONNECTED.replace(
+            "Connect state: Disconnected", "Connect state: Disconnecting"
+        ),
+        "Login: Logged in\nConnection: Connecting\nFirewall: Off\nInternet: Available\n",
+        "Login: Logged in\nConnection: Disconnecting\nFirewall: Off\nInternet: Available\n",
+    ],
+)
+def test_transient_status_is_conservatively_active(monkeypatch, status):
+    _present(monkeypatch, status=status, locations=REAL_LOCATIONS)
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: "tun0")
+
+    active = ws.WindscribeProvider().active_connections()
+
+    assert len(active) == 1
+    assert active[0].provider == "Windscribe"
+    assert active[0].active
+    assert active[0].interface == "tun0"
+
+
 def test_connect_state_error_counts_as_disconnected(monkeypatch):
     status = REAL_STATUS_DISCONNECTED.replace(
         "Connect state: Disconnected", "Connect state: Error: Location does not exist"
@@ -972,13 +1010,11 @@ def test_unknown_output_is_a_compatibility_issue_and_not_ready(monkeypatch):
     assert provider.connections() == []
 
 
-def test_partially_known_future_status_fails_closed(monkeypatch):
+def test_partially_known_future_status_does_not_claim_an_active_connection(monkeypatch):
     _present(monkeypatch, status="Login: Logged in\nConnection: Established to New York\n")
     provider = ws.WindscribeProvider()
 
-    assert [connection.name for connection in provider.active_connections()] == [
-        "Windscribe connection (status unknown)"
-    ]
+    assert provider.active_connections() == []
     assert provider.connections() == []
     result = provider.connect(_conn())
     assert not result.success
@@ -1002,15 +1038,11 @@ def test_unknown_output_blocks_connect_before_vendor_action(monkeypatch):
     assert not any(args[0] == "connect" for args in calls)
 
 
-def test_unknown_output_is_conservatively_active_with_exact_claim(monkeypatch):
+def test_unknown_output_does_not_claim_an_active_connection(monkeypatch):
     _present(monkeypatch, status="Windscribe status format changed\n")
     monkeypatch.setattr(interfaceclaims, "get", lambda provider: "tun0")
 
-    active = ws.WindscribeProvider().active_connections()
-
-    assert [(connection.name, connection.interface) for connection in active] == [
-        ("Windscribe connection (status unknown)", "tun0")
-    ]
+    assert ws.WindscribeProvider().active_connections() == []
 
 
 def test_unknown_output_never_confirms_disconnect(monkeypatch):

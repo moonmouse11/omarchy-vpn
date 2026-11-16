@@ -4,16 +4,23 @@ the newest switch wins: it stops the one holding the lock."""
 
 import contextlib
 import fcntl
+import json
 import os
 import signal
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 import config
 import vpn_manager
 from providers.base import ActionResult, VPNConnection
+
+_REAL_RUN = subprocess.run
+_REAL_POPEN = subprocess.Popen
 
 
 class FakeProvider:
@@ -93,6 +100,110 @@ def test_failed_teardown_stops_the_next_provider(env, monkeypatch, status_unavai
     result = vpn_manager.guarded_connect(new, target)
     assert not result.success
     assert new.connected == []
+
+
+def test_windscribe_transient_is_torn_down_before_next_provider(env, monkeypatch):
+    from providers import windscribe as windscribe_shim
+    from providers.vendor import windscribe as windscribe_impl
+
+    events = []
+    state = {"connection": "connecting"}
+
+    def run(args, timeout=15):
+        if args == ["status"]:
+            events.append(f"status:{state['connection']}")
+            value = state["connection"].capitalize()
+            return 0, (
+                "Internet connectivity: available\nLogin state: Logged in\n"
+                f"Firewall state: Off\nConnect state: {value}\n"
+            )
+        if args == ["disconnect"]:
+            events.append("disconnect")
+            state["connection"] = "disconnected"
+            return 0, "Disconnecting"
+        raise AssertionError(args)
+
+    class Target(FakeProvider):
+        def connect(self, conn):
+            events.append("target-connect")
+            return super().connect(conn)
+
+    old = windscribe_impl.WindscribeProvider()
+    target_connection = VPNConnection(name="new", provider="WireGuard", active=False)
+    target = Target("WireGuard", [target_connection])
+    monkeypatch.setattr(windscribe_shim.shutil, "which", lambda cmd: "/usr/bin/windscribe-cli")
+    monkeypatch.setattr(windscribe_shim, "_run", run)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [old, target])
+
+    result = vpn_manager.guarded_connect(target, target_connection)
+
+    assert result.success
+    assert events[0] == "status:connecting"
+    assert events.index("disconnect") < events.index("status:disconnected")
+    assert events.index("status:disconnected") < events.index("target-connect")
+
+
+def test_windscribe_status_failure_does_not_block_next_provider(env, monkeypatch):
+    from providers import windscribe as windscribe_shim
+    from providers.vendor import windscribe as windscribe_impl
+
+    calls = []
+
+    def run(args, timeout=15):
+        calls.append(args)
+        return 1, "Windscribe daemon unavailable"
+
+    old = windscribe_impl.WindscribeProvider()
+    target_connection = VPNConnection(name="new", provider="WireGuard", active=False)
+    target = FakeProvider("WireGuard", [target_connection])
+    monkeypatch.setattr(windscribe_shim.shutil, "which", lambda cmd: "/usr/bin/windscribe-cli")
+    monkeypatch.setattr(windscribe_shim, "_run", run)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [old, target])
+
+    result = vpn_manager.guarded_connect(target, target_connection)
+
+    assert result.success
+    assert calls == [["status"]]
+    assert target.connected == ["new"]
+
+
+def test_windscribe_sigkill_handover_probe(tmp_path):
+    output = tmp_path / "handover.json"
+    probe = Path(__file__).with_name("windscribe_handover_probe.py")
+    patched_popen = subprocess.Popen
+    subprocess.Popen = _REAL_POPEN
+    try:
+        completed = _REAL_RUN(
+            [sys.executable, str(probe), "--output", str(output)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    finally:
+        subprocess.Popen = patched_popen
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(output.read_text())
+    events = result["events"]
+
+    assert result["windscribe_state"] == "disconnected"
+    assert result["target_connected"] is True
+    assert result["old_alive"] is False
+    assert result["old_exitcode"] == -signal.SIGKILL
+    assert result["old_pid"] > 1
+    assert events.index("disconnect:new-owner") < events.index("status:disconnected")
+    assert events.index("status:disconnected") < events.index("target-connect")
+    signal_events = [event for event in events if event.startswith("signal:")]
+    assert signal_events
+    assert all(event.rsplit(":", 1)[1] == str(result["old_pid"]) for event in signal_events)
+
+
+def test_windscribe_handover_ci_runs_five_standalone_probes():
+    workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/python.yml").read_text()
+
+    assert "name: Windscribe handover process stress" in workflow
+    assert "for run in 1 2 3 4 5" in workflow
+    assert "tests/windscribe_handover_probe.py" in workflow
 
 
 def test_a_holder_that_is_not_a_switch_process_is_not_touched(env, monkeypatch):

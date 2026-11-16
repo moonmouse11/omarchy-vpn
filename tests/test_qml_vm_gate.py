@@ -138,15 +138,17 @@ def test_runtime_verifier_rejects_failed_windscribe_handover(observations, damag
         data["events"] = ["target-connect", "disconnect:new-owner", "status:disconnected"]
     path.write_text(json.dumps(data))
 
+    verify = _verifier()
     with pytest.raises(ValueError):
-        _verifier()(observations)
+        verify(observations)
 
 
 def test_runtime_verifier_rejects_missing_windscribe_handover(observations):
     (observations / "windscribe-handover.json").unlink()
 
+    verify = _verifier()
     with pytest.raises(FileNotFoundError):
-        _verifier()(observations)
+        verify(observations)
 
 
 def test_runtime_verifier_rejects_missing_evidence(observations):

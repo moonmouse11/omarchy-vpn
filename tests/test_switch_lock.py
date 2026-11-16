@@ -167,21 +167,17 @@ def test_windscribe_status_failure_does_not_block_next_provider(env, monkeypatch
     assert target.connected == ["new"]
 
 
-def test_windscribe_sigkill_handover_probe(tmp_path):
+def test_windscribe_sigkill_handover_probe(tmp_path, monkeypatch):
     output = tmp_path / "handover.json"
     probe = Path(__file__).with_name("windscribe_handover_probe.py")
-    patched_popen = subprocess.Popen
-    subprocess.Popen = _REAL_POPEN
-    try:
-        completed = _REAL_RUN(
-            [sys.executable, str(probe), "--output", str(output)],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    finally:
-        subprocess.Popen = patched_popen
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+    completed = _REAL_RUN(
+        [sys.executable, str(probe), "--output", str(output)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
     assert completed.returncode == 0, completed.stderr
     result = json.loads(output.read_text())
     events = result["events"]

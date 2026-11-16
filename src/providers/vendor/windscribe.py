@@ -80,33 +80,39 @@ class WindscribeLocation:
     ten_gbps: bool = False
 
 
+def _location_parts(raw: str) -> tuple[str, str, str, dict[str, bool]] | None:
+    line = raw.rstrip()
+    flags = {"pro": False, "disabled": False, "ten_gbps": False}
+    while True:
+        for suffix, flag_name in _LOCATION_FLAGS:
+            if line.lower().endswith(suffix.lower()):
+                flags[flag_name] = True
+                line = line[: -len(suffix)].rstrip()
+                break
+        else:
+            break
+    parts = [part.strip() for part in line.split(" - ")]
+    if len(parts) < 3 or not all(parts) or parts[0].lower() == "best location":
+        return None
+    return parts[0], parts[1], " - ".join(parts[2:]), flags
+
+
 def _location_rows(text: str) -> list[WindscribeLocation]:
     """Structured rows from the documented flat locations output."""
     parsed: dict[tuple[str, str, str], tuple[str, str, str, dict[str, bool]]] = {}
     for raw in text.splitlines():
-        line = raw.rstrip()
-        flags = {"pro": False, "disabled": False, "ten_gbps": False}
-        changed = True
-        while changed:
-            changed = False
-            for suffix, flag_name in _LOCATION_FLAGS:
-                if line.lower().endswith(suffix.lower()):
-                    flags[flag_name] = True
-                    line = line[: -len(suffix)].rstrip()
-                    changed = True
-                    break
-        parts = [part.strip() for part in line.split(" - ")]
-        if len(parts) < 3 or not all(parts) or parts[0].lower() == "best location":
+        parts = _location_parts(raw)
+        if parts is None:
             continue
-        region, city = parts[:2]
-        nickname = " - ".join(parts[2:])
+        region, city, nickname, flags = parts
         identity = (region.lower(), city.lower(), nickname.lower())
         if identity in parsed:
             existing = parsed[identity][3]
-            for flag_name, enabled in flags.items():
-                existing[flag_name] = existing[flag_name] or enabled
-            continue
-        parsed[identity] = (region, city, nickname, flags)
+            existing.update(
+                {flag_name: existing[flag_name] or enabled for flag_name, enabled in flags.items()}
+            )
+        else:
+            parsed[identity] = (region, city, nickname, flags)
 
     rows = []
     for region, city, nickname, flags in parsed.values():
@@ -133,6 +139,14 @@ def _protocol_label(status: WindscribeStatus) -> str | None:
     labels = {"wireguard": "WireGuard", "wstunnel": "WStunnel"}
     label = labels.get(status.protocol, status.protocol.capitalize())
     return f"{label}:{status.port}" if status.port else label
+
+
+def _connect_protocols(protocol: str, port: str) -> tuple[str | None, ...]:
+    if protocol == "automatic":
+        return _PROTOCOLS
+    if port:
+        return (f"{protocol}:{port}",)
+    return (protocol,)
 
 
 class WindscribeProvider(VPNProvider):
@@ -290,18 +304,10 @@ class WindscribeProvider(VPNProvider):
         previous = interfaceclaims.get(self.name)
         before = windscribe._interfaces()
         last = ActionResult(False, "windscribe-cli connect failed")
-        protocols = (
-            _PROTOCOLS if protocol == "automatic" else (f"{protocol}:{port}" if port else protocol,)
-        )
-        for attempt_protocol in protocols:
-            args = ["connect", "-n", target]
-            if attempt_protocol is not None:
-                args.append(attempt_protocol)
-            code, out = windscribe._run(args)
-            if code != 0:
-                last = ActionResult(False, out or "windscribe-cli connect failed")
-                continue
-            last, stopped = self._await_connected(windscribe, connection.name)
+        for attempt_protocol in _connect_protocols(protocol, port):
+            last, stopped = self._connect_attempt(
+                windscribe, connection.name, target, attempt_protocol
+            )
             if last.success:
                 self._record_interface_claim(windscribe, previous, before)
                 return last
@@ -311,6 +317,17 @@ class WindscribeProvider(VPNProvider):
             with contextlib.suppress(OSError):
                 interfaceclaims.release(self.name)
         return last
+
+    def _connect_attempt(
+        self, windscribe, name: str, target: str, protocol: str | None
+    ) -> tuple[ActionResult, bool]:
+        args = ["connect", "-n", target]
+        if protocol is not None:
+            args.append(protocol)
+        code, out = windscribe._run(args)
+        if code != 0:
+            return ActionResult(False, out or "windscribe-cli connect failed"), True
+        return self._await_connected(windscribe, name)
 
     def _record_interface_claim(
         self, windscribe, previous: str | None, before: dict[str, int]
@@ -325,6 +342,16 @@ class WindscribeProvider(VPNProvider):
             else:
                 interfaceclaims.release(self.name)
 
+    def _matching_label(
+        self, status: WindscribeStatus, name: str, target: str | None
+    ) -> str | None:
+        label = self._connected_label(status)
+        if label is None or target is None:
+            return None
+        if label == name.removesuffix(_PRO_MARK) or _connect_target(label) == target:
+            return label
+        return None
+
     def _await_connected(self, windscribe, name: str) -> tuple[ActionResult, bool]:
         """connect is async: rc 0 = accepted. Poll until this location is the
         connected one; disconnect on vendor refusal/timeout (no half-up state)."""
@@ -338,12 +365,8 @@ class WindscribeProvider(VPNProvider):
                 if not status.recognized:
                     last = COMPATIBILITY_MESSAGE
                     break
-                label = self._connected_label(status)
-                if (
-                    label is not None
-                    and target is not None
-                    and (label == name.removesuffix(_PRO_MARK) or _connect_target(label) == target)
-                ):
+                label = self._matching_label(status, name, target)
+                if label is not None:
                     return ActionResult(True, f"Connected to {label}"), True
                 last = out
                 if _FAILURE_MARKERS.search(out.lower()):

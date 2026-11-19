@@ -75,6 +75,313 @@ def test_uninstalled_windscribe_does_not_claim_an_active_connection(monkeypatch)
     assert ws.WindscribeProvider().active_connections() == []
 
 
+def test_force_reset_refuses_cleanly_when_cli_is_missing(monkeypatch):
+    from providers import windscribe
+
+    monkeypatch.setattr(windscribe.shutil, "which", lambda command: None)
+    monkeypatch.setattr(
+        windscribe,
+        "_run",
+        lambda *args, **kwargs: pytest.fail("missing CLI must be rejected before status"),
+    )
+    monkeypatch.setattr(
+        windscribe,
+        "run_helper",
+        lambda *args, **kwargs: pytest.fail("missing CLI must not reset the service"),
+    )
+
+    result = ws.WindscribeProvider().force_reset()
+
+    assert not result.success
+    assert "windscribe-cli not found" in result.message
+
+
+def test_force_reset_uses_fixed_helper_and_releases_verified_interface(monkeypatch):
+    from providers import windscribe
+
+    _present(monkeypatch)
+    events = []
+    statuses = [
+        "Login state: Logged in\nConnect state: Connecting\nFirewall state: On",
+        "Login state: Logged in\nConnect state: Disconnected\nFirewall state: On",
+    ]
+    monkeypatch.setattr(
+        windscribe,
+        "_run",
+        lambda args, timeout=15: (
+            events.append("status"),
+            (0, statuses.pop(0)),
+        )[1],
+    )
+    monkeypatch.setattr(
+        windscribe,
+        "run_helper",
+        lambda *args, **kwargs: (events.append(("helper", args)), (0, ""))[1],
+        raising=False,
+    )
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: "ws0")
+    monkeypatch.setattr(windscribe, "_interfaces", dict)
+    monkeypatch.setattr(
+        interfaceclaims, "release", lambda provider: events.append(("release", provider))
+    )
+
+    result = ws.WindscribeProvider().force_reset()
+
+    assert result.success
+    assert events == [
+        "status",
+        ("helper", ("windscribe-reset",)),
+        "status",
+        ("release", "Windscribe"),
+    ]
+    assert "Firewall preserved" in result.message
+
+
+def test_force_reset_propagates_helper_failure_without_releasing_claim(monkeypatch):
+    from providers import windscribe
+
+    _present(monkeypatch)
+    released = []
+    monkeypatch.setattr(
+        windscribe,
+        "_run",
+        lambda args, timeout=15: (
+            0,
+            "Login state: Logged in\nConnect state: Connecting\nFirewall state: On",
+        ),
+    )
+    monkeypatch.setattr(
+        windscribe, "run_helper", lambda *args, **kwargs: (1, "reset failed"), raising=False
+    )
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: "ws0")
+    monkeypatch.setattr(interfaceclaims, "release", released.append)
+
+    result = ws.WindscribeProvider().force_reset()
+
+    assert not result.success
+    assert result.message == "reset failed"
+    assert released == []
+
+
+def test_force_reset_rejects_post_reset_reconnect_and_keeps_claim(monkeypatch):
+    from providers import windscribe
+
+    _present(monkeypatch)
+    statuses = [
+        "Login state: Logged in\nConnect state: Connecting\nFirewall state: On",
+        "Login state: Logged in\nConnect state: Connected\nFirewall state: On",
+    ]
+    released = []
+    monkeypatch.setattr(windscribe, "_run", lambda args, timeout=15: (0, statuses.pop(0)))
+    monkeypatch.setattr(windscribe, "run_helper", lambda *args, **kwargs: (0, ""), raising=False)
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: "ws0")
+    monkeypatch.setattr(windscribe, "_interfaces", dict)
+    monkeypatch.setattr(interfaceclaims, "release", released.append)
+
+    result = ws.WindscribeProvider().force_reset()
+
+    assert not result.success
+    assert "Connected" in result.message
+    assert released == []
+
+
+def test_force_reset_rejects_known_firewall_change_without_firewall_command(monkeypatch):
+    from providers import windscribe
+
+    _present(monkeypatch)
+    calls = []
+    statuses = [
+        "Login state: Logged in\nConnect state: Connecting\nFirewall state: On",
+        "Login state: Logged in\nConnect state: Disconnected\nFirewall state: Off",
+    ]
+    monkeypatch.setattr(
+        windscribe,
+        "_run",
+        lambda args, timeout=15: (calls.append(args), (0, statuses.pop(0)))[1],
+    )
+    monkeypatch.setattr(
+        windscribe,
+        "run_helper",
+        lambda *args, **kwargs: (calls.append(list(args)), (0, ""))[1],
+        raising=False,
+    )
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: None)
+    monkeypatch.setattr(windscribe, "_interfaces", dict)
+
+    result = ws.WindscribeProvider().force_reset()
+
+    assert not result.success
+    assert "Firewall changed" in result.message
+    assert all("firewall" not in call for call in calls for arg in call if isinstance(arg, str))
+
+
+def test_force_reset_rejects_unknown_post_status(monkeypatch):
+    from providers import windscribe
+
+    _present(monkeypatch)
+    statuses = [
+        (0, "Login state: Logged in\nConnect state: Connecting\nFirewall state: On"),
+        (0, "future output"),
+    ]
+    monkeypatch.setattr(windscribe, "_run", lambda args, timeout=15: statuses.pop(0))
+    monkeypatch.setattr(windscribe, "run_helper", lambda *args, **kwargs: (0, ""), raising=False)
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: None)
+
+    result = ws.WindscribeProvider().force_reset()
+
+    assert not result.success
+    assert "not recognized" in result.message
+
+
+def test_force_reset_keeps_claim_while_exact_interface_remains(monkeypatch):
+    from providers import windscribe
+
+    _present(monkeypatch)
+    statuses = [
+        (0, "Login state: Logged in\nConnect state: Connecting\nFirewall state: On"),
+        (0, "Login state: Logged in\nConnect state: Disconnected\nFirewall state: On"),
+    ]
+    released = []
+    monkeypatch.setattr(windscribe, "_run", lambda args, timeout=15: statuses.pop(0))
+    monkeypatch.setattr(windscribe, "run_helper", lambda *args, **kwargs: (0, ""), raising=False)
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: "ws0")
+    monkeypatch.setattr(windscribe, "_interfaces", lambda: {"ws0": 42})
+    monkeypatch.setattr(interfaceclaims, "release", released.append)
+
+    result = ws.WindscribeProvider().force_reset()
+
+    assert not result.success
+    assert "interface remains" in result.message
+    assert released == []
+
+
+def test_force_reset_reports_unverified_firewall_when_pre_status_unreadable(monkeypatch):
+    from providers import windscribe
+
+    _present(monkeypatch)
+    statuses = [
+        (1, "unavailable"),
+        (0, "Login state: Logged in\nConnect state: Disconnected\nFirewall state: On"),
+    ]
+    monkeypatch.setattr(windscribe, "_run", lambda args, timeout=15: statuses.pop(0))
+    monkeypatch.setattr(windscribe, "run_helper", lambda *args, **kwargs: (0, ""), raising=False)
+    monkeypatch.setattr(interfaceclaims, "get", lambda provider: None)
+    monkeypatch.setattr(windscribe, "_interfaces", dict)
+
+    result = ws.WindscribeProvider().force_reset()
+
+    assert result.success
+    assert "could not be verified" in result.message
+
+
+def test_handover_cleanup_treats_error_state_as_owned(monkeypatch):
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+    calls = []
+    statuses = iter(
+        [
+            (
+                0,
+                "Login state: Logged in\nConnect state: Error: daemon stuck\nFirewall state: On",
+            ),
+            (0, STATUS_DISCONNECTED),
+        ]
+    )
+
+    def run(args, timeout=15):
+        calls.append((args, timeout))
+        if args == ["disconnect"]:
+            return 0, "Disconnecting"
+        return next(statuses)
+
+    monkeypatch.setattr(ws, "_run", run)
+
+    result = ws.WindscribeProvider().handover_cleanup()
+
+    assert result is not None and result.success
+    assert calls == [
+        (["status"], 0.5),
+        (["disconnect"], 2.0),
+        (["status"], 0.5),
+    ]
+
+
+def test_handover_cleanup_recovers_unknown_status_with_bounded_calls(monkeypatch):
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+    calls = []
+    statuses = iter([(1, "daemon unavailable"), (0, STATUS_DISCONNECTED)])
+
+    def run(args, timeout=15):
+        calls.append((args, timeout))
+        if args == ["status"]:
+            return next(statuses)
+        if args == ["disconnect"]:
+            return 0, "Disconnecting"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(ws, "_run", run)
+
+    result = ws.WindscribeProvider().handover_cleanup()
+
+    assert result is not None and result.success
+    assert result.action is None
+    assert calls == [
+        (["status"], 0.5),
+        (["disconnect"], 2.0),
+        (["status"], 0.5),
+    ]
+
+
+def test_handover_cleanup_budget_offers_force_when_disconnect_fails(monkeypatch):
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+    calls = []
+
+    def run(args, timeout=15):
+        calls.append((args, timeout))
+        return 1, "daemon unavailable\ninternal vendor detail"
+
+    monkeypatch.setattr(ws, "_run", run)
+
+    result = ws.WindscribeProvider().handover_cleanup()
+
+    assert result is not None and not result.success
+    assert result.action == "force-windscribe"
+    assert result.message == "Windscribe did not confirm disconnect"
+    assert calls == [(["status"], 0.5), (["disconnect"], 2.0)]
+
+
+def test_handover_cleanup_budget_offers_force_when_status_stays_unknown(monkeypatch):
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+    statuses = iter([(1, "daemon unavailable"), (1, "still unavailable")])
+
+    def run(args, timeout=15):
+        if args == ["status"]:
+            return next(statuses)
+        if args == ["disconnect"]:
+            return 0, "Disconnecting"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(ws, "_run", run)
+
+    result = ws.WindscribeProvider().handover_cleanup()
+
+    assert result is not None and not result.success
+    assert result.action == "force-windscribe"
+
+
+def test_handover_cleanup_ignores_recognized_disconnected_state(monkeypatch):
+    monkeypatch.setattr(ws.shutil, "which", lambda _: "/usr/bin/windscribe-cli")
+    calls = []
+
+    def run(args, timeout=15):
+        calls.append((args, timeout))
+        return 0, STATUS_DISCONNECTED
+
+    monkeypatch.setattr(ws, "_run", run)
+
+    assert ws.WindscribeProvider().handover_cleanup() is None
+    assert calls == [(["status"], 0.5)]
+
+
 def test_lists_locations_when_disconnected(monkeypatch):
     _present(monkeypatch)
     conns = ws.WindscribeProvider().connections()

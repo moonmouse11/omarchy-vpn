@@ -44,6 +44,7 @@ class VPNConnection:
 class ActionResult:
     success: bool
     message: str
+    action: str | None = None
 
 
 class VPNProvider(ABC):
@@ -89,6 +90,10 @@ class VPNProvider(ABC):
         """Text to warn with when the user switches away while the vendor's OWN
         lockdown would block traffic once disconnected (e.g. Windscribe firewall).
         None when nothing applies. Never blocks the switch — a warning only."""
+        return None
+
+    def handover_cleanup(self) -> ActionResult | None:
+        """Resolve provider state hidden from active_connections() before a switch."""
         return None
 
     def toggle_autostart(self, connection: VPNConnection) -> ActionResult:

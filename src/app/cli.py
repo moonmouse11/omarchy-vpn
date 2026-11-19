@@ -19,6 +19,7 @@ from app.servers import (
     _report,
     panel_connect,
     panel_disconnect,
+    panel_force_connect,
     server_list,
     subscription_report,
 )
@@ -57,6 +58,18 @@ def main() -> None:
         nargs="+",
         metavar="PROVIDER NAME [SUBSCRIPTION_ID]",
         help="Connect a server (the panel's server list)",
+    )
+    group.add_argument(
+        "--connect-result",
+        nargs="+",
+        metavar="PROVIDER NAME [SUBSCRIPTION_ID]",
+        help="Connect and print one machine-readable result",
+    )
+    group.add_argument(
+        "--force-connect",
+        nargs="+",
+        metavar="PROVIDER NAME [SUBSCRIPTION_ID]",
+        help="Reset Windscribe after confirmation, then connect the retained target",
     )
     group.add_argument(
         "--disconnect", nargs=2, metavar=("PROVIDER", "NAME"), help="Disconnect a connection"
@@ -188,6 +201,28 @@ def main() -> None:
         if len(args.connect) not in (2, 3):
             parser.error("--connect takes PROVIDER NAME [SUBSCRIPTION_ID]")
         _report(_patched("panel_connect", panel_connect)(*args.connect))
+    elif args.connect_result is not None or args.force_connect is not None:
+        values = args.connect_result if args.connect_result is not None else args.force_connect
+        flag = "--connect-result" if args.connect_result is not None else "--force-connect"
+        if len(values) not in (2, 3):
+            parser.error(f"{flag} takes PROVIDER NAME [SUBSCRIPTION_ID]")
+        if args.connect_result is not None:
+            result = _patched("panel_connect", panel_connect)(*values)
+        else:
+            result = _patched("panel_force_connect", panel_force_connect)(*values)
+        print(
+            json.dumps(
+                {"success": result.success, "message": result.message, "action": result.action},
+                ensure_ascii=False,
+            )
+        )
+        if result.message and result.action != "force-windscribe":
+            notify(
+                "VPN" if result.success else "VPN — Error",
+                result.message,
+                urgent=not result.success,
+            )
+        _patched("refresh_bar", refresh_bar)()
     elif args.disconnect is not None:
         _report(_patched("panel_disconnect", panel_disconnect)(*args.disconnect))
     elif args.disconnect_all:

@@ -44,6 +44,13 @@ FloatingWindow {
       if (win.host.deleteConfirmOpen) confirmKeys.forceActiveFocus()
       else if (win.host.profileMode !== "") keyCatcher.forceActiveFocus()
     }
+    function onForceConfirmOpenChanged() {
+      if (win.host.forceConfirmOpen) forceConfirmKeys.forceActiveFocus()
+      else if (win.host.deleteConfirmOpen) confirmKeys.forceActiveFocus()
+      else if (win.host.checkOpen) checkCard.focusKeys()
+      else if (win.host.profileMode === "import") profileBar.focusInput()
+      else keyCatcher.forceActiveFocus()
+    }
   }
 
   // `i`: the cursor's protocol (its own row, or the one of the server/group
@@ -64,7 +71,7 @@ FloatingWindow {
     anchors.margins: Style.space(20)
     // typing in the filter must not drive the cursor (j/k/h/l are moves)
     blocked: locations.filterFocused || profileBar.inputFocused || win.host.deleteConfirmOpen
-      || win.host.checkOpen
+      || win.host.forceConfirmOpen || win.host.checkOpen
     onMoveRequested: function(dx, dy) {
       if (dy !== 0) win.host.moveServerCursor(dy)
       else win.host.openCursorGroup(dx > 0)
@@ -221,6 +228,28 @@ FloatingWindow {
     id: checkCard
     anchors.fill: parent
     host: win.host
+  }
+
+  Item {
+    id: forceConfirmKeys
+    anchors.fill: parent
+    visible: win.host.forceConfirmOpen
+    Keys.onPressed: function(event) { if (forceConfirm.handleKey(event)) event.accepted = true }
+
+    ConfirmDialog {
+      id: forceConfirm
+      anchors.fill: parent
+      opened: win.host.forceConfirmOpen
+      message: win.host.forceTarget
+        ? win.host.forceMessage + "\nRestart windscribe-helper.service and connect "
+          + win.host.forceTarget.name + "?"
+        : ""
+      confirmText: "Force switch"
+      foreground: win.host.foreground
+      fontFamily: win.host.fontFamily
+      onConfirmed: win.host.confirmForceSwitch()
+      onCanceled: win.host.cancelForceSwitch()
+    }
   }
 
   // x / Delete…: a profile is gone for good (its config file or NM connection)

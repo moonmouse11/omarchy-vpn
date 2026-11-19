@@ -321,6 +321,16 @@ def test_sudoers_subject_is_the_numeric_uid():
     assert "$USER" not in rule
 
 
+def test_windscribe_reset_reuses_the_fixed_helper_sudoers_entry():
+    text = INSTALL.read_text()
+    rule = lines()[index("NOPASSWD:")]
+
+    assert "omarchy-vpn-helper" in rule
+    assert "windscribe-helper.service" not in rule
+    assert "systemctl *" not in rule
+    assert "one fixed Windscribe helper-service reset" in text
+
+
 def test_backend_unit_is_rootless_and_restarts_on_failure():
     text = UNIT.read_text()
     assert (

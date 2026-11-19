@@ -87,6 +87,11 @@ Panel {
   property string profileMode: ""
   property var profileTarget: null
   property bool deleteConfirmOpen: false
+  property bool forceConfirmOpen: false
+  property var forceTarget: null
+  property string forceMessage: ""
+  onForceConfirmOpenChanged: if (forceConfirmOpen && opened)
+    Qt.callLater(function() { forcePanelKeys.forceActiveFocus() })
   // the window's check card (CheckCard.qml); kept here, so a check outlives a
   // closed window. phase: choose (speed) | running | done | error
   property bool checkOpen: false
@@ -396,12 +401,65 @@ Panel {
     connectServer(g.provider, s.name, g.subscription_id)
   }
 
-  // the one place --connect's args are built (rows, chips, the switch)
+  // the one place connect args are built (rows, chips, the switch)
   function connectServer(provider, name, subId) {
     busy = true
-    var args = ["--connect", String(provider), String(name)]
-    if (subId) args.push(String(subId))
-    runArgs(args)
+    forceConfirmOpen = false
+    forceMessage = ""
+    forceTarget = {
+      provider: String(provider),
+      name: String(name),
+      subscription_id: subId ? String(subId) : ""
+    }
+    // Preserve newest-click-wins while keeping one result-aware process.
+    if (connectProc.running || connectProc.replacePending) {
+      connectProc.replacePending = true
+      connectProc.ignoreResult = true
+      if (connectProc.running) connectProc.running = false
+      return
+    }
+    startConnect("--connect-result")
+  }
+
+  function startConnect(flag) {
+    if (!forceTarget) return
+    var args = [flag, forceTarget.provider, forceTarget.name]
+    if (forceTarget.subscription_id) args.push(forceTarget.subscription_id)
+    connectProc.resultSeen = false
+    connectProc.ignoreResult = false
+    connectProc.command = ["python3", root.backend].concat(args)
+    connectProc.running = true
+  }
+
+  function connectResult(text) {
+    var result = null
+    try { result = JSON.parse(String(text || "")) } catch (e) {}
+    connectProc.resultSeen = true
+    if (result && result.action === "force-windscribe" && forceTarget) {
+      busy = false
+      forceMessage = String(result.message || "Windscribe did not stop")
+      forceConfirmOpen = true
+      return
+    }
+    busy = false
+    forceConfirmOpen = false
+    forceMessage = ""
+    forceTarget = null
+  }
+
+  function confirmForceSwitch() {
+    if (!forceTarget || connectProc.running) return
+    forceConfirmOpen = false
+    busy = true
+    startConnect("--force-connect")
+  }
+
+  function cancelForceSwitch() {
+    if (connectProc.running) return
+    forceConfirmOpen = false
+    forceMessage = ""
+    forceTarget = null
+    busy = false
   }
 
   function moveServerCursor(dy) {
@@ -733,6 +791,27 @@ Panel {
   }
 
   Process {
+    id: connectProc
+    property bool resultSeen: false
+    property bool ignoreResult: false
+    property bool replacePending: false
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (!connectProc.ignoreResult) root.connectResult(text)
+    }
+    onExited: {
+      if (replacePending) {
+        replacePending = false
+        ignoreResult = false
+        Qt.callLater(function() { root.startConnect("--connect-result") })
+        return
+      }
+      if (!resultSeen && !ignoreResult) root.connectResult("")
+      ignoreResult = false
+    }
+  }
+
+  Process {
     id: checkProc
     stdout: SplitParser { onRead: function(data) { root.checkLine(data) } }
     onExited: {
@@ -869,7 +948,7 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       // typing in the filter must not drive the cursor (j/k/h/l are moves)
-      blocked: panelList.filterFocused
+      blocked: panelList.filterFocused || root.forceConfirmOpen
       onMoveRequested: function(dx, dy) {
         if (dy !== 0) root.moveServerCursor(dy)
         else root.openCursorGroup(dx > 0)
@@ -893,6 +972,31 @@ Panel {
         else if (k === "p") root.run("--ping-now")
         else if (k === "s" && root.serverCursor >= 0) root.toggleFavourite(root.serverRows[root.serverCursor])
         else if (k === "/") panelList.focusFilter()
+      }
+
+      Item {
+        id: forcePanelKeys
+        anchors.fill: parent
+        z: 100
+        visible: root.forceConfirmOpen
+        Keys.onPressed: function(event) {
+          if (forcePanelConfirm.handleKey(event)) event.accepted = true
+        }
+
+        ConfirmDialog {
+          id: forcePanelConfirm
+          anchors.fill: parent
+          opened: root.forceConfirmOpen
+          message: root.forceTarget
+            ? root.forceMessage + "\nRestart windscribe-helper.service and connect "
+              + root.forceTarget.name + "?"
+            : ""
+          confirmText: "Force switch"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onConfirmed: root.confirmForceSwitch()
+          onCanceled: root.cancelForceSwitch()
+        }
       }
 
       ServerList {

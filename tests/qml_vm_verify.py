@@ -41,8 +41,29 @@ def _verify_windscribe_handover(output: Path) -> None:
         raise ValueError(f"Windscribe probe signalled an unexpected process: {data}")
 
 
+def _verify_force_confirmation(output: Path) -> None:
+    target = {"provider": "WireGuard", "name": "vm-target", "subscription_id": "sub-42"}
+    ordinary = ["--connect-result", "WireGuard", "vm-target", "sub-42"]
+    force = ["--force-connect", "WireGuard", "vm-target", "sub-42"]
+    expected = {
+        "force-panel-open.json": (True, target, [ordinary]),
+        "force-panel-cancelled.json": (False, None, [ordinary]),
+        "force-window-open.json": (True, target, [ordinary]),
+        "force-window-confirmed.json": (False, target, [ordinary, force]),
+    }
+    for name, (opened, retained, commands) in expected.items():
+        data = json.loads((output / name).read_text())
+        if (
+            data.get("forceConfirmOpen") is not opened
+            or data.get("forceTarget") != retained
+            or data.get("commands") != commands
+        ):
+            raise ValueError(f"Force confirmation evidence is invalid ({name}): {data}")
+
+
 def verify(output: Path) -> None:
     _verify_windscribe_handover(output)
+    _verify_force_confirmation(output)
     if (output / "actions.log").read_text().strip():
         raise ValueError("filter typing invoked a vendor action")
     if RUNTIME_ERRORS.search((output / "shell-journal.txt").read_text()):

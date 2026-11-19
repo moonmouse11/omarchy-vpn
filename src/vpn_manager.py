@@ -101,6 +101,7 @@ from app.servers import (  # noqa: F401
     happ_server_groups,
     panel_connect,
     panel_disconnect,
+    panel_force_connect,
     server_list,
     subscription_report,
 )
@@ -133,6 +134,7 @@ from app.switch import (  # noqa: F401
     _close_dns_hole,
     _disconnect_all,
     _enforce_ipv6_guard,
+    _force_connect,
     _guarded_connect,
     _guarded_disconnect,
     _killswitch_all_targets,
@@ -149,6 +151,7 @@ from app.switch import (  # noqa: F401
     _tun_interfaces,
     _wait_for_new_tun,
     disconnect_all,
+    force_connect,
     guarded_connect,
     guarded_disconnect,
     switch_lock,

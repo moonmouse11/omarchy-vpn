@@ -133,6 +133,43 @@ def test_enter_applies_before_activating():
     assert accepted.index("return") < accepted.index("activateServerRow")
 
 
+def test_force_switch_uses_one_result_aware_process_and_retains_target():
+    assert "id: connectProc" in WIDGET
+    assert 'startConnect("--connect-result")' in WIDGET
+    assert 'startConnect("--force-connect")' in WIDGET
+    assert "property var forceTarget" in WIDGET
+    assert "property bool forceConfirmOpen" in WIDGET
+    assert "property string forceMessage" in WIDGET
+    connect = WIDGET.split("function connectServer", 1)[1].split("function moveServerCursor", 1)[0]
+    assert 'runArgs(["--connect"' not in connect
+    assert "subscription_id" in connect
+
+
+def test_newest_connect_click_replaces_the_running_result_process():
+    assert "replacePending" in WIDGET
+    assert "ignoreResult" in WIDGET
+    assert "connectProc.running = false" in WIDGET
+    assert "if (connectProc.running || forceConfirmOpen) return" not in WIDGET
+    exited = WIDGET.split("id: connectProc", 1)[1].split("id: checkProc", 1)[0]
+    assert "Qt.callLater" in exited
+    assert 'startConnect("--connect-result")' in exited
+
+
+def test_force_dialog_focus_returns_to_any_existing_delete_confirmation():
+    changed = APP.split("function onForceConfirmOpenChanged()", 1)[1].split("}", 1)[0]
+    assert "deleteConfirmOpen" in changed
+    assert "confirmKeys.forceActiveFocus()" in changed
+
+
+def test_force_confirmation_is_shared_by_panel_and_window():
+    assert "opened: root.forceConfirmOpen" in WIDGET
+    assert "onConfirmed: root.confirmForceSwitch()" in WIDGET
+    assert "onCanceled: root.cancelForceSwitch()" in WIDGET
+    assert "opened: win.host.forceConfirmOpen" in APP
+    assert "onConfirmed: win.host.confirmForceSwitch()" in APP
+    assert "onCanceled: win.host.cancelForceSwitch()" in APP
+
+
 def test_escape_orders_clear_focus_handoff_then_rebuild():
     esc = SERVER_LIST.split("Key_Escape", 1)[1]
     assert esc.index('text = ""') < esc.index("forceActiveFocus")

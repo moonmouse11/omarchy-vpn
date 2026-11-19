@@ -67,6 +67,23 @@ def _validate(result: dict[str, Any]) -> None:
     signals = [event for event in events if event.startswith("signal:")]
     assert any(event.startswith("signal:SIGKILL:") for event in signals), result
     assert all(event.rsplit(":", 1)[1] == str(result["old_pid"]) for event in signals), result
+    assert result["force_action"] == "force-windscribe", result
+    force = result["force_events"]
+    expected = [
+        "ordinary-disconnect-timeout",
+        "force-required",
+        "force-confirmed",
+        "systemctl:stop:windscribe-helper.service",
+        "systemctl:is-active:inactive:windscribe-helper.service",
+        "systemctl:start:windscribe-helper.service",
+        "systemctl:is-active:active:windscribe-helper.service",
+        "status:disconnected-after-reset",
+        "target-connect",
+    ]
+    assert all(event in force for event in expected), result
+    assert [event for event in force if "firewall" in event.lower()] == [], result
+    positions = [force.index(event) for event in expected]
+    assert positions == sorted(positions), result
 
 
 def run_probe(workdir: Path) -> dict[str, object]:
@@ -78,6 +95,7 @@ def run_probe(workdir: Path) -> dict[str, object]:
         state.connection = "disconnected"
         state.old_pid = 0
         state.teardown_started = False
+        state.force_scenario = False
         ready = manager.Event()
         events = manager.list()
         target_connected = manager.Value("b", False)
@@ -90,7 +108,11 @@ def run_probe(workdir: Path) -> dict[str, object]:
 
         def fake_run(args: list[str], timeout: int = 15) -> tuple[int, str]:
             if args == ["status"]:
-                if state.connection != "disconnected" or state.teardown_started:
+                if state.force_scenario and state.connection == "unknown":
+                    return 1, "status unavailable"
+                if state.force_scenario and state.connection == "disconnected":
+                    events.append("status:disconnected-after-reset")
+                elif state.connection != "disconnected" or state.teardown_started:
                     events.append(f"status:{state.connection}")
                 value = str(state.connection).capitalize()
                 return 0, (
@@ -103,6 +125,9 @@ def run_probe(workdir: Path) -> dict[str, object]:
                 ready.set()
                 return 0, "Connecting"
             if args == ["disconnect"]:
+                if state.force_scenario:
+                    events.append("ordinary-disconnect-timeout")
+                    return 1, "timeout"
                 if os.getpid() == state.old_pid:
                     events.append("disconnect:old-owner")
                     time.sleep(5)
@@ -112,6 +137,19 @@ def run_probe(workdir: Path) -> dict[str, object]:
                 state.connection = "disconnected"
                 return 0, "Disconnecting"
             raise AssertionError(args)
+
+        def fake_helper(*args: str, **kwargs) -> tuple[int, str]:
+            assert args == ("windscribe-reset",)
+            events.extend(
+                [
+                    "systemctl:stop:windscribe-helper.service",
+                    "systemctl:is-active:inactive:windscribe-helper.service",
+                    "systemctl:start:windscribe-helper.service",
+                    "systemctl:is-active:active:windscribe-helper.service",
+                ]
+            )
+            state.connection = "disconnected"
+            return 0, ""
 
         original_signal_tree = app_switch._signal_switch_tree
 
@@ -138,7 +176,10 @@ def run_probe(workdir: Path) -> dict[str, object]:
             (config, "load_config", config.Config),
             (windscribe_shim.shutil, "which", lambda command: "/usr/bin/windscribe-cli"),
             (windscribe_shim, "_run", fake_run),
+            (windscribe_shim, "run_helper", fake_helper),
+            (windscribe_shim, "_interfaces", dict),
             (interfaceclaims, "get", lambda provider: None),
+            (interfaceclaims, "release", lambda provider: None),
         ]
         originals = [(obj, name, getattr(obj, name)) for obj, name, _ in patches]
         for obj, name, value in patches:
@@ -156,8 +197,21 @@ def run_probe(workdir: Path) -> dict[str, object]:
 
             target_result = vpn_manager.guarded_connect(target_provider, target_connection)
             old_process.join(3)
+            state.force_scenario = True
+            state.connection = "unknown"
+            target_connected.value = False
+            force_start = len(events)
+            ordinary = vpn_manager.guarded_connect(target_provider, target_connection)
+            events.append("force-required")
+            assert ordinary.action == "force-windscribe"
+            events.append("force-confirmed")
+            forced = vpn_manager.force_connect(target_provider, target_connection)
+
             result: dict[str, object] = {
                 "events": list(events),
+                "force_events": list(events)[force_start:],
+                "force_action": ordinary.action,
+                "force_result": {"success": forced.success, "message": forced.message},
                 "windscribe_state": state.connection,
                 "target_connected": bool(target_connected.value),
                 "target_result": {

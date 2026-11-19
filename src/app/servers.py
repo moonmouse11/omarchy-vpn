@@ -12,8 +12,8 @@ from app.helpers import notify, refresh_bar
 from app.ping import _ping_worker_alive
 from app.provider_lookup import provider_named as _provider_named
 from app.registry import visible_providers
-from app.switch import guarded_connect, guarded_disconnect
-from providers.base import ActionResult, VPNConnection
+from app.switch import force_connect, guarded_connect, guarded_disconnect
+from providers.base import ActionResult, VPNConnection, VPNProvider
 
 
 def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
@@ -23,6 +23,15 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
     if remote is not None and remote is not guarded_connect:
         return remote(provider, connection)
     return guarded_connect(provider, connection)
+
+
+def _force_connect(provider, connection: VPNConnection) -> ActionResult:
+    import vpn_manager as vm  # noqa: PLC0415 — tests patch vpn_manager.force_connect
+
+    remote = getattr(vm, "force_connect", None)
+    if remote is not None and remote is not force_connect:
+        return remote(provider, connection)
+    return force_connect(provider, connection)
 
 
 def _guarded_disconnect(provider, connection: VPNConnection) -> ActionResult:
@@ -391,39 +400,55 @@ def _quick_connect(groups: list[dict]) -> dict:
     }
 
 
-def panel_connect(provider_name: str, name: str, sub_id: str | None = None) -> ActionResult:
-    """--connect from the panel: the same guarded_connect() as the menu
-    (killswitch, IPv6 guard, one tunnel at a time, DNS autotest)."""
+def _panel_target(
+    provider_name: str, name: str, sub_id: str | None
+) -> tuple[VPNProvider, VPNConnection] | ActionResult:
     provider = _provider_named(provider_name)
     if provider is None:
         return ActionResult(False, f"Unknown provider: {provider_name}")
     if provider.name == "Happ":
         sub_name = happmeta.providers().get(sub_id or "", {}).get("name") if sub_id else None
-        conn = VPNConnection(
+        return provider, VPNConnection(
             name=name,
             provider="Happ",
             active=False,
             subscription_id=sub_id or None,
             subscription_name=sub_name,
         )
-    elif provider.name == "INCY" and sub_id:
+    if provider.name == "INCY" and sub_id:
         found = next(
             (c for c in provider.connections() if c.name == name and c.subscription_id == sub_id),
             None,
         )
         if found is None:
             return ActionResult(False, f"{provider_name}: {name} not found in that subscription")
-        conn = found
-    else:
-        found = next((c for c in provider.connections() if c.name == name), None)
-        if found is None:
-            return ActionResult(False, f"{provider_name}: {name} not found")
-        conn = found
-    result = _guarded_connect(provider, conn)
-    if result.success:  # QUICK CONNECT's recent, and the power switch's "last server"
+        return provider, found
+    found = next((c for c in provider.connections() if c.name == name), None)
+    if found is None:
+        return ActionResult(False, f"{provider_name}: {name} not found")
+    return provider, found
+
+
+def _panel_connect(provider_name: str, name: str, sub_id: str | None, connector) -> ActionResult:
+    target = _panel_target(provider_name, name, sub_id)
+    if isinstance(target, ActionResult):
+        return target
+    provider, connection = target
+    result = connector(provider, connection)
+    if result.success:
         remember_sub = sub_id if provider.name in ("Happ", "INCY") else None
         quickconnect.remember(provider.name, name, remember_sub)
     return result
+
+
+def panel_connect(provider_name: str, name: str, sub_id: str | None = None) -> ActionResult:
+    """--connect from the panel: guarded connect plus recent-server memory."""
+    return _panel_connect(provider_name, name, sub_id, _guarded_connect)
+
+
+def panel_force_connect(provider_name: str, name: str, sub_id: str | None = None) -> ActionResult:
+    """Confirmed Windscribe reset followed by the retained validated target."""
+    return _panel_connect(provider_name, name, sub_id, _force_connect)
 
 
 def panel_disconnect(provider_name: str, name: str) -> ActionResult:

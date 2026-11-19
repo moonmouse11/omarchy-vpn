@@ -1,5 +1,6 @@
 """The panel's server list (--servers) and its connect/disconnect actions."""
 
+import json
 import time
 
 import pytest
@@ -362,6 +363,73 @@ def test_panel_cli_connect_disconnect(monkeypatch, argv, expected):
     vpn_manager.main()
     assert seen == [expected]
     assert len(reported) == 1
+
+
+@pytest.mark.parametrize(
+    ("flag", "argv", "expected_call"),
+    [
+        ("--connect-result", ["WireGuard", "home"], ("normal", ("WireGuard", "home"))),
+        (
+            "--connect-result",
+            ["Happ", "DE", "15"],
+            ("normal", ("Happ", "DE", "15")),
+        ),
+        ("--force-connect", ["WireGuard", "home"], ("force", ("WireGuard", "home"))),
+    ],
+)
+def test_connect_result_cli_prints_one_json_object(monkeypatch, capsys, flag, argv, expected_call):
+    seen = []
+    monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", flag, *argv])
+    monkeypatch.setattr(
+        vpn_manager,
+        "panel_connect",
+        lambda *a: (
+            seen.append(("normal", a)) or ActionResult(False, "needs reset", "force-windscribe")
+        ),
+    )
+    monkeypatch.setattr(
+        vpn_manager,
+        "panel_force_connect",
+        lambda *a: seen.append(("force", a)) or ActionResult(True, "connected"),
+        raising=False,
+    )
+    monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
+
+    vpn_manager.main()
+
+    assert seen == [expected_call]
+    assert json.loads(capsys.readouterr().out) == {
+        "success": flag == "--force-connect",
+        "message": "connected" if flag == "--force-connect" else "needs reset",
+        "action": None if flag == "--force-connect" else "force-windscribe",
+    }
+
+
+@pytest.mark.parametrize("flag", ["--connect-result", "--force-connect"])
+def test_connect_result_cli_rejects_wrong_arity(monkeypatch, flag):
+    monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", flag, "Happ"])
+    with pytest.raises(SystemExit):
+        vpn_manager.main()
+
+
+def test_panel_force_connect_uses_validated_target_and_remembers_success(monkeypatch):
+    conn = VPNConnection(name="home", provider="WireGuard", active=False)
+    provider = FakeProvider("WireGuard", [conn])
+    calls = []
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
+    monkeypatch.setattr(
+        vpn_manager,
+        "force_connect",
+        lambda selected, connection: (
+            calls.append((selected, connection)) or ActionResult(True, "up")
+        ),
+    )
+    monkeypatch.setattr(vpn_manager.quickconnect, "remember", lambda *a: calls.append(a))
+
+    result = vpn_manager.panel_force_connect("WireGuard", "home")
+
+    assert result.success
+    assert calls == [(provider, conn), ("WireGuard", "home", None)]
 
 
 def test_panel_cli_connect_rejects_wrong_arity(monkeypatch):

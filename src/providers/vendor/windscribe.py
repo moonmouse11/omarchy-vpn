@@ -22,6 +22,8 @@ TIMEOUT = 15
 # (same async contract as the WARP provider).
 CONNECT_WAIT = 35.0
 DISCONNECT_WAIT = 15.0
+HANDOVER_STATUS_TIMEOUT = 0.5
+HANDOVER_DISCONNECT_TIMEOUT = 2.0
 _CONNECT_POLL = 0.5
 _PROTOCOLS: tuple[str | None, ...] = (None, "stealth", "wstunnel")
 # whole words: 'Unlimited' (a normal Pro status) must never read as a failure
@@ -50,7 +52,7 @@ def _interfaces() -> dict[str, int]:
     return interfaces
 
 
-def _run(args: list[str], timeout: int = TIMEOUT) -> tuple[int, str]:
+def _run(args: list[str], timeout: float = TIMEOUT) -> tuple[int, str]:
     from providers import windscribe  # noqa: PLC0415 — tests patch windscribe.subprocess
 
     try:
@@ -250,6 +252,76 @@ class WindscribeProvider(VPNProvider):
                 protocol=_protocol_label(status),
             )
         ]
+
+    def handover_cleanup(self) -> ActionResult | None:
+        """Bound cleanup for state hidden from active_connections()."""
+        from providers import windscribe  # noqa: PLC0415 — tests patch the shim
+
+        if not self._available():
+            return None
+        code, output = windscribe._run(["status"], timeout=HANDOVER_STATUS_TIMEOUT)
+        if code == 0:
+            status = parse_status(output)
+            if status.recognized and status.connection_state != "error":
+                return None
+        code, output = windscribe._run(["disconnect"], timeout=HANDOVER_DISCONNECT_TIMEOUT)
+        if code == 0:
+            code, output = windscribe._run(["status"], timeout=HANDOVER_STATUS_TIMEOUT)
+            if code == 0:
+                status = parse_status(output)
+                if status.recognized and status.connection_state == "disconnected":
+                    return ActionResult(True, "Disconnected")
+        return ActionResult(
+            False,
+            "Windscribe did not confirm disconnect",
+            "force-windscribe",
+        )
+
+    def force_reset(self) -> ActionResult:
+        """Reset the fixed vendor service, then verify teardown and Firewall ownership."""
+        from providers import windscribe  # noqa: PLC0415 — tests patch the shim
+
+        if not self._available():
+            return ActionResult(
+                False, "windscribe-cli not found — install windscribe-cli-v2-bin (AUR)"
+            )
+        code, output = windscribe._run(["status"])
+        before = parse_status(output) if code == 0 else None
+        before_firewall = (
+            before.firewall
+            if before is not None and before.recognized and before.firewall != "unknown"
+            else None
+        )
+        claimed_interface = interfaceclaims.get(self.name)
+
+        code, output = windscribe.run_helper("windscribe-reset")
+        if code != 0:
+            return ActionResult(False, output or "Could not reset windscribe-helper.service")
+
+        code, output = windscribe._run(["status"])
+        if code != 0:
+            return ActionResult(False, output or "Windscribe status unavailable after reset")
+        after = parse_status(output)
+        if not after.recognized:
+            return ActionResult(False, COMPATIBILITY_MESSAGE)
+        if after.connection_state != "disconnected":
+            state = after.connection_state.replace("_", " ").title()
+            return ActionResult(False, f"Windscribe automatically returned to {state}")
+        if before_firewall is not None and after.firewall != before_firewall:
+            return ActionResult(
+                False,
+                f"Windscribe Firewall changed from {before_firewall} to {after.firewall}",
+            )
+        if claimed_interface is not None and claimed_interface in windscribe._interfaces():
+            return ActionResult(False, "Windscribe interface remains after service reset")
+        with contextlib.suppress(OSError):
+            interfaceclaims.release(self.name)
+        if before_firewall is None:
+            return ActionResult(
+                True,
+                "Windscribe disconnected; previous Firewall state could not be verified",
+            )
+        return ActionResult(True, "Windscribe disconnected; Firewall preserved")
 
     def setup_issue(self) -> dict | None:
         if not self._available():

@@ -53,6 +53,132 @@ def tree(tmp_path, monkeypatch):
 WG = "[Interface]\nPrivateKey = SECRET\nDNS = 10.0.0.1\n\n[Peer]\nEndpoint = 1.2.3.4:51820\n"
 
 
+def _windscribe_systemctl(tmp_path, name="systemctl"):
+    log = tmp_path / f"{name}.log"
+    state = tmp_path / f"{name}.state"
+    script = tmp_path / name
+    script.write_text(
+        "#!/bin/sh\n"
+        'echo "$*" >> "$SYSTEMCTL_LOG"\n'
+        'case "$1" in\n'
+        '  stop) [ "${SYSTEMCTL_FAIL:-}" != stop ] || exit 5\n'
+        '        echo inactive > "$SYSTEMCTL_STATE" ;;\n'
+        '  start) [ "${SYSTEMCTL_FAIL:-}" != start ] || exit 6\n'
+        '         echo active > "$SYSTEMCTL_STATE" ;;\n'
+        "  is-active)\n"
+        '    current=$(cat "$SYSTEMCTL_STATE" 2>/dev/null || echo active)\n'
+        '    if [ "$current" = inactive ]; then\n'
+        '      [ "${SYSTEMCTL_FAIL:-}" != inactive-check ] || exit 0\n'
+        "      exit 3\n"
+        "    fi\n"
+        '    [ "${SYSTEMCTL_FAIL:-}" != active-check ] || exit 4\n'
+        "    exit 0 ;;\n"
+        "  *) exit 9 ;;\n"
+        "esac\n"
+    )
+    script.chmod(0o755)
+    return script, log, state
+
+
+def test_windscribe_reset_targets_only_the_fixed_service(tree, tmp_path):
+    systemctl, log, state = _windscribe_systemctl(tmp_path)
+
+    result = tree(
+        "windscribe-reset",
+        extra_env={
+            "DRY_RUN": "",
+            "SYSTEMCTL": str(systemctl),
+            "SYSTEMCTL_LOG": str(log),
+            "SYSTEMCTL_STATE": str(state),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == [
+        "stop windscribe-helper.service",
+        "is-active windscribe-helper.service",
+        "start windscribe-helper.service",
+        "is-active windscribe-helper.service",
+    ]
+
+
+def test_windscribe_reset_rejects_extra_arguments(tree):
+    assert tree("windscribe-reset", "other.service").returncode != 0
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_calls"),
+    [
+        ("stop", ["stop windscribe-helper.service"]),
+        (
+            "inactive-check",
+            ["stop windscribe-helper.service", "is-active windscribe-helper.service"],
+        ),
+        (
+            "start",
+            [
+                "stop windscribe-helper.service",
+                "is-active windscribe-helper.service",
+                "start windscribe-helper.service",
+            ],
+        ),
+        (
+            "active-check",
+            [
+                "stop windscribe-helper.service",
+                "is-active windscribe-helper.service",
+                "start windscribe-helper.service",
+                "is-active windscribe-helper.service",
+            ],
+        ),
+    ],
+)
+def test_windscribe_reset_propagates_service_failures(tree, tmp_path, failure, expected_calls):
+    systemctl, log, state = _windscribe_systemctl(tmp_path)
+
+    result = tree(
+        "windscribe-reset",
+        extra_env={
+            "DRY_RUN": "",
+            "SYSTEMCTL": str(systemctl),
+            "SYSTEMCTL_LOG": str(log),
+            "SYSTEMCTL_STATE": str(state),
+            "SYSTEMCTL_FAIL": failure,
+        },
+    )
+
+    assert result.returncode != 0
+    assert log.read_text().splitlines() == expected_calls
+
+
+def test_windscribe_reset_ignores_systemctl_override_under_sudo(tree, tmp_path):
+    trusted_dir = tmp_path / "trusted"
+    trusted_dir.mkdir()
+    trusted, log, state = _windscribe_systemctl(trusted_dir)
+    malicious = tmp_path / "malicious"
+    malicious.write_text('#!/bin/sh\ntouch "$MALICIOUS_MARK"\n')
+    malicious.chmod(0o755)
+    marker = tmp_path / "malicious-ran"
+
+    result = tree(
+        "windscribe-reset",
+        extra_env={
+            "SUDO_USER": "someone",
+            "DRY_RUN": "",
+            "PATH": f"{trusted_dir}:/usr/bin:/bin",
+            "SYSTEMCTL": str(malicious),
+            "SYSTEMCTL_LOG": str(log),
+            "SYSTEMCTL_STATE": str(state),
+            "MALICIOUS_MARK": str(marker),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    assert trusted.name == "systemctl"
+    assert log.exists()
+
+
 def test_import_writes_the_config_0600_and_endpoints_never_show_keys(tree):
     assert tree("import", "wg", "home", stdin=WG).returncode == 0
     conf = tree.dirs["wg"] / "home.conf"
@@ -191,9 +317,10 @@ def test_unknown_kind_and_verb_are_refused(tree):
 def test_up_down_autostart_rm_run_fixed_commands(tree):
     tree("import", "wg", "home", stdin=WG)
     up_lines = tree("up", "wg", "home").stdout.strip().splitlines()
-    assert up_lines[-1] == "wg-quick up home"
-    if len(up_lines) == 2:
-        assert "disable_ipv6=0" in up_lines[0]
+    up_index = up_lines.index("wg-quick up home")
+    if any("disable_ipv6=0" in line for line in up_lines):
+        assert "disable_ipv6=0" in up_lines[up_index - 1]
+        assert "disable_ipv6=1" in up_lines[up_index + 1]
     assert tree("down", "awg", "home").stdout == "awg-quick down home\n"
 
 

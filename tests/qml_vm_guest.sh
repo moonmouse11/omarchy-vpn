@@ -68,8 +68,23 @@ import sys
 p = Path(sys.argv[1])
 s = p.read_text()
 anchor = '    function toggle(): void { root.toggle() }'
+handler = '  IpcHandler {\n    target: root.ipcTarget'
+launch = '    connectProc.running = true'
 assert s.count(anchor) == 1
+assert s.count(handler) == 1
+assert s.count(launch) == 1
+s = s.replace(handler, '  IpcHandler {\n    id: auditIpc\n    target: root.ipcTarget')
+s = s.replace(
+    launch,
+    '    if (auditIpc.auditCapture) {\n'
+    '      auditIpc.auditCommands = auditIpc.auditCommands.concat([args])\n'
+    '      return\n'
+    '    }\n'
+    + launch,
+)
 probe = '''
+    property bool auditCapture: false
+    property var auditCommands: []
     function auditSnapshot(): string {
       return JSON.stringify({
         fieldText: root.activeList.filterField.text,
@@ -84,8 +99,26 @@ probe = '''
         panelNames: panelList.model.filter(function(r) { return r.kind === "server" })
           .map(function(r) { return r.server.name }),
         windowNames: appWindow.locations.model.filter(function(r) { return r.kind === "server" })
-          .map(function(r) { return r.server.name })
+          .map(function(r) { return r.server.name }),
+        forceConfirmOpen: root.forceConfirmOpen,
+        forceTarget: root.forceTarget,
+        commands: auditCommands
       })
+    }
+    function auditStartForce(): void {
+      auditCommands = []
+      auditCapture = true
+      root.connectServer("WireGuard", "vm-target", "sub-42")
+      root.connectResult(JSON.stringify({
+        success: false,
+        message: "Windscribe did not confirm disconnect",
+        action: "force-windscribe"
+      }))
+    }
+    function auditResetForce(): void {
+      root.cancelForceSwitch()
+      auditCommands = []
+      auditCapture = false
     }
     function auditSelectWindscribe(): void {
       for (var i = 0; i < root.serverRows.length; i++) {
@@ -122,6 +155,12 @@ export WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE
 snapshot() { omarchy-shell omarchy-vpn auditSnapshot > "$OUT/$1.json"; }
 omarchy-shell omarchy-vpn open
 sleep 2
+omarchy-shell omarchy-vpn auditStartForce
+sleep 1
+snapshot force-panel-open
+wtype -k Escape
+sleep 1
+snapshot force-panel-cancelled
 omarchy-shell omarchy-vpn auditSelectWindscribe
 wtype -k l
 sleep 1
@@ -163,6 +202,13 @@ omarchy-shell omarchy-vpn window
 sleep 1
 snapshot window-filtered
 grim "$OUT/window-filtered.png"
+omarchy-shell omarchy-vpn auditStartForce
+sleep 1
+snapshot force-window-open
+wtype -k Return
+sleep 1
+snapshot force-window-confirmed
+omarchy-shell omarchy-vpn auditResetForce
 # Keep the window visible, then open the panel and apply a different filter.
 # Both real models and both fields must update; neither visible surface may empty.
 omarchy-shell omarchy-vpn open

@@ -264,6 +264,33 @@ def _cancelled(action: str) -> ActionResult:
     return ActionResult(False, "")
 
 
+def force_connect(provider, connection: VPNConnection) -> ActionResult:
+    """Explicit Windscribe service reset and retained-target connect under one lock."""
+    action = f"force connecting to {provider.name}: {connection.name}"
+    if happ_provider.app_connected():
+        return ActionResult(False, HAPP_APP_CONNECTED)
+    if incy_provider.app_connected():
+        return ActionResult(False, INCY_APP_CONNECTED)
+    try:
+        with switch_lock(action):
+            return _force_connect(provider, connection)
+    except SwitchBusy as e:
+        return _busy(e)
+    except SwitchCancelled:
+        return _cancelled(action)
+
+
+def _force_connect(provider, connection: VPNConnection) -> ActionResult:
+    windscribe = next((item for item in _provider_pool() if item.name == "Windscribe"), None)
+    reset = getattr(windscribe, "force_reset", None)
+    if reset is None:
+        return ActionResult(False, "Windscribe provider is unavailable")
+    result = reset()
+    if not result.success:
+        return result
+    return _guarded_connect(provider, connection)
+
+
 def guarded_connect(provider, connection: VPNConnection) -> ActionResult:
     """_guarded_connect() under SWITCH_LOCK — the entry point for every connect."""
     action = f"connecting to {provider.name}: {connection.name}"
@@ -411,9 +438,17 @@ class _ConnectFirewall:
 
 def _disconnect_other_connections(provider, connection: VPNConnection) -> ActionResult | None:
     # Same-provider server replacement belongs to the provider; other tunnels fight over routing.
+    providers = list(_provider_pool())
+    for other in providers:
+        if other.name == provider.name:
+            continue
+        cleanup_fn = getattr(other, "handover_cleanup", None)
+        cleanup = cleanup_fn() if cleanup_fn is not None else None
+        if cleanup is not None and not cleanup.success:
+            return cleanup
     others = [
         c
-        for c in active_connections(providers=list(_provider_pool()))
+        for c in active_connections(providers=providers)
         if not (c.provider == provider.name and c.name == connection.name)
     ]
     if not others:

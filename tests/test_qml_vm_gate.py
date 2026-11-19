@@ -59,6 +59,32 @@ def observations(tmp_path):
             }
         )
     )
+    force_target = {"provider": "WireGuard", "name": "vm-target", "subscription_id": "sub-42"}
+    ordinary = ["--connect-result", "WireGuard", "vm-target", "sub-42"]
+    force = ["--force-connect", "WireGuard", "vm-target", "sub-42"]
+    for name, data in {
+        "force-panel-open": {
+            "forceConfirmOpen": True,
+            "forceTarget": force_target,
+            "commands": [ordinary],
+        },
+        "force-panel-cancelled": {
+            "forceConfirmOpen": False,
+            "forceTarget": None,
+            "commands": [ordinary],
+        },
+        "force-window-open": {
+            "forceConfirmOpen": True,
+            "forceTarget": force_target,
+            "commands": [ordinary],
+        },
+        "force-window-confirmed": {
+            "forceConfirmOpen": False,
+            "forceTarget": force_target,
+            "commands": [ordinary, force],
+        },
+    }.items():
+        (tmp_path / f"{name}.json").write_text(json.dumps(data))
     (tmp_path / "actions.log").write_text("")
     (tmp_path / "shell-journal.txt").write_text("clean runtime\n")
     (tmp_path / "windscribe-handover.json").write_text(
@@ -90,6 +116,37 @@ def test_guest_captures_expanded_folded_and_scrolled_geometry():
 
 def test_runtime_verifier_accepts_full_filter_on_both_surfaces(observations):
     _verifier()(observations)
+
+
+def test_guest_exercises_force_cancel_and_confirm_without_real_actions():
+    assert "auditStartForce" in GUEST_SCRIPT
+    assert "snapshot force-panel-open" in GUEST_SCRIPT
+    assert "snapshot force-panel-cancelled" in GUEST_SCRIPT
+    assert "snapshot force-window-open" in GUEST_SCRIPT
+    assert "snapshot force-window-confirmed" in GUEST_SCRIPT
+    assert "wtype -k Escape" in GUEST_SCRIPT
+    assert "wtype -k Return" in GUEST_SCRIPT
+
+
+@pytest.mark.parametrize(
+    ("file_name", "field", "bad_value"),
+    [
+        ("force-panel-cancelled.json", "forceConfirmOpen", True),
+        ("force-panel-cancelled.json", "forceTarget", {"provider": "WireGuard"}),
+        ("force-window-confirmed.json", "commands", [["--connect-result"]]),
+        ("force-window-confirmed.json", "commands", [["--force-connect", "wrong"]]),
+    ],
+)
+def test_runtime_verifier_rejects_broken_force_confirmation(
+    observations, file_name, field, bad_value
+):
+    path = observations / file_name
+    data = json.loads(path.read_text())
+    data[field] = bad_value
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(ValueError):
+        _verifier()(observations)
 
 
 @pytest.mark.parametrize("damage", ["truncated", "extra-row", "wrong-row", "action", "qml-error"])

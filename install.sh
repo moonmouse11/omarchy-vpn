@@ -104,6 +104,7 @@ SUDOERS_FILE="/etc/sudoers.d/vpn-manager"
 # Three things only, each with a fixed command surface:
 #   omarchy-vpn-helper (scripts/, root-owned): WireGuard/AmneziaWG/OpenVPN up/down,
 #     import, delete, autostart, endpoints — profile names only, never paths;
+#     one fixed Windscribe helper-service reset (no service/PID argument);
 #     incy-network — fixed mode + session token, root-owned Python -I entry;
 #     it refuses imports that could run commands as root (WireGuard PostUp/…,
 #     OpenVPN directives off its allowlist: up/route-up/plugin/…);

@@ -304,6 +304,21 @@ def test_update_subscriptions_skips_fresh_cache(tmp_path, monkeypatch):
     assert fetched == []
 
 
+def test_invalid_cache_record_is_never_fresh_or_returned_as_servers(tmp_path, monkeypatch):
+    from incy import subscriptions as incy_subs
+
+    _incy_db_with_sub(tmp_path)
+    monkeypatch.setattr(incy_mod, "INCY_DB", tmp_path / "incy.db")
+    _patch_sub_cache(monkeypatch, tmp_path)
+    path = incy_subs.cache_path("sub1")
+    path.write_text(
+        json.dumps({"at": time.time(), "url": "https://sub.example/v", "servers": "broken"})
+    )
+
+    assert incy_subs._servers_from_cache("sub1") == []
+    assert incy_subs._sub_cache_fresh("sub1") is False
+
+
 def test_update_subscriptions_force_refreshes(tmp_path, monkeypatch):
     from incy import subscriptions as incy_subs
 
@@ -573,3 +588,23 @@ def test_panel_connect_incy_needs_matching_subscription(monkeypatch):
     assert vpn_manager.panel_connect("INCY", "🇩🇪 DE", "sub1").success
     assert calls == [("INCY", "sub1")]
     assert not vpn_manager.panel_connect("INCY", "🇩🇪 DE", "wrong-sub").success
+
+
+def test_update_subscriptions_writes_marker_atomically(tmp_path, monkeypatch):
+    """House rule: every JSON state write goes through fsutil.write_json_atomic."""
+    from incy import subscriptions as incy_subs
+
+    _incy_db_with_sub(tmp_path)
+    monkeypatch.setattr(incy_mod, "INCY_DB", tmp_path / "incy.db")
+    _patch_sub_cache(monkeypatch, tmp_path)
+    monkeypatch.setattr(incy_subs, "fetch_servers", lambda sid, force=False: ([], None))
+    calls = []
+    real = incy_subs.fsutil.write_json_atomic
+    monkeypatch.setattr(
+        incy_subs.fsutil,
+        "write_json_atomic",
+        lambda *a, **kw: calls.append(a) or real(*a, **kw),
+    )
+    incy_subs.update_subscriptions(force=True)
+    assert len(calls) == 2  # start marker + result marker
+    assert all(c[0] == incy_subs.INCY_REFRESH for c in calls)

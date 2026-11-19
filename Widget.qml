@@ -87,6 +87,11 @@ Panel {
   property string profileMode: ""
   property var profileTarget: null
   property bool deleteConfirmOpen: false
+  property bool forceConfirmOpen: false
+  property var forceTarget: null
+  property string forceMessage: ""
+  onForceConfirmOpenChanged: if (forceConfirmOpen && opened)
+    Qt.callLater(function() { forcePanelKeys.forceActiveFocus() })
   // the window's check card (CheckCard.qml); kept here, so a check outlives a
   // closed window. phase: choose (speed) | running | done | error
   property bool checkOpen: false
@@ -230,16 +235,20 @@ Panel {
       }
       if (q !== "" && mine.length === 0) continue
       var key = "provider:" + prov.name
-      // a protocol with only notice groups (rejected subscriptions, no headers) opens too
-      var open = mine.length > 0 && isOpen(expanded, key, prov.active, q)
+      var hasSetup = false
+      for (var s2 = 0; s2 < mine.length; s2++) if (mine[s2].group.setup) hasSetup = true
+      // a protocol with only notice groups (rejected subscriptions, no headers,
+      // setup needed) opens too
+      var open = mine.length > 0 && isOpen(expanded, key, prov.active || hasSetup, q)
       rows.push({ kind: "provider", provider: prov, key: key, open: open, count: count, depth: 0 })
       if (!open) continue
       // a subscription is a level of its own; WireGuard's one group is the protocol itself
       var nested = prov.name === "Happ" || prov.name === "INCY"
       for (var n = 0; n < mine.length; n++) {
         var mg = mine[n].group
+        var hdr = nested || !!mg.setup
         pushGroup(rows, mg, mine[n].servers,
-          !nested || isOpen(expanded, mg.id, mg.active, q), 1, nested)
+          !hdr || isOpen(expanded, mg.id, mg.active, q), 1, hdr)
       }
     }
     return rows
@@ -349,6 +358,8 @@ Panel {
   function pingRow(row) {
     if (!row || row.kind === "provider") return
     var g = row.group
+    if (g.pingable !== true || (row.server && row.server.pingable !== true)) return
+    if (row.kind === "group" && g.setup) return  // a setup notice has nothing to ping
     var args = ["--ping-now"]
     var key
     if (row.kind === "group") {
@@ -379,6 +390,7 @@ Panel {
 
   function activateServerRow(row) {
     if (!row) return
+    if (row.kind === "group" && row.group.setup) { runProviderSetup(row.group.setup); return }
     if (row.kind === "group" || row.kind === "provider") { setExpanded(rowOpenKey(row), !row.open); return }
     var g = row.group, s = row.server
     pendingKey = rowKey(g, s)
@@ -389,12 +401,65 @@ Panel {
     connectServer(g.provider, s.name, g.subscription_id)
   }
 
-  // the one place --connect's args are built (rows, chips, the switch)
+  // the one place connect args are built (rows, chips, the switch)
   function connectServer(provider, name, subId) {
     busy = true
-    var args = ["--connect", String(provider), String(name)]
-    if (subId) args.push(String(subId))
-    runArgs(args)
+    forceConfirmOpen = false
+    forceMessage = ""
+    forceTarget = {
+      provider: String(provider),
+      name: String(name),
+      subscription_id: subId ? String(subId) : ""
+    }
+    // Preserve newest-click-wins while keeping one result-aware process.
+    if (connectProc.running || connectProc.replacePending) {
+      connectProc.replacePending = true
+      connectProc.ignoreResult = true
+      if (connectProc.running) connectProc.running = false
+      return
+    }
+    startConnect("--connect-result")
+  }
+
+  function startConnect(flag) {
+    if (!forceTarget) return
+    var args = [flag, forceTarget.provider, forceTarget.name]
+    if (forceTarget.subscription_id) args.push(forceTarget.subscription_id)
+    connectProc.resultSeen = false
+    connectProc.ignoreResult = false
+    connectProc.command = ["python3", root.backend].concat(args)
+    connectProc.running = true
+  }
+
+  function connectResult(text) {
+    var result = null
+    try { result = JSON.parse(String(text || "")) } catch (e) {}
+    connectProc.resultSeen = true
+    if (result && result.action === "force-windscribe" && forceTarget) {
+      busy = false
+      forceMessage = String(result.message || "Windscribe did not stop")
+      forceConfirmOpen = true
+      return
+    }
+    busy = false
+    forceConfirmOpen = false
+    forceMessage = ""
+    forceTarget = null
+  }
+
+  function confirmForceSwitch() {
+    if (!forceTarget || connectProc.running) return
+    forceConfirmOpen = false
+    busy = true
+    startConnect("--force-connect")
+  }
+
+  function cancelForceSwitch() {
+    if (connectProc.running) return
+    forceConfirmOpen = false
+    forceMessage = ""
+    forceTarget = null
+    busy = false
   }
 
   function moveServerCursor(dy) {
@@ -497,6 +562,8 @@ Panel {
 
   function pingProvider(name) {
     if (!name) return
+    for (var i = 0; i < serverProviders.length; i++)
+      if (serverProviders[i].name === name && serverProviders[i].pingable !== true) return
     runArgs(["--ping-now", "group", "provider:" + name])
     pingSettle.restart()
   }
@@ -506,6 +573,28 @@ Panel {
     close()
     Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation",
       Util.shellQuote(root.pluginDir + "/install.sh")])
+  }
+
+  // a provider's setup row (hint + command from server_list): the command runs
+  // in a floating terminal, sudo/logins ask there; the watchdog below reloads
+  // the list so a finished login shows its servers without a manual reload
+  function runProviderSetup(command) {
+    close()
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation",
+      String(command)])
+    setupWatch.left = 20
+    setupWatch.start()
+  }
+
+  Timer {
+    id: setupWatch
+    interval: 3000
+    repeat: true
+    property int left: 0
+    onTriggered: {
+      root.loadServers()
+      if (--left <= 0) stop()
+    }
   }
 
   function openWindow() {
@@ -681,7 +770,7 @@ Panel {
     loadServers()
     serverCursor = -1
     serverFilter = ""
-    if (panelFlick) panelFlick.contentY = 0
+    panelList.positionViewAtBeginning()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
   onServerRowsChanged: {
@@ -699,6 +788,27 @@ Panel {
   CheckWindow {
     id: checkWindow
     host: root
+  }
+
+  Process {
+    id: connectProc
+    property bool resultSeen: false
+    property bool ignoreResult: false
+    property bool replacePending: false
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (!connectProc.ignoreResult) root.connectResult(text)
+    }
+    onExited: {
+      if (replacePending) {
+        replacePending = false
+        ignoreResult = false
+        Qt.callLater(function() { root.startConnect("--connect-result") })
+        return
+      }
+      if (!resultSeen && !ignoreResult) root.connectResult("")
+      ignoreResult = false
+    }
   }
 
   Process {
@@ -832,13 +942,13 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(400))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(680))
+    contentHeight: panel.fittedContentHeight(panelList.contentHeight, Style.space(680))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
       // typing in the filter must not drive the cursor (j/k/h/l are moves)
-      blocked: panelList.filterFocused
+      blocked: panelList.filterFocused || root.forceConfirmOpen
       onMoveRequested: function(dx, dy) {
         if (dy !== 0) root.moveServerCursor(dy)
         else root.openCursorGroup(dx > 0)
@@ -859,25 +969,52 @@ Panel {
           root.loadServers()
         }
         else if (k === "f") root.cycleLabelFormat()
-        else if (k === "p" && root.serverCursor >= 0) root.pingRow(root.serverRows[root.serverCursor])
+        else if (k === "p") root.run("--ping-now")
         else if (k === "s" && root.serverCursor >= 0) root.toggleFavourite(root.serverRows[root.serverCursor])
-        else if (k === "/") panelList.filterField.forceActiveFocus()
+        else if (k === "/") panelList.focusFilter()
       }
 
-      Flickable {
-        id: panelFlick
+      Item {
+        id: forcePanelKeys
         anchors.fill: parent
-        contentWidth: width
-        contentHeight: column.implicitHeight
-        clip: true
-        boundsBehavior: Flickable.StopAtBounds
-        flickableDirection: Flickable.VerticalFlick
-        interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        z: 100
+        visible: root.forceConfirmOpen
+        Keys.onPressed: function(event) {
+          if (forcePanelConfirm.handleKey(event)) event.accepted = true
+        }
 
-      Column {
-        id: column
-        width: panelFlick.width
+        ConfirmDialog {
+          id: forcePanelConfirm
+          anchors.fill: parent
+          opened: root.forceConfirmOpen
+          message: root.forceTarget
+            ? root.forceMessage + "\nRestart windscribe-helper.service and connect "
+              + root.forceTarget.name + "?"
+            : ""
+          confirmText: "Force switch"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onConfirmed: root.confirmForceSwitch()
+          onCanceled: root.cancelForceSwitch()
+        }
+      }
+
+      ServerList {
+        id: panelList
+        anchors.fill: parent
+        host: root
+        active: root.opened
+        keyTarget: keyCatcher
+        preamble: panelHead
+        tail: panelTail
+      }
+
+      Component {
+        id: panelHead
+
+        Column {
+        width: parent.width
+        height: implicitHeight  // lets the Loader in ServerList track us
         spacing: Style.space(12)
 
         Column {
@@ -928,13 +1065,16 @@ Panel {
 
         PanelSeparator { foreground: root.foreground }
 
-        ServerList {
-          id: panelList
-          width: parent.width
-          host: root
-          flick: panelFlick
-          keyTarget: keyCatcher
         }
+      }
+
+      Component {
+        id: panelTail
+
+        Column {
+        width: parent.width
+        height: implicitHeight  // lets the Loader in ServerList track us
+        spacing: Style.space(12)
 
         PanelSeparator { foreground: root.foreground }
 

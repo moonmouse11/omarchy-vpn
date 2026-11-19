@@ -1,0 +1,80 @@
+name: warp-e2e
+
+# Manual end-to-end check of the Cloudflare WARP provider from outside RU
+# (WARP endpoints are blocked from Russia — a local live test is impossible).
+# Runs the REAL provider code on a GitHub runner: row in --servers, connect,
+# exit IP is Cloudflare's, ping through the tunnel, disconnect.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  warp:
+    # pinned like python.yml: ubuntu-latest is migrating 24.04 → 26.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup uv + Python 3.14 (the backend's syntax needs it)
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.12.23"
+          python-version: "3.14"
+          activate-environment: true
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --locked --no-build
+
+      - name: Install cloudflare-warp
+        run: |
+          curl -fsSL --proto "=https" --tlsv1.2 https://pkg.cloudflareclient.com/pubkey.gpg \
+            | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ noble main" \
+            | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update -qq && sudo apt-get install -y -qq cloudflare-warp
+
+      - name: Start the daemon and register (free, anonymous)
+        run: |
+          sudo systemctl start warp-svc
+          warp-cli registration new
+          warp-cli status
+
+      - name: Assert the row exists
+        run: |
+          uv run --locked --no-build python src/vpn_manager.py --servers > servers.json
+          python3 - <<'EOF'
+          import json
+          d = json.load(open("servers.json"))
+          rows = [s for g in d["groups"] if g["provider"] == "Cloudflare WARP" for s in g["servers"]]
+          assert rows and not rows[0]["active"], d["groups"]
+          print("WARP row present, disconnected:", rows[0]["name"])
+          EOF
+
+      - name: Connect through the provider (async-wait path)
+        run: uv run --locked --no-build python src/vpn_manager.py --connect "Cloudflare WARP" "Cloudflare WARP"
+
+      - name: Assert tunnel up, exit IP is Cloudflare, ping flows
+        run: |
+          uv run --locked --no-build python src/vpn_manager.py --status > status.json
+          python3 - <<'EOF'
+          import json
+          d = json.load(open("status.json"))
+          assert "vpn-connected" in d["class"], d["text"]
+          print("status:", d["text"])
+          EOF
+          ip link show CloudflareWARP
+          curl -fsS -m 15 https://cloudflare.com/cdn-cgi/trace | tee trace.txt
+          grep -q "warp=on" trace.txt
+          echo "--- ping through the tunnel (ICMP via WARP-assigned interface) ---"
+          ping -c 3 -I CloudflareWARP 1.1.1.1
+
+      - name: Disconnect through the provider
+        if: always()
+        run: |
+          uv run --locked --no-build python src/vpn_manager.py --disconnect "Cloudflare WARP" "Cloudflare WARP"
+          warp-cli status

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 import config
@@ -132,3 +134,115 @@ def test_ipv6_guard_defaults_on_and_round_trips(tmp_path, monkeypatch):
     assert load_config().ipv6_guard is True
     save_config(Config(ipv6_guard=False))
     assert load_config().ipv6_guard is False
+
+
+@pytest.mark.parametrize("invalid", ["false", 0, [], {}])
+def test_strict_bool_settings_ignore_non_boolean_values(tmp_path, monkeypatch, invalid):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "killswitch_lockdown": invalid,
+                "dns_autotest": invalid,
+                "panel_key_hints": invalid,
+                "ipv6_guard": invalid,
+            }
+        )
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", path)
+
+    loaded = load_config()
+
+    assert loaded.killswitch_lockdown is True
+    assert loaded.dns_autotest is False
+    assert loaded.panel_key_hints is True
+    assert loaded.ipv6_guard is True
+
+
+def test_strict_bool_settings_accept_real_booleans(tmp_path, monkeypatch):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "killswitch_lockdown": False,
+                "dns_autotest": True,
+                "panel_key_hints": False,
+                "ipv6_guard": False,
+            }
+        )
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", path)
+
+    loaded = load_config()
+
+    assert loaded.killswitch_lockdown is False
+    assert loaded.dns_autotest is True
+    assert loaded.panel_key_hints is False
+    assert loaded.ipv6_guard is False
+
+
+def test_boolean_maps_omit_invalid_values(tmp_path, monkeypatch):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "providers": {"openvpn": "false", "windscribe": False, "warp": 1},
+                "tools_visible": {"dns_leak_test": "false", "ip_info": True, "speed": 0},
+            }
+        )
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", path)
+
+    loaded = load_config()
+
+    assert loaded.providers == {"windscribe": False}
+    assert loaded.tools_visible == {"ip_info": True}
+
+
+def test_windscribe_preferences_default_for_old_config(tmp_path, monkeypatch):
+    path = tmp_path / "config.json"
+    path.write_text('{"killswitch_mode": "happ"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", path)
+
+    loaded = load_config()
+
+    assert loaded.windscribe_protocol == "automatic"
+    assert loaded.windscribe_port == ""
+
+
+def test_windscribe_preferences_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+
+    save_config(Config(windscribe_protocol="stealth", windscribe_port="443"))
+
+    loaded = load_config()
+    assert (loaded.windscribe_protocol, loaded.windscribe_port) == ("stealth", "443")
+
+
+def test_windscribe_port_is_canonicalized(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+
+    save_config(Config(windscribe_protocol="udp", windscribe_port="0443"))
+
+    assert load_config().windscribe_port == "443"
+
+
+@pytest.mark.parametrize(
+    ("windscribe", "expected"),
+    [
+        ({"protocol": "bogus", "port": "443"}, ("automatic", "")),
+        ({"protocol": "udp", "port": "0"}, ("udp", "")),
+        ({"protocol": "udp", "port": "65536"}, ("udp", "")),
+        ({"protocol": "udp", "port": 443}, ("udp", "")),
+        ({"protocol": "udp", "port": "٤٤٣"}, ("udp", "")),
+        ("not an object", ("automatic", "")),
+    ],
+)
+def test_windscribe_preferences_reject_invalid_values(tmp_path, monkeypatch, windscribe, expected):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"windscribe": windscribe}))
+    monkeypatch.setattr(config, "CONFIG_PATH", path)
+
+    loaded = load_config()
+
+    assert (loaded.windscribe_protocol, loaded.windscribe_port) == expected

@@ -39,6 +39,7 @@ from happ.subscriptions import (
     _parse_providers,
     _subs_refresh_in_progress,
 )
+from subscription.fetch import _open_https
 
 # Tests patch these on happmeta; ping.cache reads them back via _happmeta().
 PING_CACHE = Path.home() / ".cache/vpn-manager/happ-ping.json"

@@ -1,4 +1,5 @@
 from providers import wireguard
+from providers.common import interfaceclaims
 from providers.wireguard import AmneziaWGProvider, WireGuardProvider
 
 
@@ -19,6 +20,15 @@ def test_runtime_endpoint_parses_wg_show(monkeypatch):
     monkeypatch.setattr(wireguard, "_run", fake_run)
     monkeypatch.setattr(wireguard.shutil, "which", lambda b: "/usr/bin/wg" if b == "wg" else None)
     assert wireguard._runtime_endpoint("tun0", awg=False) == ("45.140.17.3", 4098)
+
+
+def test_only_exact_claimed_interface_is_not_listed_as_wireguard_orphan(tmp_path, monkeypatch):
+    monkeypatch.setattr(wireguard, "_active_interfaces", lambda *_: ["utun420", "utun421"])
+    monkeypatch.setattr(interfaceclaims, "claimed_by_others", lambda _: {"utun420"})
+    provider = WireGuardProvider()
+    provider.config_dir = tmp_path / "missing"
+    provider.other_config_dirs = ()
+    assert [c.name for c in provider.connections()] == ["utun421"]
 
 
 def test_orphan_ping_target_uses_runtime_endpoint(tmp_path, monkeypatch):
@@ -305,3 +315,19 @@ def test_amnezia_delete_disables_autostart_before_rm(tmp_path, monkeypatch):
     result = provider.delete_config(VPNConnection(name="nl", provider="AmneziaWG", active=False))
     assert result.success
     assert calls == [("autostart", "awg", "nl", "off"), ("rm", "awg", "nl")]
+
+
+def test_run_passes_a_timeout_to_subprocess(monkeypatch):
+    """A hung local command must not freeze the 3 s --status tick."""
+    import providers.kernel.wireguard as impl
+
+    captured = {}
+
+    def fake_run(cmd, **kw):
+        captured.update(kw)
+        raise impl.subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get("timeout", 0))
+
+    monkeypatch.setattr(impl.subprocess, "run", fake_run)
+    code, _out = impl._run(["ip", "-o", "link", "show"])
+    assert code == 1
+    assert "timeout" in captured

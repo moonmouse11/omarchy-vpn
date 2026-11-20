@@ -27,6 +27,47 @@ def test_server_list_scrolls_and_resets_by_index():
     assert "function resetPointer" in SERVER_LIST
 
 
+def test_model_rebuilds_preserve_every_visible_viewport():
+    assert "function rememberViewport" in SERVER_LIST
+    assert "function restoreViewport" in SERVER_LIST
+    assert "host.rowIdentity" in SERVER_LIST
+    assert "function rememberViewports" in WIDGET
+    remembered = WIDGET.split("function rememberViewports", 1)[1].split("function setExpanded", 1)[
+        0
+    ]
+    assert "panelList.rememberViewport" in remembered
+    assert "appWindow.locations.rememberViewport" in remembered
+
+    expanded = WIDGET.split("function setExpanded", 1)[1].split("function rowOpenKey", 1)[0]
+    assert "rememberViewports" in expanded
+    assert expanded.index("rememberViewports") < expanded.index("expandedGroups = next")
+
+    loaded = WIDGET.split("id: serversProc", 1)[1].split("id: pingSettle", 1)[0]
+    assert "root.rememberViewports()" in loaded
+    assert loaded.index("root.rememberViewports()") < loaded.index("root.serverGroups =")
+
+    changed = WIDGET.split("onServerRowsChanged:", 1)[1].split("AppWindow {", 1)[0]
+    assert "panelList.restoreViewport()" in changed
+    assert "appWindow.locations.restoreViewport()" in changed
+
+
+def test_fold_restore_is_anchored_to_the_clicked_header():
+    assert "function rowIdentity" in WIDGET
+    assert "function rowIndex" in WIDGET
+    assert "setExpanded(rowOpenKey(row), !row.open, row)" in WIDGET
+    assert "setExpanded(rowOpenKey(row), open, row)" in WIDGET
+
+
+def test_inactive_list_cannot_reuse_a_stale_viewport_anchor():
+    remember = SERVER_LIST.split("function rememberViewport", 1)[1].split(
+        "function boundedContentY", 1
+    )[0]
+    assert "savedViewport = null" in remember
+    restore = SERVER_LIST.split("function restoreViewport", 1)[1].split("// Hover moves", 1)[0]
+    assert "if (!active)" in restore
+    assert "savedViewport = null" in restore
+
+
 def test_server_list_exposes_preamble_tail_filter_and_gate():
     assert "property Component preamble" in SERVER_LIST
     assert "property Component tail" in SERVER_LIST

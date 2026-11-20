@@ -59,6 +59,34 @@ def observations(tmp_path):
             }
         )
     )
+    viewport = {
+        "cursorKey": "provider\nWindscribe",
+        "cursorOffset": 120.0,
+        "topKey": "provider\nWindscribe",
+        "topOffset": 120.0,
+        "activeContentY": 240.0,
+    }
+    for name in ("windscribe-selected", "expanded", "folded", "reexpanded"):
+        (tmp_path / f"{name}.json").write_text(json.dumps(viewport))
+    scrolled = {
+        "cursorKey": "server\nwindscribe\nVM Region - City 035 - Server 035",
+        "cursorOffset": 180.0,
+        "topKey": "server\nwindscribe\nVM Region - City 030 - Server 030",
+        "topOffset": -4.0,
+        "activeContentY": 1400.0,
+    }
+    for name in ("panel-scrolled-before-refresh", "panel-scrolled-after-refresh"):
+        (tmp_path / f"{name}.json").write_text(json.dumps(scrolled))
+    both_scrolled = {
+        "panelContentY": 800.0,
+        "panelTopKey": "server\nwindscribe\nVM Region - City 020 - Server 020",
+        "panelTopOffset": 0.0,
+        "windowContentY": 1600.0,
+        "windowTopKey": "server\nwindscribe\nVM Region - City 050 - Server 050",
+        "windowTopOffset": 0.0,
+    }
+    for name in ("both-scrolled-before-refresh", "both-scrolled-after-refresh"):
+        (tmp_path / f"{name}.json").write_text(json.dumps(both_scrolled))
     force_target = {"provider": "WireGuard", "name": "vm-target", "subscription_id": "sub-42"}
     ordinary = ["--connect-result", "WireGuard", "vm-target", "sub-42"]
     force = ["--force-connect", "WireGuard", "vm-target", "sub-42"]
@@ -112,10 +140,38 @@ def test_guest_captures_expanded_folded_and_scrolled_geometry():
     assert "assert len(x['serverNames']) == 202" in GUEST_SCRIPT
     for image in ("panel-expanded.png", "panel-folded.png", "panel-scrolled.png"):
         assert f'grim "$OUT/{image}"' in GUEST_SCRIPT
+    for snapshot in (
+        "windscribe-selected",
+        "panel-scrolled-before-refresh",
+        "panel-scrolled-after-refresh",
+        "both-scrolled-before-refresh",
+        "both-scrolled-after-refresh",
+    ):
+        assert f"snapshot {snapshot}" in GUEST_SCRIPT
 
 
 def test_runtime_verifier_accepts_full_filter_on_both_surfaces(observations):
     _verifier()(observations)
+
+
+@pytest.mark.parametrize(
+    ("file_name", "content_field", "key_field"),
+    [
+        ("panel-scrolled-after-refresh.json", "activeContentY", "topKey"),
+        ("both-scrolled-after-refresh.json", "windowContentY", "windowTopKey"),
+    ],
+)
+def test_runtime_verifier_rejects_a_model_rebuild_viewport_jump(
+    observations, file_name, content_field, key_field
+):
+    path = observations / file_name
+    data = json.loads(path.read_text())
+    data[content_field] = 0
+    data[key_field] = "provider\nWindscribe"
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(ValueError):
+        _verifier()(observations)
 
 
 def test_guest_exercises_force_cancel_and_confirm_without_real_actions():

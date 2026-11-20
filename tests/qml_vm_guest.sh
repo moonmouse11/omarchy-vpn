@@ -85,7 +85,22 @@ s = s.replace(
 probe = '''
     property bool auditCapture: false
     property var auditCommands: []
+    function auditTopRow(list): var {
+      var best = null
+      for (var i = 0; i < list.count; i++) {
+        var item = list.itemAtIndex(i)
+        if (!item || item.y + item.height <= list.contentY || item.y >= list.contentY + list.height)
+          continue
+        if (!best || item.y < best.y)
+          best = { key: root.rowIdentity(root.serverRows[i]), offset: item.y - list.contentY, y: item.y }
+      }
+      return best || { key: "", offset: 0, y: 0 }
+    }
     function auditSnapshot(): string {
+      var top = auditTopRow(root.activeList)
+      var panelTop = auditTopRow(panelList)
+      var windowTop = auditTopRow(appWindow.locations)
+      var cursorItem = root.activeList.itemAtIndex(root.serverCursor)
       return JSON.stringify({
         fieldText: root.activeList.filterField.text,
         appliedFilter: root.serverFilter,
@@ -102,6 +117,17 @@ probe = '''
           .map(function(r) { return r.server.name }),
         forceConfirmOpen: root.forceConfirmOpen,
         forceTarget: root.forceTarget,
+        activeContentY: root.activeList.contentY,
+        topKey: top.key,
+        topOffset: top.offset,
+        cursorKey: root.serverCursor >= 0 ? root.rowIdentity(root.serverRows[root.serverCursor]) : "",
+        cursorOffset: cursorItem ? cursorItem.y - root.activeList.contentY : null,
+        panelContentY: panelList.contentY,
+        panelTopKey: panelTop.key,
+        panelTopOffset: panelTop.offset,
+        windowContentY: appWindow.locations.contentY,
+        windowTopKey: windowTop.key,
+        windowTopOffset: windowTop.offset,
         commands: auditCommands
       })
     }
@@ -125,9 +151,20 @@ probe = '''
         var r = root.serverRows[i]
         if (r.kind === "provider" && r.provider.name === "Windscribe") {
           root.serverCursor = i
+          root.activeList.scrollToRow(i)
           return
         }
       }
+    }
+    function auditPrepareBothViewports(): void {
+      root.serverFilter = ""
+      root.setExpanded("provider:Windscribe", true, null)
+      Qt.callLater(function() {
+        Qt.callLater(function() {
+          panelList.positionViewAtIndex(12, ListView.Beginning)
+          appWindow.locations.positionViewAtIndex(40, ListView.Beginning)
+        })
+      })
     }
 '''
 p.write_text(s.replace(anchor, anchor + probe))
@@ -162,6 +199,8 @@ wtype -k Escape
 sleep 1
 snapshot force-panel-cancelled
 omarchy-shell omarchy-vpn auditSelectWindscribe
+sleep 1
+snapshot windscribe-selected
 wtype -k l
 sleep 1
 snapshot expanded
@@ -190,7 +229,12 @@ x = json.load(open(sys.argv[1]))
 assert len(x['serverNames']) == 202, x
 PY
 for _ in $(seq 1 35); do wtype -k j; done
+sleep 1
+snapshot panel-scrolled-before-refresh
 grim "$OUT/panel-scrolled.png"
+omarchy-shell omarchy-vpn refresh
+sleep 2
+snapshot panel-scrolled-after-refresh
 wtype '/'
 wtype -d 50 'City 200'
 snapshot typed-unapplied
@@ -219,6 +263,12 @@ wtype -k Return
 sleep 1
 snapshot both-filtered
 grim "$OUT/both-filtered.png"
+omarchy-shell omarchy-vpn auditPrepareBothViewports
+sleep 1
+snapshot both-scrolled-before-refresh
+omarchy-shell omarchy-vpn refresh
+sleep 2
+snapshot both-scrolled-after-refresh
 omarchy-shell omarchy-vpn close
 wtype -k Escape
 journalctl --user --since "$start" --no-pager > "$OUT/shell-journal.txt"

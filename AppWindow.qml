@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import Quickshell
 import qs.Commons
 import qs.Ui
@@ -45,6 +44,13 @@ FloatingWindow {
       if (win.host.deleteConfirmOpen) confirmKeys.forceActiveFocus()
       else if (win.host.profileMode !== "") keyCatcher.forceActiveFocus()
     }
+    function onForceConfirmOpenChanged() {
+      if (win.host.forceConfirmOpen) forceConfirmKeys.forceActiveFocus()
+      else if (win.host.deleteConfirmOpen) confirmKeys.forceActiveFocus()
+      else if (win.host.checkOpen) checkCard.focusKeys()
+      else if (win.host.profileMode === "import") profileBar.focusInput()
+      else keyCatcher.forceActiveFocus()
+    }
   }
 
   // `i`: the cursor's protocol (its own row, or the one of the server/group
@@ -65,7 +71,7 @@ FloatingWindow {
     anchors.margins: Style.space(20)
     // typing in the filter must not drive the cursor (j/k/h/l are moves)
     blocked: locations.filterFocused || profileBar.inputFocused || win.host.deleteConfirmOpen
-      || win.host.checkOpen
+      || win.host.forceConfirmOpen || win.host.checkOpen
     onMoveRequested: function(dx, dy) {
       if (dy !== 0) win.host.moveServerCursor(dy)
       else win.host.openCursorGroup(dx > 0)
@@ -88,8 +94,8 @@ FloatingWindow {
         win.host.refresh()
         win.host.loadServers()
       }
-      else if (k === "p" && win.host.serverCursor >= 0) win.host.pingRow(win.host.serverRows[win.host.serverCursor])
-      else if (k === "/") locations.filterField.forceActiveFocus()
+      else if (k === "p") win.host.run("--ping-now")
+      else if (k === "/") locations.focusFilter()
       else if (k === "s") win.host.toggleFavourite(win.cursorRow())
       else if (k === "i") win.host.startImport(win.importTarget())
       else if (k === "a" && win.host.showProfile(win.cursorRow()) && !win.cursorRow().server.active)
@@ -147,29 +153,19 @@ FloatingWindow {
           anchors.right: parent.right
         }
 
-        Flickable {
-          id: locationsFlick
+        ServerList {
+          id: locations
           anchors.top: profileBar.bottom
           anchors.topMargin: tabs.visible || profileBar.visible ? Style.space(12) : 0
           anchors.bottom: parent.bottom
           anchors.left: sidebar.right
           anchors.leftMargin: sidebar.visible ? Style.space(16) : 0
           anchors.right: parent.right
-          contentWidth: width
-          contentHeight: locations.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          ServerList {
-            id: locations
-            width: locationsFlick.width - Style.space(8)
-            host: win.host
-            flick: locationsFlick
-            keyTarget: keyCatcher
-            inWindow: true
-          }
+          anchors.rightMargin: Style.space(8)
+          host: win.host
+          active: win.host.windowOpen
+          keyTarget: keyCatcher
+          inWindow: true
         }
       }
 
@@ -232,6 +228,28 @@ FloatingWindow {
     id: checkCard
     anchors.fill: parent
     host: win.host
+  }
+
+  Item {
+    id: forceConfirmKeys
+    anchors.fill: parent
+    visible: win.host.forceConfirmOpen
+    Keys.onPressed: function(event) { if (forceConfirm.handleKey(event)) event.accepted = true }
+
+    ConfirmDialog {
+      id: forceConfirm
+      anchors.fill: parent
+      opened: win.host.forceConfirmOpen
+      message: win.host.forceTarget
+        ? win.host.forceMessage + "\nRestart windscribe-helper.service and connect "
+          + win.host.forceTarget.name + "?"
+        : ""
+      confirmText: "Force switch"
+      foreground: win.host.foreground
+      fontFamily: win.host.fontFamily
+      onConfirmed: win.host.confirmForceSwitch()
+      onCanceled: win.host.cancelForceSwitch()
+    }
   }
 
   // x / Delete…: a profile is gone for good (its config file or NM connection)

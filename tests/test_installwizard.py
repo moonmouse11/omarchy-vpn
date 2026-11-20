@@ -274,3 +274,49 @@ def test_resolved_hint():
     assert hint in installwizard.hints(only("OpenVPN"), MISMATCH)
     assert hint not in installwizard.hints(only("OpenVPN"), MISMATCH, switched=True)
     assert hint not in installwizard.hints(only("OpenVPN"), installwizard.Detection())
+
+
+def test_warp_probe(monkeypatch):
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: None)
+    assert installwizard._PROBES["Cloudflare WARP"]() == ""
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: "/usr/bin/warp-cli")
+    assert installwizard._PROBES["Cloudflare WARP"]() != ""
+
+
+def test_warp_hint(monkeypatch):
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: None)
+    hint = "Cloudflare WARP: install from AUR — cloudflare-warp-bin"
+    assert any(
+        hint in line
+        for line in installwizard.hints(only("Cloudflare WARP"), installwizard.Detection())
+    )
+    assert not any(
+        hint in line for line in installwizard.hints(only("WireGuard"), installwizard.Detection())
+    )
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: "/usr/bin/warp-cli")
+    assert not any(
+        hint in line
+        for line in installwizard.hints(only("Cloudflare WARP"), installwizard.Detection())
+    )
+
+
+def test_windscribe_probe(monkeypatch):
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: None)
+    assert installwizard._PROBES["Windscribe"]() == ""
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: "/usr/bin/windscribe-cli")
+    assert installwizard._PROBES["Windscribe"]() != ""
+
+
+def test_windscribe_hint(monkeypatch):
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: None)
+    hint = "Windscribe: install from AUR — windscribe-cli-v2-bin"
+    assert any(
+        hint in line for line in installwizard.hints(only("Windscribe"), installwizard.Detection())
+    )
+    assert not any(
+        hint in line for line in installwizard.hints(only("WireGuard"), installwizard.Detection())
+    )
+    monkeypatch.setattr(installwizard.shutil, "which", lambda b: "/usr/bin/windscribe-cli")
+    assert not any(
+        hint in line for line in installwizard.hints(only("Windscribe"), installwizard.Detection())
+    )

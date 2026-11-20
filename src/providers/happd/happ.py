@@ -66,7 +66,10 @@ def _pub():
 
 
 def _run(cmd: list[str]) -> tuple[int, str]:
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
+    except subprocess.TimeoutExpired:
+        return 1, f"timeout after 10s: {' '.join(cmd)}"
     output = (result.stdout + result.stderr).strip()
     return result.returncode, output
 
@@ -607,6 +610,8 @@ def _happ_active_identity() -> tuple[str | None, str | None]:
 
 
 class HappProvider(VPNProvider):
+    ping_supported = True
+
     @property
     def name(self) -> str:
         return "Happ"

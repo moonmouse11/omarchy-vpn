@@ -12,8 +12,8 @@ from app.helpers import notify, refresh_bar
 from app.ping import _ping_worker_alive
 from app.provider_lookup import provider_named as _provider_named
 from app.registry import visible_providers
-from app.switch import guarded_connect, guarded_disconnect
-from providers.base import ActionResult, VPNConnection
+from app.switch import force_connect, guarded_connect, guarded_disconnect
+from providers.base import ActionResult, VPNConnection, VPNProvider
 
 
 def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
@@ -25,6 +25,15 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
     return guarded_connect(provider, connection)
 
 
+def _force_connect(provider, connection: VPNConnection) -> ActionResult:
+    import vpn_manager as vm  # noqa: PLC0415 — tests patch vpn_manager.force_connect
+
+    remote = getattr(vm, "force_connect", None)
+    if remote is not None and remote is not force_connect:
+        return remote(provider, connection)
+    return force_connect(provider, connection)
+
+
 def _guarded_disconnect(provider, connection: VPNConnection) -> ActionResult:
     import vpn_manager as vm  # noqa: PLC0415 — tests patch vpn_manager.guarded_disconnect
 
@@ -33,6 +42,16 @@ def _guarded_disconnect(provider, connection: VPNConnection) -> ActionResult:
         return remote(provider, connection)
     return guarded_disconnect(provider, connection)
 
+
+_WINDSCRIBE_METADATA_KEYS = (
+    "synthetic",
+    "region",
+    "city",
+    "nickname",
+    "pro",
+    "disabled",
+    "ten_gbps",
+)
 
 # Duplicated from app.tools — keeps server_list() free of tools ↔ servers import cycle.
 _IMPORT_KINDS = {
@@ -118,6 +137,9 @@ def _server_row(entry: dict) -> dict:
     }
     if entry.get("orphan"):
         row["orphan"] = True
+    for key in _WINDSCRIBE_METADATA_KEYS:
+        if key in entry:
+            row[key] = entry[key]
     return row
 
 
@@ -161,10 +183,13 @@ def _server_group(
     sub_id=None,
     *,
     pinging: PingState = NOTHING_PINGING,
+    pingable: bool = True,
 ):
     group_scope = {"group": group_id}
     group_pinging = pinging.every or group_scope in pinging.queued
     rows = [_server_row(e) for e in entries]
+    for row in rows:
+        row["pingable"] = pingable
     for row, entry in zip(rows, entries, strict=True):
         server_scope = {"server": [provider, entry["name"], entry.get("provider_id") or ""]}
         scopes = [group_scope, server_scope]
@@ -186,6 +211,7 @@ def _server_group(
         "summary": summary,
         "active": any(r["active"] for r in rows),
         "pinging": group_pinging,
+        "pingable": pingable,
         "servers": rows,
     }
 
@@ -220,12 +246,14 @@ def server_list() -> dict:
     providers: list[dict] = []
     for provider in visible_providers():
         first = len(groups)
+        pingable = bool(getattr(provider, "ping_supported", False))
         providers.append(
             {
                 "name": provider.name,
                 "importer": _IMPORT_KINDS.get(provider.name),
                 "manage": provider.name in _MANAGED_PROVIDERS,
                 "autostart": provider.name in _AUTOSTART_PROVIDERS,
+                "pingable": pingable,
             }
         )
         if provider.name == "Happ":
@@ -273,23 +301,43 @@ def server_list() -> dict:
                 logutil.log(f"server list: {provider.name} skipped: {e!r}")
                 conns = []
             if conns:
-                entries = [
-                    {
-                        "name": c.name,
-                        "active": c.active,
+                entries = []
+                for connection in conns:
+                    entry = {
+                        "name": connection.name,
+                        "active": connection.active,
                         "orphan": (
-                            c.active
-                            and not c.config_path
-                            and c.provider in ("WireGuard", "AmneziaWG")
+                            connection.active
+                            and not connection.config_path
+                            and connection.provider in ("WireGuard", "AmneziaWG")
                         ),
                     }
-                    for c in conns
-                ]
+                    for key in _WINDSCRIBE_METADATA_KEYS:
+                        if key in connection.metadata:
+                            entry[key] = connection.metadata[key]
+                    entries.append(entry)
                 groups.append(
                     _server_group(
-                        provider.name, provider.name, provider.name, entries, pinging=pinging
+                        provider.name,
+                        provider.name,
+                        provider.name,
+                        entries,
+                        pinging=pinging,
+                        pingable=pingable,
                     )
                 )
+            elif (issue := _setup_issue(provider)) is not None:
+                # no rows to show and setup is needed: the hint IS the group
+                # (the Happ no-headers notice is the same pattern)
+                group = _server_group(
+                    f"setup:{provider.name}",
+                    provider.name,
+                    issue["hint"],
+                    [],
+                    pingable=False,
+                )
+                group["setup"] = issue["command"]
+                groups.append(group)
         mine = groups[first:]
         providers[-1]["total"] = sum(len(g["servers"]) for g in mine)
         providers[-1]["active"] = any(g["active"] for g in mine)
@@ -299,6 +347,18 @@ def server_list() -> dict:
         "layout": config.load_config().locations_layout,
         "quick": _quick_connect(groups),
     }
+
+
+def _setup_issue(provider) -> dict | None:
+    """A broken setup probe must not empty the list (same rule as connections())."""
+    try:
+        issue = provider.setup_issue()
+    except Exception as e:  # noqa: BLE001
+        logutil.log(f"server list: {provider.name} setup probe: {e!r}")
+        return None
+    if isinstance(issue, dict) and issue.get("hint") and issue.get("command"):
+        return issue
+    return None
 
 
 def _quick_connect(groups: list[dict]) -> dict:
@@ -340,39 +400,55 @@ def _quick_connect(groups: list[dict]) -> dict:
     }
 
 
-def panel_connect(provider_name: str, name: str, sub_id: str | None = None) -> ActionResult:
-    """--connect from the panel: the same guarded_connect() as the menu
-    (killswitch, IPv6 guard, one tunnel at a time, DNS autotest)."""
+def _panel_target(
+    provider_name: str, name: str, sub_id: str | None
+) -> tuple[VPNProvider, VPNConnection] | ActionResult:
     provider = _provider_named(provider_name)
     if provider is None:
         return ActionResult(False, f"Unknown provider: {provider_name}")
     if provider.name == "Happ":
         sub_name = happmeta.providers().get(sub_id or "", {}).get("name") if sub_id else None
-        conn = VPNConnection(
+        return provider, VPNConnection(
             name=name,
             provider="Happ",
             active=False,
             subscription_id=sub_id or None,
             subscription_name=sub_name,
         )
-    elif provider.name == "INCY" and sub_id:
+    if provider.name == "INCY" and sub_id:
         found = next(
             (c for c in provider.connections() if c.name == name and c.subscription_id == sub_id),
             None,
         )
         if found is None:
             return ActionResult(False, f"{provider_name}: {name} not found in that subscription")
-        conn = found
-    else:
-        found = next((c for c in provider.connections() if c.name == name), None)
-        if found is None:
-            return ActionResult(False, f"{provider_name}: {name} not found")
-        conn = found
-    result = _guarded_connect(provider, conn)
-    if result.success:  # QUICK CONNECT's recent, and the power switch's "last server"
+        return provider, found
+    found = next((c for c in provider.connections() if c.name == name), None)
+    if found is None:
+        return ActionResult(False, f"{provider_name}: {name} not found")
+    return provider, found
+
+
+def _panel_connect(provider_name: str, name: str, sub_id: str | None, connector) -> ActionResult:
+    target = _panel_target(provider_name, name, sub_id)
+    if isinstance(target, ActionResult):
+        return target
+    provider, connection = target
+    result = connector(provider, connection)
+    if result.success:
         remember_sub = sub_id if provider.name in ("Happ", "INCY") else None
         quickconnect.remember(provider.name, name, remember_sub)
     return result
+
+
+def panel_connect(provider_name: str, name: str, sub_id: str | None = None) -> ActionResult:
+    """--connect from the panel: guarded connect plus recent-server memory."""
+    return _panel_connect(provider_name, name, sub_id, _guarded_connect)
+
+
+def panel_force_connect(provider_name: str, name: str, sub_id: str | None = None) -> ActionResult:
+    """Confirmed Windscribe reset followed by the retained validated target."""
+    return _panel_connect(provider_name, name, sub_id, _force_connect)
 
 
 def panel_disconnect(provider_name: str, name: str) -> ActionResult:

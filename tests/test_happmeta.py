@@ -444,8 +444,8 @@ def test_fetch_subscription_cache_is_private(tmp_path, monkeypatch):
     monkeypatch.setattr(happmeta, "HEADERS_FILE", headers_file)
 
     class FakeResp:
-        def read(self):
-            return json.dumps([{"remarks": "S", "outbounds": [{}]}]).encode()
+        def read(self, size=-1):
+            return json.dumps([{"remarks": "S", "outbounds": [{}]}]).encode()[:size]
 
         def __enter__(self):
             return self
@@ -453,7 +453,7 @@ def test_fetch_subscription_cache_is_private(tmp_path, monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(happmeta.urllib.request, "urlopen", lambda req, timeout: FakeResp())
+    monkeypatch.setattr(happmeta, "_open_https", lambda req, timeout: FakeResp())
     servers = happmeta.fetch_subscription("1", "https://x/1")
     assert [s["remarks"] for s in servers] == ["S"]
     assert ((tmp_path / "subscription-1.json").stat().st_mode & 0o777) == 0o600
@@ -478,8 +478,8 @@ def _fresh_sub_cache(tmp_path, monkeypatch):
     calls = []
 
     class FakeResp:
-        def read(self):
-            return json.dumps([{"remarks": "Fetched", "outbounds": [{}]}]).encode()
+        def read(self, size=-1):
+            return json.dumps([{"remarks": "Fetched", "outbounds": [{}]}]).encode()[:size]
 
         def __enter__(self):
             return self
@@ -488,8 +488,8 @@ def _fresh_sub_cache(tmp_path, monkeypatch):
             return False
 
     monkeypatch.setattr(
-        happmeta.urllib.request,
-        "urlopen",
+        happmeta,
+        "_open_https",
         lambda req, timeout: calls.append(req) or FakeResp(),
     )
     return calls
@@ -623,8 +623,8 @@ def test_fetch_subscription_cache_url_revalidation(tmp_path, monkeypatch):
         def __init__(self, remark):
             self._remark = remark
 
-        def read(self):
-            return json.dumps([{"remarks": self._remark, "outbounds": [{}]}]).encode()
+        def read(self, size=-1):
+            return json.dumps([{"remarks": self._remark, "outbounds": [{}]}]).encode()[:size]
 
         def __enter__(self):
             return self
@@ -636,7 +636,7 @@ def test_fetch_subscription_cache_url_revalidation(tmp_path, monkeypatch):
     (tmp_path / "subscription-1.json").write_text(
         json.dumps({"at": time.time(), "url": "https://x/old", "servers": [{"remarks": "old"}]})
     )
-    monkeypatch.setattr(happmeta.urllib.request, "urlopen", lambda req, timeout: FakeResp("new"))
+    monkeypatch.setattr(happmeta, "_open_https", lambda req, timeout: FakeResp("new"))
     servers = happmeta.fetch_subscription("1", "https://x/new")
     assert [s["remarks"] for s in servers] == ["new"]
 
@@ -645,8 +645,8 @@ def test_fetch_subscription_cache_url_revalidation(tmp_path, monkeypatch):
         json.dumps({"at": time.time(), "servers": [{"remarks": "legacy"}]})
     )
     monkeypatch.setattr(
-        happmeta.urllib.request,
-        "urlopen",
+        happmeta,
+        "_open_https",
         lambda req, timeout: (_ for _ in ()).throw(AssertionError("refetched legacy")),
     )
     servers = happmeta.fetch_subscription("2", "https://x/new")
@@ -674,8 +674,8 @@ def test_fetch_subscription_keeps_info_on_headerless_refresh(tmp_path, monkeypat
     )
 
     class FakeResp:
-        def read(self):
-            return json.dumps([{"remarks": "new", "outbounds": [{}]}]).encode()
+        def read(self, size=-1):
+            return json.dumps([{"remarks": "new", "outbounds": [{}]}]).encode()[:size]
 
         def __enter__(self):
             return self
@@ -683,10 +683,47 @@ def test_fetch_subscription_keeps_info_on_headerless_refresh(tmp_path, monkeypat
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(happmeta.urllib.request, "urlopen", lambda req, timeout: FakeResp())
+    monkeypatch.setattr(happmeta, "_open_https", lambda req, timeout: FakeResp())
     happmeta.fetch_subscription("1", "https://x/sub")
     kept = happmeta.subscription_info("1")
     assert kept == info
+
+
+def test_subscription_cache_paths_hash_unsafe_ids_without_collisions(tmp_path, monkeypatch):
+    from happ import subscriptions as happ_subscriptions
+
+    monkeypatch.setattr(happmeta, "SUB_CACHE_DIR", tmp_path)
+
+    slash = happ_subscriptions._sub_cache_path("a/b")
+    question = happ_subscriptions._sub_cache_path("a?b")
+    traversal = happ_subscriptions._sub_cache_path("../x")
+
+    assert slash != question
+    assert slash == happ_subscriptions._sub_cache_path("a/b")
+    assert slash.name == f"subscription-unsafe-{hashlib.sha256(b'a/b').hexdigest()}.json"
+    assert traversal.parent == tmp_path
+    assert all(path.parent == tmp_path for path in (slash, question, traversal))
+
+
+@pytest.mark.parametrize("sub_id", ["1", "h0123456789", "uuid-like_42", "подписка"])
+def test_subscription_cache_paths_keep_safe_ids(tmp_path, monkeypatch, sub_id):
+    from happ import subscriptions as happ_subscriptions
+
+    monkeypatch.setattr(happmeta, "SUB_CACHE_DIR", tmp_path)
+
+    assert happ_subscriptions._sub_cache_path(sub_id) == tmp_path / f"subscription-{sub_id}.json"
+
+
+def test_invalid_cache_record_servers_never_escape_as_a_string(tmp_path, monkeypatch):
+    from happ import subscriptions as happ_subscriptions
+
+    monkeypatch.setattr(happmeta, "SUB_CACHE_DIR", tmp_path)
+    (tmp_path / "subscription-1.json").write_text(
+        json.dumps({"at": time.time(), "url": "https://x/1", "servers": "broken"})
+    )
+
+    assert happmeta.fetch_subscription_cached("1") == []
+    assert happ_subscriptions._sub_cache_fresh("1", "https://x/1") is False
 
 
 def test_fetch_subscription_non_dict_cache_returns_empty(tmp_path, monkeypatch):
@@ -699,8 +736,8 @@ def test_fetch_subscription_non_dict_cache_returns_empty(tmp_path, monkeypatch):
     headers_file.write_text('{"User-Agent": "Happ/1.0"}')
     monkeypatch.setattr(happmeta, "HEADERS_FILE", headers_file)
     monkeypatch.setattr(
-        happmeta.urllib.request,
-        "urlopen",
+        happmeta,
+        "_open_https",
         lambda req, timeout: (_ for _ in ()).throw(OSError("network down")),
     )
     assert happmeta.fetch_subscription("1", "https://x/1") == []
@@ -715,8 +752,8 @@ class _InfoResp:
     def __init__(self, headers: email.message.Message):
         self.headers = headers
 
-    def read(self):
-        return json.dumps([{"remarks": "S", "outbounds": [{}]}]).encode()
+    def read(self, size=-1):
+        return json.dumps([{"remarks": "S", "outbounds": [{}]}]).encode()[:size]
 
     def __enter__(self):
         return self
@@ -730,7 +767,7 @@ def _patch_fetch_env(tmp_path, monkeypatch, headers):
     headers_file = tmp_path / "headers.json"
     headers_file.write_text('{"User-Agent": "Happ/1.0"}')
     monkeypatch.setattr(happmeta, "HEADERS_FILE", headers_file)
-    monkeypatch.setattr(happmeta.urllib.request, "urlopen", lambda req, timeout: _InfoResp(headers))
+    monkeypatch.setattr(happmeta, "_open_https", lambda req, timeout: _InfoResp(headers))
 
 
 def test_fetch_subscription_stores_parsed_info(tmp_path, monkeypatch):
@@ -1113,8 +1150,8 @@ def _sent_headers(tmp_path, monkeypatch, captured):
     sent = []
 
     class FakeResp:
-        def read(self):
-            return json.dumps([{"remarks": "S", "outbounds": [{}]}]).encode()
+        def read(self, size=-1):
+            return json.dumps([{"remarks": "S", "outbounds": [{}]}]).encode()[:size]
 
         def __enter__(self):
             return self
@@ -1126,7 +1163,7 @@ def _sent_headers(tmp_path, monkeypatch, captured):
         sent.append(dict(req.header_items()))
         return FakeResp()
 
-    monkeypatch.setattr(happmeta.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(happmeta, "_open_https", urlopen)
     servers = happmeta.fetch_subscription("1", "https://x/1")
     assert [s["remarks"] for s in servers] == ["S"]
     return sent[0]
@@ -1233,8 +1270,8 @@ def _fetch_with_response(tmp_path, monkeypatch, response, cached=None):
         (tmp_path / "subscription-1.json").write_text(json.dumps(cached))
 
     class FakeResp:
-        def read(self):
-            return json.dumps(response).encode()
+        def read(self, size=-1):
+            return json.dumps(response).encode()[:size]
 
         def __enter__(self):
             return self
@@ -1242,7 +1279,7 @@ def _fetch_with_response(tmp_path, monkeypatch, response, cached=None):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(happmeta.urllib.request, "urlopen", lambda req, timeout: FakeResp())
+    monkeypatch.setattr(happmeta, "_open_https", lambda req, timeout: FakeResp())
     return happmeta.fetch_subscription("1", "https://x/1", force=True)
 
 
@@ -1303,8 +1340,8 @@ class _Resp:
     def __init__(self, servers):
         self._body = json.dumps(servers).encode()
 
-    def read(self):
-        return self._body
+    def read(self, size=-1):
+        return self._body[:size]
 
     def __enter__(self):
         return self
@@ -1328,7 +1365,7 @@ def _scripted_urlopen(monkeypatch, tmp_path, answers, cached=None):
             raise answer
         return _Resp(answer)
 
-    monkeypatch.setattr(happmeta.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(happmeta, "_open_https", urlopen)
     return calls
 
 

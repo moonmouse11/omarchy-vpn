@@ -1,0 +1,377 @@
+#!/usr/bin/env bash
+# DESTRUCTIVE inside the disposable guest only; never run on an ordinary desktop.
+set -euo pipefail
+if [[ ${OMARCHY_VPN_DISPOSABLE_GUEST:-} != 1 ]] \
+    || ! grep -qw 'omarchy_vpn_test=1' /proc/cmdline \
+    || ! systemd-detect-virt --vm >/dev/null; then
+    echo "Refusing setup outside the explicitly marked disposable VM" >&2
+    exit 64
+fi
+
+export OMARCHY_PATH=/usr/share/omarchy
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+OUT=/mnt/out
+REPO=/mnt/repo
+sudo -n true 2>/dev/null || printf 'omarchy\n' | sudo -S -v >/dev/null
+sudo mkdir -p "$OUT" "$REPO"
+sudo mount -t 9p -o trans=virtio,version=9p2000.L,ro repo "$REPO"
+sudo mount -t 9p -o trans=virtio,version=9p2000.L out "$OUT"
+sudo chown omarchy:omarchy "$OUT"
+: > "$OUT/actions.log"
+python3 "$REPO/tests/windscribe_handover_probe.py" \
+    --output "$OUT/windscribe-handover.json"
+for _ in $(seq 1 300); do
+    pgrep -x quickshell >/dev/null && break
+    sleep 0.2
+done
+pgrep -x quickshell >/dev/null
+
+# Deterministic vendor fixture: every non-read operation is logged AND refused.
+tmp=$(mktemp)
+cat > "$tmp" <<'VENDOR'
+#!/bin/bash
+case "${1:-}" in
+    status)
+        printf '%s\n' 'Login state: Logged in' 'Connect state: Disconnected' 'Firewall state: Off'
+        ;;
+    locations)
+        for i in $(seq -w 1 201); do
+            printf 'VM Region - City %s - Server %s (10 Gbps)\n' "$i" "$i"
+        done
+        ;;
+    *) printf '%s\n' "$*" >> /mnt/out/actions.log; exit 1 ;;
+esac
+VENDOR
+sudo install -m 755 "$tmp" /usr/local/bin/windscribe-cli
+rm -f "$tmp"
+
+# Stage only in the guest overlay; the repo share is read-only.
+backend="$HOME/.local/share/omarchy-vpn"
+plugin="$HOME/.config/omarchy/plugins/omarchy-vpn"
+systemctl --user stop omarchy-vpn-backend.service 2>/dev/null || true
+mkdir -p "$backend" "$plugin" "$HOME/.config/systemd/user"
+rm -rf "$backend/src"
+cp -a "$REPO/src" "$backend/src"
+find "$plugin" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+cp "$REPO/manifest.json" "$REPO"/*.qml "$plugin/"
+cp "$REPO/systemd/omarchy-vpn-backend.service" "$HOME/.config/systemd/user/"
+systemctl --user daemon-reload
+systemctl --user enable --now omarchy-vpn-backend.service
+
+# Test-only runtime inspection, added to the staged copy, NEVER to production
+# QML. Observe the real TextField and rendered model; don't infer UI state from
+# the Python backend. Select the fixture's provider cursor without assuming
+# an incidental provider order or invoking any connection.
+python3 - "$plugin/Widget.qml" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+anchor = '    function toggle(): void { root.toggle() }'
+handler = '  IpcHandler {\n    target: root.ipcTarget'
+launch = '    connectProc.running = true'
+assert s.count(anchor) == 1
+assert s.count(handler) == 1
+assert s.count(launch) == 1
+s = s.replace(
+    handler,
+    '  Connections {\n'
+    '    target: panelList\n'
+    '    function onContentYChanged() {\n'
+    '      if (auditIpc.auditTrackViewport)\n'
+    '        auditIpc.auditPanelY = auditIpc.auditPanelY.concat([{ y: panelList.contentY, at: Date.now() }])\n'
+    '    }\n'
+    '  }\n\n'
+    '  IpcHandler {\n    id: auditIpc\n    target: root.ipcTarget',
+)
+s = s.replace(
+    launch,
+    '    if (auditIpc.auditCapture) {\n'
+    '      auditIpc.auditCommands = auditIpc.auditCommands.concat([args])\n'
+    '      return\n'
+    '    }\n'
+    + launch,
+)
+probe = '''
+    property bool auditCapture: false
+    property var auditCommands: []
+    property bool auditTrackViewport: false
+    property var auditPanelY: []
+    property string auditRaceExpectedKey: ""
+    property string auditRequestedBarLabel: ""
+    function auditListNames(list): var {
+      var names = []
+      for (var i = 0; i < list.count; i++) {
+        var row = root.serverRows[i]
+        if (row && row.kind === "server") names.push(row.server.name)
+      }
+      return names
+    }
+    function auditTopRow(list): var {
+      var best = null
+      for (var i = 0; i < list.count; i++) {
+        var item = list.itemAtIndex(i)
+        if (!item || item.y + item.height <= list.contentY || item.y >= list.contentY + list.height)
+          continue
+        if (!best || item.y < best.y)
+          best = { key: root.rowIdentity(root.serverRows[i]), offset: item.y - list.contentY, y: item.y }
+      }
+      return best || { key: "", offset: 0, y: 0 }
+    }
+    function auditSnapshot(): string {
+      var top = auditTopRow(root.activeList)
+      var panelTop = auditTopRow(panelList)
+      var windowTop = auditTopRow(appWindow.locations)
+      var cursorItem = root.activeList.itemAtIndex(root.serverCursor)
+      return JSON.stringify({
+        fieldText: root.activeList.filterField.text,
+        appliedFilter: root.serverFilter,
+        serverNames: root.serverRows.filter(function(r) { return r.kind === "server" })
+          .map(function(r) { return r.server.name }),
+        surface: root.windowOpen && !root.opened ? "window" : "panel",
+        inactiveModelCount: root.windowOpen && !root.opened ? panelList.count : appWindow.locations.count,
+        panelVisible: root.opened, windowVisible: root.windowOpen,
+        panelCount: panelList.count, windowCount: appWindow.locations.count,
+        panelText: panelList.filterField.text, windowText: appWindow.locations.filterField.text,
+        panelNames: auditListNames(panelList),
+        windowNames: auditListNames(appWindow.locations),
+        forceConfirmOpen: root.forceConfirmOpen,
+        forceTarget: root.forceTarget,
+        activeContentY: root.activeList.contentY,
+        topKey: top.key,
+        topOffset: top.offset,
+        cursorKey: root.serverCursor >= 0 ? root.rowIdentity(root.serverRows[root.serverCursor]) : "",
+        cursorOffset: cursorItem ? cursorItem.y - root.activeList.contentY : null,
+        panelContentY: panelList.contentY,
+        panelTopKey: panelTop.key,
+        panelTopOffset: panelTop.offset,
+        windowContentY: appWindow.locations.contentY,
+        windowTopKey: windowTop.key,
+        windowTopOffset: windowTop.offset,
+        raceExpectedKey: auditRaceExpectedKey,
+        panelYTrace: auditPanelY,
+        panelDelegateCreates: panelList.auditDelegateCreates,
+        requestedBarLabel: auditRequestedBarLabel,
+        liveBarLabel: root.barLabel,
+        displayedBarLabel: root.displayedBarLabel,
+        barButtonWidth: button.width,
+        panelCardX: panel.cardOrigin.x,
+        panelContentWidth: panel.contentWidth,
+        commands: auditCommands
+      })
+    }
+    function auditStartForce(): void {
+      auditCommands = []
+      auditCapture = true
+      root.connectServer("WireGuard", "vm-target", "sub-42")
+      root.connectResult(JSON.stringify({
+        success: false,
+        message: "Windscribe did not confirm disconnect",
+        action: "force-windscribe"
+      }))
+    }
+    function auditResetForce(): void {
+      root.cancelForceSwitch()
+      auditCommands = []
+      auditCapture = false
+    }
+    function auditSelectWindscribe(): void {
+      for (var i = 0; i < root.serverRows.length; i++) {
+        var r = root.serverRows[i]
+        if (r.kind === "provider" && r.provider.name === "Windscribe") {
+          root.serverCursor = i
+          root.activeList.scrollToRow(i)
+          return
+        }
+      }
+    }
+    function auditPrepareBothViewports(): void {
+      root.serverFilter = ""
+      root.setExpanded("provider:Windscribe", true, null)
+      Qt.callLater(function() {
+        Qt.callLater(function() {
+          panelList.positionViewAtIndex(12, ListView.Beginning)
+          appWindow.locations.positionViewAtIndex(40, ListView.Beginning)
+        })
+      })
+    }
+    function auditSetBarLabel(value: string): void {
+      auditRequestedBarLabel = value
+      var next = {}
+      for (var key in root.panelData) next[key] = root.panelData[key]
+      var fields = {}
+      var current = root.panelData.fields || {}
+      for (var field in current) fields[field] = current[field]
+      fields.label = value
+      fields.server = value
+      fields.state = value
+      next.fields = fields
+      root.connected = true
+      root.label = value
+      root.panelData = next
+    }
+    function auditPrimeBarLabel(value: string): void {
+      auditSetBarLabel(value)
+      root.panelBarLabel = value
+      root.panelBarLabelCaptured = true
+    }
+    function auditStartViewportTrace(): void {
+      auditPanelY = [{ y: panelList.contentY, at: Date.now() }]
+      auditTrackViewport = true
+      panelList.auditDelegateCreates = 0
+      panelList.auditCountDelegates = true
+      root.loadServers()
+    }
+    function auditStopViewportTrace(): void {
+      auditTrackViewport = false
+      panelList.auditCountDelegates = false
+    }
+    function auditStartRestoreRace(): void {
+      panelList.positionViewAtIndex(20, ListView.Beginning)
+      Qt.callLater(function() {
+        root.rememberViewports()
+        root.serverGroups = root.serverGroups.slice()
+        Qt.callLater(function() {
+          panelList.positionViewAtIndex(80, ListView.Beginning)
+          auditRaceExpectedKey = root.rowIdentity(root.serverRows[80])
+          root.rememberViewports()
+          root.serverProviders = root.serverProviders.slice()
+        })
+      })
+    }
+'''
+p.write_text(s.replace(anchor, anchor + probe))
+server_list = p.with_name('ServerList.qml')
+sl = server_list.read_text()
+list_anchor = 'ListView {\n  id: list'
+delegate_anchor = '    required property int index'
+assert sl.count(list_anchor) == 1
+assert sl.count(delegate_anchor) == 1
+sl = sl.replace(
+    list_anchor,
+    list_anchor
+    + '\n  property bool auditCountDelegates: false'
+    + '\n  property int auditDelegateCreates: 0'
+    + '\n  function auditDelegateCreated() {'
+    + '\n    if (auditCountDelegates) auditDelegateCreates++'
+    + '\n  }',
+)
+sl = sl.replace(
+    delegate_anchor,
+    delegate_anchor + '\n    Component.onCompleted: list.auditDelegateCreated()',
+)
+server_list.write_text(sl)
+PY
+python3 - <<'PY'
+import json
+from pathlib import Path
+p = Path.home()/'.config/omarchy/shell.json'
+s = json.loads(p.read_text())
+right = s.setdefault('bar', {}).setdefault('layout', {}).setdefault('right', [])
+if not any(isinstance(r, dict) and r.get('id') == 'omarchy-vpn' for r in right):
+    right.append({'id': 'omarchy-vpn'})
+p.write_text(json.dumps(s) + '\n')
+PY
+sleep 5
+start=$(date '+%Y-%m-%d %H:%M:%S')
+trap 'journalctl --user --since "$start" --no-pager > "$OUT/shell-journal.txt" || true' EXIT
+omarchy restart shell
+sleep 3
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+WAYLAND_DISPLAY=$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -type s -name 'wayland-*' -printf '%f\n' | head -1)
+HYPRLAND_INSTANCE_SIGNATURE=$(find "$XDG_RUNTIME_DIR/hypr" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | head -1)
+export WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE
+
+snapshot() { omarchy-shell omarchy-vpn auditSnapshot > "$OUT/$1.json"; }
+omarchy-shell omarchy-vpn open
+sleep 2
+omarchy-shell omarchy-vpn auditStartForce
+sleep 1
+snapshot force-panel-open
+wtype -k Escape
+sleep 1
+snapshot force-panel-cancelled
+omarchy-shell omarchy-vpn auditSelectWindscribe
+sleep 1
+snapshot windscribe-selected
+wtype -k l
+sleep 1
+snapshot expanded
+grim "$OUT/panel-expanded.png"
+python3 - "$OUT/expanded.json" <<'PY'
+import json, sys
+x = json.load(open(sys.argv[1]))
+assert len(x['serverNames']) == 202, x
+assert x['serverNames'][0] == 'Best Location', x
+PY
+wtype -k h
+sleep 1
+snapshot folded
+grim "$OUT/panel-folded.png"
+python3 - "$OUT/folded.json" <<'PY'
+import json, sys
+x = json.load(open(sys.argv[1]))
+assert not x['serverNames'], x
+PY
+wtype -k l
+sleep 1
+snapshot reexpanded
+python3 - "$OUT/reexpanded.json" <<'PY'
+import json, sys
+x = json.load(open(sys.argv[1]))
+assert len(x['serverNames']) == 202, x
+PY
+for _ in $(seq 1 35); do wtype -k j; done
+sleep 1
+snapshot panel-scrolled-before-refresh
+grim "$OUT/panel-scrolled.png"
+omarchy-shell omarchy-vpn auditStartViewportTrace
+sleep 2
+snapshot panel-scrolled-after-refresh
+omarchy-shell omarchy-vpn auditStopViewportTrace
+wtype '/'
+wtype -d 50 'City 200'
+snapshot typed-unapplied
+wtype -k Return
+sleep 1
+snapshot panel-filtered
+grim "$OUT/panel-filtered.png"
+omarchy-shell omarchy-vpn window
+sleep 1
+snapshot window-filtered
+grim "$OUT/window-filtered.png"
+omarchy-shell omarchy-vpn auditStartForce
+sleep 1
+snapshot force-window-open
+wtype -k Return
+sleep 1
+snapshot force-window-confirmed
+omarchy-shell omarchy-vpn auditResetForce
+# Keep the window visible, then open the panel and apply a different filter.
+# Both real models and both fields must update; neither visible surface may empty.
+omarchy-shell omarchy-vpn open
+sleep 1
+wtype '/'
+wtype -d 50 'City 199'
+wtype -k Return
+sleep 1
+snapshot both-filtered
+grim "$OUT/both-filtered.png"
+omarchy-shell omarchy-vpn auditPrepareBothViewports
+sleep 1
+snapshot both-scrolled-before-refresh
+omarchy-shell omarchy-vpn refresh
+sleep 2
+snapshot both-scrolled-after-refresh
+omarchy-shell omarchy-vpn auditPrimeBarLabel DE
+snapshot bar-label-short
+omarchy-shell omarchy-vpn auditSetBarLabel Netherlands-with-a-much-longer-name
+snapshot bar-label-long
+omarchy-shell omarchy-vpn auditStartRestoreRace
+sleep 2
+snapshot restore-race
+omarchy-shell omarchy-vpn close
+wtype -k Escape
+journalctl --user --since "$start" --no-pager > "$OUT/shell-journal.txt"
+python3 "$REPO/tests/qml_vm_verify.py" "$OUT"
+printf 'PASS\n' > "$OUT/result.txt"

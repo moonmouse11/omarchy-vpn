@@ -916,3 +916,18 @@ def test_headless_connect_drops_the_process_list_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(happ.subprocess, "Popen", spawn)
     assert happ.HappProvider()._headless_connect("S").success
     assert not cache.exists()
+
+
+def test_run_passes_a_timeout_to_subprocess(monkeypatch):
+    import providers.happd.happ as impl
+
+    captured = {}
+
+    def fake_run(cmd, **kw):
+        captured.update(kw)
+        raise impl.subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get("timeout", 0))
+
+    monkeypatch.setattr(impl.subprocess, "run", fake_run)
+    code, _out = impl._run(["ip", "-o", "link", "show"])
+    assert code == 1
+    assert "timeout" in captured

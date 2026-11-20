@@ -18,11 +18,17 @@ CursorSurface {
   readonly property bool isIncyProvider: isProvider && row.provider && row.provider.name === "INCY"
   readonly property bool isSubProvider: isHappProvider || isIncyProvider
   readonly property bool isGroup: row && row.kind === "group"
+  readonly property bool hasSetup: isGroup && row.group.setup !== undefined && row.group.setup !== ""
   // the tree layout's top level: a protocol (Happ, WireGuard, …)
   readonly property bool isProvider: row && row.kind === "provider"
   readonly property bool isHeader: isGroup || isProvider
   readonly property bool isAuto: row && row.kind === "auto"
   readonly property var server: row && row.server ? row.server : null
+  readonly property bool pingable: {
+    if (isProvider) return row.provider.pingable === true
+    if (isGroup) return row.group.pingable === true
+    return server !== null && server.pingable === true
+  }
   readonly property bool isActive: row && row.kind === "server" && server && server.active === true
   readonly property bool pending: row && !isHeader && host.pendingKey === host.rowKey(row.group, server)
   readonly property string leftText: {
@@ -39,7 +45,7 @@ CursorSurface {
     if (!row) return ""
     if (isProvider) return row.provider.total > 0 ? countText : "empty"
     if (pending || pinging) return "…"
-    if (isGroup) return row.group.summary || countText
+    if (isGroup) return row.group.setup ? "" : (row.group.summary || countText)
     return String(server.ping || "")
   }
 
@@ -122,7 +128,7 @@ CursorSurface {
 
     Text {
       id: rightLabel
-      visible: serverRow.isHeader
+      visible: serverRow.isHeader && !serverRow.hasSetup
       textFormat: Text.PlainText
       text: serverRow.rightText !== "" ? serverRow.rightText : serverRow.countText
       color: serverRow.host.dim
@@ -130,35 +136,29 @@ CursorSurface {
       font.pixelSize: Style.font.caption
     }
 
-    // a group's ping button, next to its summary (above the row click target)
+    // a setup notice's action: runs the provider's command in a terminal
     Text {
-      id: groupPing
+      id: setupButton
       z: 10
-      visible: serverRow.isGroup
+      visible: serverRow.hasSetup
       textFormat: Text.PlainText
-      text: ""  // nf-fa-refresh
-      color: groupPingMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
+      text: "Set up"
+      color: setupMouse.containsMouse ? serverRow.host.foreground : serverRow.host.dim
       font.family: serverRow.host.fontFamily
       font.pixelSize: Style.font.caption
 
       MouseArea {
-        id: groupPingMouse
+        id: setupMouse
         anchors.fill: parent
         anchors.margins: -Style.space(4)
-        enabled: serverRow.isGroup
+        enabled: setupButton.visible
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         onClicked: function(mouse) {
           mouse.accepted = true
-          serverRow.host.pingRow(serverRow.row)
+          serverRow.host.runProviderSetup(serverRow.row.group.setup)
         }
       }
-    }
-
-    ProviderPing {
-      visible: serverRow.isSubProvider
-      host: serverRow.host
-      provider: serverRow.row && serverRow.row.provider ? serverRow.row.provider.name : ""
     }
 
     HappSubRefresh {
@@ -212,53 +212,23 @@ CursorSurface {
       }
     }
 
-    // Ping column: fixed width so hover never reflows the row; empty ping keeps
-    // a visible ⟳ (not hover-only) so clicks don't fall through to connect.
-    Item {
-      id: pingSlot
-      visible: !serverRow.isHeader
-      width: Math.max(pingLabel.implicitWidth, Style.space(44))
-      implicitHeight: pingLabel.implicitHeight
-
-      Text {
-        id: pingLabel
-        anchors.right: parent.right
-        textFormat: Text.PlainText
-        text: serverRow.pending || serverRow.pinging ? "…"
-          : (serverRow.rightText !== "" ? serverRow.rightText : "")  // nf-fa-refresh
-        color: pingMouse.containsMouse ? serverRow.host.foreground
-          : (serverRow.server && (serverRow.server.stale || serverRow.server.ping_ms === null)
-            ? serverRow.host.dim : serverRow.host.foreground)
-        font.family: serverRow.host.fontFamily
-        font.pixelSize: Style.font.caption
-      }
-
-      MouseArea {
-        id: pingMouse
-        anchors.fill: parent
-        enabled: !serverRow.pending
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: function(mouse) {
-          mouse.accepted = true
-          serverRow.host.pingRow(serverRow.row)
-        }
-      }
+    // Ping results are display-only. The sole Ping action is beside SERVERS.
+    Text {
+      id: pingLabel
+      visible: !serverRow.isHeader && serverRow.rightText !== ""
+      textFormat: Text.PlainText
+      text: serverRow.pending || serverRow.pinging ? "…" : serverRow.rightText
+      color: serverRow.server && (serverRow.server.stale || serverRow.server.ping_ms === null)
+        ? serverRow.host.dim : serverRow.host.foreground
+      font.family: serverRow.host.fontFamily
+      font.pixelSize: Style.font.caption
     }
 
     }  // actionsRow
   }
 
   PanelToolTip {
-    visible: (pingMouse.containsMouse && pingSlot.visible) || groupPingMouse.containsMouse
-    text: serverRow.pinging ? "Measuring…"
-      : (serverRow.isGroup ? "Ping every server of " + serverRow.row.group.title : "Click to ping")
-    fontFamily: serverRow.host.fontFamily
-  }
-
-  PanelToolTip {
-    visible: rowMouse.containsMouse && !(pingSlot.visible && pingMouse.containsMouse)
-      && !groupPingMouse.containsMouse && !serverRow.isHeader && serverRow.server !== null
+    visible: rowMouse.containsMouse && !serverRow.isHeader && serverRow.server !== null
     text: serverRow.server
       ? (serverRow.isActive ? "Disconnect" : "Connect") + (serverRow.server.protocol ? " · " + serverRow.server.protocol : "")
       : ""

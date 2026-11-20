@@ -264,6 +264,33 @@ def _cancelled(action: str) -> ActionResult:
     return ActionResult(False, "")
 
 
+def force_connect(provider, connection: VPNConnection) -> ActionResult:
+    """Explicit Windscribe service reset and retained-target connect under one lock."""
+    action = f"force connecting to {provider.name}: {connection.name}"
+    if happ_provider.app_connected():
+        return ActionResult(False, HAPP_APP_CONNECTED)
+    if incy_provider.app_connected():
+        return ActionResult(False, INCY_APP_CONNECTED)
+    try:
+        with switch_lock(action):
+            return _force_connect(provider, connection)
+    except SwitchBusy as e:
+        return _busy(e)
+    except SwitchCancelled:
+        return _cancelled(action)
+
+
+def _force_connect(provider, connection: VPNConnection) -> ActionResult:
+    windscribe = next((item for item in _provider_pool() if item.name == "Windscribe"), None)
+    reset = getattr(windscribe, "force_reset", None)
+    if reset is None:
+        return ActionResult(False, "Windscribe provider is unavailable")
+    result = reset()
+    if not result.success:
+        return result
+    return _guarded_connect(provider, connection)
+
+
 def guarded_connect(provider, connection: VPNConnection) -> ActionResult:
     """_guarded_connect() under SWITCH_LOCK — the entry point for every connect."""
     action = f"connecting to {provider.name}: {connection.name}"
@@ -411,9 +438,17 @@ class _ConnectFirewall:
 
 def _disconnect_other_connections(provider, connection: VPNConnection) -> ActionResult | None:
     # Same-provider server replacement belongs to the provider; other tunnels fight over routing.
+    providers = list(_provider_pool())
+    for other in providers:
+        if other.name == provider.name:
+            continue
+        cleanup_fn = getattr(other, "handover_cleanup", None)
+        cleanup = cleanup_fn() if cleanup_fn is not None else None
+        if cleanup is not None and not cleanup.success:
+            return cleanup
     others = [
         c
-        for c in active_connections(providers=list(_provider_pool()))
+        for c in active_connections(providers=providers)
         if not (c.provider == provider.name and c.name == connection.name)
     ]
     if not others:
@@ -483,7 +518,14 @@ def _guarded_connect(provider, connection: VPNConnection) -> ActionResult:
             result = prepared
             return result
         tuns_before = _tun_interfaces()
-        result = provider.connect(connection)
+        try:
+            result = provider.connect(connection)
+        except SwitchCancelled:
+            # The newer user action owns the machine now. Cancel any vendor daemon
+            # intent accepted before this process was superseded, then stay silent.
+            with contextlib.suppress(Exception):
+                provider.disconnect(connection)
+            raise
         if firewall.bootstrap_open and result.success and provider.name == "OpenVPN":
             # Numeric remotes do not need DNS here; preserve the existing TUN readiness timing.
             _wait_for_new_tun(tuns_before, getattr(_vm(), "OPENVPN_TUN_WAIT", OPENVPN_TUN_WAIT))
@@ -641,8 +683,40 @@ def disconnect_all() -> ActionResult:
 
 def _disconnect_connection(provider, connection: VPNConnection) -> bool:
     result = provider.disconnect(connection)
+    # Windscribe already polls: an unavailable status is not proof of teardown.
+    if result.success or provider.name == "Windscribe":
+        return result.success
     # A failed reply may still mean stopped, e.g. one Happ stop ends every happd process.
-    return result.success or not any(c.active for c in provider.connections())
+    return not active_connections(providers=[provider])
+
+
+def _provider_lockdown_hint(provider, connection: VPNConnection) -> str | None:
+    hint_fn = getattr(provider, "lockdown_hint", None)
+    if hint_fn is None:
+        return None
+    try:
+        return hint_fn(connection)
+    except Exception:  # noqa: BLE001 — a broken provider must not break the switch
+        return None
+
+
+def _disconnect_active_connections(for_switch: bool) -> tuple[list[str], list[str]]:
+    stopped, failed = [], []
+    lockdown_warnings: list[str] = []
+    # act on everything, even providers hidden from the menu
+    for provider in _provider_pool():
+        for conn in active_connections(providers=[provider]):
+            if not _disconnect_connection(provider, conn):
+                failed.append(f"{provider.name}: {conn.name}")
+                continue
+            stopped.append(f"{provider.name}: {conn.name}")
+            if for_switch:
+                hint = _provider_lockdown_hint(provider, conn)
+                if hint:
+                    lockdown_warnings.append(hint)
+    for warning in lockdown_warnings:
+        notify("Vendor lockdown — warning", warning)
+    return stopped, failed
 
 
 def _disconnect_all(for_switch: bool = False) -> ActionResult:
@@ -652,16 +726,7 @@ def _disconnect_all(for_switch: bool = False) -> ActionResult:
     remote = getattr(_vm(), "_disconnect_all", None)
     if remote is not None and remote is not _disconnect_all:
         return remote(for_switch=for_switch)
-    stopped, failed = [], []
-    # act on everything, even providers hidden from the menu
-    for provider in _provider_pool():
-        for conn in provider.connections():
-            if not conn.active:
-                continue
-            if _disconnect_connection(provider, conn):
-                stopped.append(f"{provider.name}: {conn.name}")
-            else:
-                failed.append(f"{provider.name}: {conn.name}")
+    stopped, failed = _disconnect_active_connections(for_switch)
     if not for_switch:
         _sync_ipv6_guard()
     if failed:

@@ -1,0 +1,10 @@
+[Unit]
+Description=omarchy-vpn status backend (per-user Unix socket)
+After=default.target
+
+[Service]
+ExecStart=/usr/bin/python3 -B %h/.local/share/omarchy-vpn/src/vpn_manager.py --backend-service
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

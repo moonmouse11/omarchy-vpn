@@ -20,6 +20,7 @@
 #                                                 would run commands as root (make install)
 #   omarchy-vpn-helper ipv6-boot on|off           IPv6 off before an autostarted wg/awg
 #                                                 tunnel comes up at boot (⚙ IPv6 guard)
+#   omarchy-vpn-helper windscribe-reset            restart only windscribe-helper.service
 #
 # Installed root-owned to /usr/local/bin by omarchy-vpn's install.sh.
 set -euo pipefail
@@ -566,11 +567,24 @@ if [[ ${1:-} == ipv6-boot ]]; then
     cmd_ipv6_boot "${2:-}" "${3:-}"
     exit 0
 fi
+if [[ ${1:-} == windscribe-reset ]]; then
+    (($# == 1)) || die "usage: omarchy-vpn-helper windscribe-reset"
+    unit=windscribe-helper.service
+    run "$SYSTEMCTL" stop "$unit"
+    if [[ -n ${DRY_RUN:-} ]]; then
+        run "$SYSTEMCTL" is-active "$unit"
+    elif "$SYSTEMCTL" is-active "$unit" >/dev/null 2>&1; then
+        die "$unit is still active after stop"
+    fi
+    run "$SYSTEMCTL" start "$unit"
+    run "$SYSTEMCTL" is-active "$unit" >/dev/null
+    exit 0
+fi
 if [[ ${1:-} == audit ]]; then
     cmd_audit
     exit 0
 fi
-(($# >= 3)) || die "usage: omarchy-vpn-helper up|down|import|rm|autostart|endpoints KIND NAME [on|off]"
+(($# >= 3)) || die "usage: omarchy-vpn-helper up|down|import|rm|autostart|endpoints KIND NAME [on|off], or windscribe-reset"
 verb=$1 kind=$2 name=$3
 dir_of "$kind" >/dev/null
 check_name "$name"

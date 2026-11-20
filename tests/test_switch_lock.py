@@ -4,16 +4,33 @@ the newest switch wins: it stops the one holding the lock."""
 
 import contextlib
 import fcntl
+import json
 import os
 import signal
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 import config
 import vpn_manager
-from providers.base import ActionResult, VPNConnection
+from providers.base import ActionResult, VPNConnection, VPNProvider
+
+_REAL_RUN = subprocess.run
+_REAL_POPEN = subprocess.Popen
+
+
+def test_action_result_keeps_two_argument_construction():
+    result = ActionResult(False, "failed")
+
+    assert result.action is None
+
+
+def test_default_handover_cleanup_does_nothing():
+    assert VPNProvider.handover_cleanup(object()) is None
 
 
 class FakeProvider:
@@ -51,6 +68,303 @@ def _hold_lock(text):
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     os.write(fd, text.encode())
     return fd
+
+
+def test_disconnect_all_does_not_need_the_server_catalogue(env, monkeypatch):
+    up = VPNConnection(name="old", provider="Windscribe", active=True)
+
+    class NoCatalogue(FakeProvider):
+        def connections(self):
+            raise AssertionError("teardown must not enumerate locations")
+
+        def active_connections(self):
+            return [up] if up.active else []
+
+    provider = NoCatalogue("Windscribe", [up])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
+    assert vpn_manager.disconnect_all().success
+    assert provider.disconnected == ["old"]
+
+
+@pytest.mark.parametrize("status_unavailable", [False, True])
+def test_failed_teardown_stops_the_next_provider(env, monkeypatch, status_unavailable):
+    up = VPNConnection(name="old", provider="Windscribe", active=True)
+    target = VPNConnection(name="new", provider="WireGuard", active=False)
+
+    class StillConnected(FakeProvider):
+        failed = False
+
+        def connections(self):
+            return []  # a failed locations request is not proof of teardown
+
+        def active_connections(self):
+            # Windscribe's status failure also yields no active observations.
+            return [] if status_unavailable and self.failed else [up]
+
+        def disconnect(self, conn):
+            self.failed = True
+            return ActionResult(False, "Windscribe did not disconnect")
+
+    old, new = StillConnected("Windscribe", [up]), FakeProvider("WireGuard", [target])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [old, new])
+    result = vpn_manager.guarded_connect(new, target)
+    assert not result.success
+    assert new.connected == []
+
+
+def test_force_connect_resets_windscribe_before_target(env, monkeypatch):
+    events = []
+    connection = VPNConnection(name="new", provider="WireGuard", active=False)
+
+    class Windscribe(FakeProvider):
+        def force_reset(self):
+            events.append("force-reset")
+            return ActionResult(True, "Windscribe disconnected; Firewall preserved")
+
+        def handover_cleanup(self):
+            events.append("handover-check")
+
+    class Target(FakeProvider):
+        def connect(self, conn):
+            events.append("target-connect")
+            return super().connect(conn)
+
+    windscribe = Windscribe("Windscribe", [])
+    target = Target("WireGuard", [connection])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [windscribe, target])
+
+    result = vpn_manager.force_connect(target, connection)
+
+    assert result.success
+    assert events == ["force-reset", "handover-check", "target-connect"]
+
+
+def test_force_connect_stops_on_reset_failure(env, monkeypatch):
+    connection = VPNConnection(name="new", provider="WireGuard", active=False)
+
+    class Windscribe(FakeProvider):
+        def force_reset(self):
+            return ActionResult(False, "reset failed")
+
+    windscribe = Windscribe("Windscribe", [])
+    target = FakeProvider("WireGuard", [connection])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [windscribe, target])
+
+    result = vpn_manager.force_connect(target, connection)
+
+    assert not result.success
+    assert result.message == "reset failed"
+    assert target.connected == []
+
+
+def test_force_connect_propagates_target_failure_after_reset(env, monkeypatch):
+    connection = VPNConnection(name="new", provider="WireGuard", active=False)
+
+    class Windscribe(FakeProvider):
+        def force_reset(self):
+            return ActionResult(True, "reset")
+
+        def handover_cleanup(self):
+            return None
+
+    class Target(FakeProvider):
+        def connect(self, conn):
+            return ActionResult(False, "target failed")
+
+    windscribe = Windscribe("Windscribe", [])
+    target = Target("WireGuard", [connection])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [windscribe, target])
+
+    result = vpn_manager.force_connect(target, connection)
+
+    assert not result.success
+    assert result.message == "target failed"
+
+
+def test_superseded_force_connect_never_starts_abandoned_target(env, monkeypatch):
+    connection = VPNConnection(name="new", provider="WireGuard", active=False)
+
+    class Windscribe(FakeProvider):
+        def force_reset(self):
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+                time.sleep(5)
+            except Exception:  # noqa: BLE001 — cancellation must pass through providers
+                return ActionResult(True, "swallowed")
+            return ActionResult(True, "not cancelled")
+
+    windscribe = Windscribe("Windscribe", [])
+    target = FakeProvider("WireGuard", [connection])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [windscribe, target])
+
+    result = vpn_manager.force_connect(target, connection)
+
+    assert (result.success, result.message) == (False, "")
+    assert target.connected == []
+
+
+def test_handover_cleanup_blocks_target_before_active_scan(env, monkeypatch):
+    target_connection = VPNConnection(name="new", provider="WireGuard", active=False)
+    target = FakeProvider("WireGuard", [target_connection])
+    events = []
+
+    class HiddenState(FakeProvider):
+        def handover_cleanup(self):
+            events.append("handover-cleanup")
+            return ActionResult(False, "Windscribe did not stop", "force-windscribe")
+
+        def active_connections(self):
+            events.append("active-scan")
+            return []
+
+    old = HiddenState("Windscribe", [])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [old, target])
+
+    result = vpn_manager.guarded_connect(target, target_connection)
+
+    assert not result.success
+    assert result.action == "force-windscribe"
+    assert events == ["handover-cleanup"]
+    assert target.connected == []
+
+
+def test_handover_cleanup_is_skipped_for_the_target_provider(env, monkeypatch):
+    connection = VPNConnection(name="new", provider="Windscribe", active=False)
+    events = []
+
+    class Target(FakeProvider):
+        def handover_cleanup(self):
+            events.append("handover-cleanup")
+            return ActionResult(False, "must not run")
+
+    target = Target("Windscribe", [connection])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [target])
+
+    assert vpn_manager.guarded_connect(target, connection).success
+    assert events == []
+
+
+def test_handover_cleanup_success_precedes_target_connect(env, monkeypatch):
+    target_connection = VPNConnection(name="new", provider="WireGuard", active=False)
+    events = []
+
+    class HiddenState(FakeProvider):
+        def handover_cleanup(self):
+            events.append("handover-cleanup")
+            return ActionResult(True, "Disconnected")
+
+    class Target(FakeProvider):
+        def connect(self, conn):
+            events.append("target-connect")
+            return super().connect(conn)
+
+    old = HiddenState("Windscribe", [])
+    target = Target("WireGuard", [target_connection])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [old, target])
+
+    assert vpn_manager.guarded_connect(target, target_connection).success
+    assert events == ["handover-cleanup", "target-connect"]
+
+
+def test_windscribe_transient_is_torn_down_before_next_provider(env, monkeypatch):
+    from providers import windscribe as windscribe_shim
+    from providers.vendor import windscribe as windscribe_impl
+
+    events = []
+    state = {"connection": "connecting"}
+
+    def run(args, timeout=15):
+        if args == ["status"]:
+            events.append(f"status:{state['connection']}")
+            value = state["connection"].capitalize()
+            return 0, (
+                "Internet connectivity: available\nLogin state: Logged in\n"
+                f"Firewall state: Off\nConnect state: {value}\n"
+            )
+        if args == ["disconnect"]:
+            events.append("disconnect")
+            state["connection"] = "disconnected"
+            return 0, "Disconnecting"
+        raise AssertionError(args)
+
+    class Target(FakeProvider):
+        def connect(self, conn):
+            events.append("target-connect")
+            return super().connect(conn)
+
+    old = windscribe_impl.WindscribeProvider()
+    target_connection = VPNConnection(name="new", provider="WireGuard", active=False)
+    target = Target("WireGuard", [target_connection])
+    monkeypatch.setattr(windscribe_shim.shutil, "which", lambda cmd: "/usr/bin/windscribe-cli")
+    monkeypatch.setattr(windscribe_shim, "_run", run)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [old, target])
+
+    result = vpn_manager.guarded_connect(target, target_connection)
+
+    assert result.success
+    assert events[0] == "status:connecting"
+    assert events.index("disconnect") < events.index("status:disconnected")
+    assert events.index("status:disconnected") < events.index("target-connect")
+
+
+def test_windscribe_status_failure_requires_explicit_force_before_next_provider(env, monkeypatch):
+    from providers import windscribe as windscribe_shim
+    from providers.vendor import windscribe as windscribe_impl
+
+    calls = []
+
+    def run(args, timeout=15):
+        calls.append(args)
+        return 1, "Windscribe daemon unavailable"
+
+    old = windscribe_impl.WindscribeProvider()
+    target_connection = VPNConnection(name="new", provider="WireGuard", active=False)
+    target = FakeProvider("WireGuard", [target_connection])
+    monkeypatch.setattr(windscribe_shim.shutil, "which", lambda cmd: "/usr/bin/windscribe-cli")
+    monkeypatch.setattr(windscribe_shim, "_run", run)
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [old, target])
+
+    result = vpn_manager.guarded_connect(target, target_connection)
+
+    assert not result.success
+    assert result.action == "force-windscribe"
+    assert calls == [["status"], ["disconnect"]]
+    assert target.connected == []
+
+
+def test_windscribe_sigkill_handover_probe(tmp_path, monkeypatch):
+    output = tmp_path / "handover.json"
+    probe = Path(__file__).with_name("windscribe_handover_probe.py")
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+    completed = _REAL_RUN(
+        [sys.executable, str(probe), "--output", str(output)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(output.read_text())
+    events = result["events"]
+
+    assert result["windscribe_state"] == "disconnected"
+    assert result["target_connected"] is True
+    assert result["old_alive"] is False
+    assert result["old_exitcode"] == -signal.SIGKILL
+    assert result["old_pid"] > 1
+    assert events.index("disconnect:new-owner") < events.index("status:disconnected")
+    assert events.index("status:disconnected") < events.index("target-connect")
+    signal_events = [event for event in events if event.startswith("signal:")]
+    assert signal_events
+    assert all(event.rsplit(":", 1)[1] == str(result["old_pid"]) for event in signal_events)
+
+
+def test_windscribe_handover_ci_runs_five_standalone_probes():
+    workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/python.yml").read_text()
+
+    assert "name: Windscribe handover process stress" in workflow
+    assert "for run in 1 2 3 4 5" in workflow
+    assert "tests/windscribe_handover_probe.py" in workflow
 
 
 def test_a_holder_that_is_not_a_switch_process_is_not_touched(env, monkeypatch):
@@ -358,6 +672,7 @@ def test_a_superseded_switch_unwinds_quietly(env, monkeypatch):
     before = signal.getsignal(signal.SIGTERM)
     result = vpn_manager.guarded_connect(wg, nl)
     assert (result.success, result.message) == (False, "")
+    assert wg.disconnected == ["nl"]  # cancel the discarded provider intent
     assert signal.getsignal(signal.SIGTERM) == before
     assert vpn_manager.guarded_connect(FakeProvider("WireGuard", [nl]), nl).success  # lock free
 

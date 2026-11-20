@@ -24,6 +24,7 @@ import ipaddress
 import json
 import subprocess
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import config
@@ -139,9 +140,9 @@ def set_mode(
     """Menu toggle: persist the preference ("all" when on) and apply it.
     apply=False only saves it: with Lockdown off and no VPN up there is
     nothing to protect yet — the next connect puts the rules in place."""
-    cfg = config.load_config()
-    cfg.killswitch_mode = "all" if on else "off"
-    config.save_config(cfg)
+    previous = config.load_config()
+    cfg: config.Config = replace(previous, killswitch_mode="all" if on else "off")
+    config.save_config_changes(previous, cfg)
     if not on:
         return disable()
     if not apply:

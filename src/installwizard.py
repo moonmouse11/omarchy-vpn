@@ -7,6 +7,7 @@ ask protocols/features with that preselected, list the packages still missing.
 """
 
 import contextlib
+import copy
 import getpass
 import json
 import shutil
@@ -137,6 +138,8 @@ _PROBES: dict[str, Callable[[], str]] = {
     "NetworkManager": _networkmanager,
     "Happ": _happ,
     "INCY": _incy,
+    "Cloudflare WARP": lambda: "warp-cli" if shutil.which("warp-cli") else "",
+    "Windscribe": lambda: "windscribe-cli" if shutil.which("windscribe-cli") else "",
 }
 
 
@@ -208,6 +211,16 @@ def hints(cfg: Config, det: Detection, switched: bool = False) -> list[str]:
                 "INCY xray not found — install incy-bin (AUR) or the GitHub .pkg.tar.zst; "
                 "or set OMARCHY_VPN_INCY_ROOT to your INCY install directory"
             )
+    if cfg.provider_visible("Cloudflare WARP") and not shutil.which("warp-cli"):
+        lines.append(
+            "Cloudflare WARP: install from AUR — cloudflare-warp-bin "
+            "(the panel's setup row then starts the daemon and registers)"
+        )
+    if cfg.provider_visible("Windscribe") and not shutil.which("windscribe-cli"):
+        lines.append(
+            "Windscribe: install from AUR — windscribe-cli-v2-bin "
+            "(the panel's setup row then asks for your login)"
+        )
     if resolved_mismatch(cfg, det) and not switched:
         lines.append(
             "DNS: /etc/resolv.conf isn't systemd-resolved's stub — "
@@ -290,11 +303,11 @@ def _source_on(cfg: Config, key: str) -> bool:
     return bool(cfg.ip_sources.get(key, {}).get("enabled", True))  # keyless default: on
 
 
-def ask(prompter: Prompter, det: Detection) -> Config | None:
+def ask(prompter: Prompter, det: Detection, cfg: Config | None = None) -> Config | None:
     """Protocols, features, kill switch mode, API keys — preselected from
     config.json, or on a fresh install from what detect() found. None = cancelled."""
     fresh = not config.CONFIG_PATH.exists()
-    cfg = config.load_config()
+    cfg = cfg if cfg is not None else config.load_config()
     if not _ask_protocols(prompter, det, cfg, fresh) or not _ask_features(prompter, cfg):
         return None
     if fresh or prompter.confirm("Set IP source API keys?", False):
@@ -367,8 +380,9 @@ def run(prompter: Prompter, packages_file: Path | None) -> int:
     """detect → ask → save → (install.sh only) the packages still missing,
     one per line, into packages_file. 1 = cancelled: nothing saved or written."""
     det = detect()
+    previous = config.load_config()
     try:
-        cfg = ask(prompter, det)
+        cfg = ask(prompter, det, copy.deepcopy(previous))
         if cfg is None:
             return 1
         switch = packages_file is not None and resolved_mismatch(cfg, det)
@@ -380,7 +394,8 @@ def run(prompter: Prompter, packages_file: Path | None) -> int:
             )
     except KeyboardInterrupt, EOFError:  # Ctrl-C/Ctrl-D at any question = Esc in gum
         return 1
-    config.save_config(cfg)  # before any sudo: an aborted password prompt keeps the answers
+    # Before sudo: a cancelled password prompt keeps the answers, but not stale unrelated values.
+    cfg = config.save_config_changes(previous, cfg)
 
     for name, note in det.notes.items():
         hidden = "" if cfg.provider_visible(name) else " (hidden)"

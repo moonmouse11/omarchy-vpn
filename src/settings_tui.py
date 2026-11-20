@@ -226,7 +226,7 @@ class SettingsState:
         """True if anything was written."""
         if not self.dirty:
             return False
-        config.save_config(self.draft)
+        self.draft = config.save_config_changes(self.saved, self.draft)
         self.saved = copy.deepcopy(self.draft)
         return True
 

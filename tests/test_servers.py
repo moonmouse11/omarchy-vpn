@@ -1,5 +1,6 @@
 """The panel's server list (--servers) and its connect/disconnect actions."""
 
+import json
 import time
 
 import pytest
@@ -11,6 +12,8 @@ from providers.base import ActionResult, VPNConnection
 
 
 class FakeProvider:
+    ping_supported = True
+
     def __init__(self, name, conns):
         self.name = name
         self._conns = conns
@@ -91,6 +94,36 @@ def test_server_row_marks_orphan_profiles(env):
 def test_server_row_omits_orphan_when_not_flagged(env):
     row = vpn_manager._server_row({"name": "home", "active": True})
     assert "orphan" not in row
+
+
+def test_server_list_passes_only_safe_windscribe_location_metadata(env, monkeypatch):
+    connection = VPNConnection(
+        name="US East - New York - Empire (Pro)",
+        provider="Windscribe",
+        active=False,
+        metadata={
+            "region": "US East",
+            "city": "New York",
+            "nickname": "Empire",
+            "pro": True,
+            "disabled": False,
+            "ten_gbps": True,
+            "secret": "must not escape",
+        },
+    )
+    provider = FakeProvider("Windscribe", [connection])
+    provider.ping_supported = False
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
+
+    row = vpn_manager.server_list()["groups"][0]["servers"][0]
+
+    assert {key: row[key] for key in ("region", "city", "nickname")} == {
+        "region": "US East",
+        "city": "New York",
+        "nickname": "Empire",
+    }
+    assert (row["pro"], row["disabled"], row["ten_gbps"]) == (True, False, True)
+    assert "secret" not in row
 
 
 def test_server_list_sets_orphan_on_active_profiles_without_config(env, monkeypatch):
@@ -195,6 +228,7 @@ def test_server_list_groups_happ_per_subscription_and_other_providers(env, monke
             "importer": None,
             "manage": False,
             "autostart": False,
+            "pingable": True,
             "total": 2,
             "active": True,
         },
@@ -203,6 +237,7 @@ def test_server_list_groups_happ_per_subscription_and_other_providers(env, monke
             "importer": "file",
             "manage": True,
             "autostart": True,
+            "pingable": True,
             "total": 1,
             "active": True,
         },
@@ -211,6 +246,7 @@ def test_server_list_groups_happ_per_subscription_and_other_providers(env, monke
             "importer": "file",
             "manage": True,
             "autostart": True,
+            "pingable": True,
             "total": 0,
             "active": False,
         },
@@ -329,6 +365,73 @@ def test_panel_cli_connect_disconnect(monkeypatch, argv, expected):
     assert len(reported) == 1
 
 
+@pytest.mark.parametrize(
+    ("flag", "argv", "expected_call"),
+    [
+        ("--connect-result", ["WireGuard", "home"], ("normal", ("WireGuard", "home"))),
+        (
+            "--connect-result",
+            ["Happ", "DE", "15"],
+            ("normal", ("Happ", "DE", "15")),
+        ),
+        ("--force-connect", ["WireGuard", "home"], ("force", ("WireGuard", "home"))),
+    ],
+)
+def test_connect_result_cli_prints_one_json_object(monkeypatch, capsys, flag, argv, expected_call):
+    seen = []
+    monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", flag, *argv])
+    monkeypatch.setattr(
+        vpn_manager,
+        "panel_connect",
+        lambda *a: (
+            seen.append(("normal", a)) or ActionResult(False, "needs reset", "force-windscribe")
+        ),
+    )
+    monkeypatch.setattr(
+        vpn_manager,
+        "panel_force_connect",
+        lambda *a: seen.append(("force", a)) or ActionResult(True, "connected"),
+        raising=False,
+    )
+    monkeypatch.setattr(vpn_manager, "refresh_bar", lambda: None)
+
+    vpn_manager.main()
+
+    assert seen == [expected_call]
+    assert json.loads(capsys.readouterr().out) == {
+        "success": flag == "--force-connect",
+        "message": "connected" if flag == "--force-connect" else "needs reset",
+        "action": None if flag == "--force-connect" else "force-windscribe",
+    }
+
+
+@pytest.mark.parametrize("flag", ["--connect-result", "--force-connect"])
+def test_connect_result_cli_rejects_wrong_arity(monkeypatch, flag):
+    monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", flag, "Happ"])
+    with pytest.raises(SystemExit):
+        vpn_manager.main()
+
+
+def test_panel_force_connect_uses_validated_target_and_remembers_success(monkeypatch):
+    conn = VPNConnection(name="home", provider="WireGuard", active=False)
+    provider = FakeProvider("WireGuard", [conn])
+    calls = []
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
+    monkeypatch.setattr(
+        vpn_manager,
+        "force_connect",
+        lambda selected, connection: (
+            calls.append((selected, connection)) or ActionResult(True, "up")
+        ),
+    )
+    monkeypatch.setattr(vpn_manager.quickconnect, "remember", lambda *a: calls.append(a))
+
+    result = vpn_manager.panel_force_connect("WireGuard", "home")
+
+    assert result.success
+    assert calls == [(provider, conn), ("WireGuard", "home", None)]
+
+
 def test_panel_cli_connect_rejects_wrong_arity(monkeypatch):
     monkeypatch.setattr(vpn_manager.sys, "argv", ["vpn_manager.py", "--connect", "Happ"])
     with pytest.raises(SystemExit):
@@ -398,3 +501,75 @@ def test_server_list_explains_an_empty_happ_without_captured_headers(
     monkeypatch.setattr(happmeta, "has_headers", lambda: captured)
     titles = [g["title"] for g in vpn_manager.server_list()["groups"]]
     assert titles == ([vpn_manager.HAPP_NO_HEADERS_TITLE] if hint else [])
+
+
+def test_server_list_setup_notice_group(env, monkeypatch):
+    class NeedsSetup(FakeProvider):
+        def setup_issue(self):
+            return {
+                "hint": "WARP daemon is not running",
+                "command": "sudo systemctl enable --now warp-svc && warp-cli registration new",
+            }
+
+    provider = NeedsSetup("Cloudflare WARP", [])
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
+    listing = vpn_manager.server_list()
+    assert len(listing["groups"]) == 1
+    group = listing["groups"][0]
+    assert group["provider"] == "Cloudflare WARP"
+    assert group["title"] == "WARP daemon is not running"
+    assert group["setup"] == ("sudo systemctl enable --now warp-svc && warp-cli registration new")
+    assert group["servers"] == []
+
+
+def test_server_list_no_setup_group_when_ready(env, monkeypatch):
+    provider = FakeProvider(
+        "Cloudflare WARP",
+        [VPNConnection(name="Cloudflare WARP", provider="Cloudflare WARP", active=False)],
+    )
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [provider])
+    listing = vpn_manager.server_list()
+    assert [g["title"] for g in listing["groups"]] == ["Cloudflare WARP"]
+    assert "setup" not in listing["groups"][0]
+
+
+def test_server_list_broken_setup_issue_is_ignored(env, monkeypatch):
+    class Broken(FakeProvider):
+        def setup_issue(self):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [Broken("WireGuard", [])])
+    listing = vpn_manager.server_list()
+    assert listing["groups"] == []
+    assert listing["providers"][0]["name"] == "WireGuard"
+
+
+def test_server_list_marks_ping_capability_on_provider_group_and_rows(env, monkeypatch):
+    class Provider(FakeProvider):
+        def __init__(self, name, ping_supported):
+            super().__init__(name, [VPNConnection("server", name, False)])
+            self.ping_supported = ping_supported
+
+    monkeypatch.setattr(
+        vpn_manager,
+        "ALL_PROVIDERS",
+        [Provider("WireGuard", True), Provider("Windscribe", False)],
+    )
+    listing = vpn_manager.server_list()
+    by_name = {p["name"]: p for p in listing["providers"]}
+    groups = {g["provider"]: g for g in listing["groups"]}
+    assert by_name["WireGuard"]["pingable"] is True
+    assert groups["WireGuard"]["pingable"] is True
+    assert groups["WireGuard"]["servers"][0]["pingable"] is True
+    assert by_name["Windscribe"]["pingable"] is False
+    assert groups["Windscribe"]["pingable"] is False
+    assert groups["Windscribe"]["servers"][0]["pingable"] is False
+
+
+def test_server_list_malformed_setup_issue_is_ignored(env, monkeypatch):
+    class Malformed(FakeProvider):
+        def setup_issue(self):
+            return {"hint": "no command key"}
+
+    monkeypatch.setattr(vpn_manager, "ALL_PROVIDERS", [Malformed("WireGuard", [])])
+    assert vpn_manager.server_list()["groups"] == []

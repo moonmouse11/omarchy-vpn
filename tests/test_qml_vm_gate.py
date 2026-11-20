@@ -87,6 +87,15 @@ def observations(tmp_path):
     }
     for name in ("both-scrolled-before-refresh", "both-scrolled-after-refresh"):
         (tmp_path / f"{name}.json").write_text(json.dumps(both_scrolled))
+    (tmp_path / "restore-race.json").write_text(
+        json.dumps(
+            {
+                "raceExpectedKey": "server\nwindscribe\nVM Region - City 069 - Server 069",
+                "panelTopKey": "server\nwindscribe\nVM Region - City 069 - Server 069",
+                "panelTopOffset": 0.0,
+            }
+        )
+    )
     force_target = {"provider": "WireGuard", "name": "vm-target", "subscription_id": "sub-42"}
     ordinary = ["--connect-result", "WireGuard", "vm-target", "sub-42"]
     force = ["--force-connect", "WireGuard", "vm-target", "sub-42"]
@@ -146,6 +155,7 @@ def test_guest_captures_expanded_folded_and_scrolled_geometry():
         "panel-scrolled-after-refresh",
         "both-scrolled-before-refresh",
         "both-scrolled-after-refresh",
+        "restore-race",
     ):
         assert f"snapshot {snapshot}" in GUEST_SCRIPT
 
@@ -168,6 +178,16 @@ def test_runtime_verifier_rejects_a_model_rebuild_viewport_jump(
     data = json.loads(path.read_text())
     data[content_field] = 0
     data[key_field] = "provider\nWindscribe"
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(ValueError):
+        _verifier()(observations)
+
+
+def test_runtime_verifier_rejects_an_older_deferred_restore_winning(observations):
+    path = observations / "restore-race.json"
+    data = json.loads(path.read_text())
+    data["panelTopKey"] = "server\nwindscribe\nVM Region - City 009 - Server 009"
     path.write_text(json.dumps(data))
 
     with pytest.raises(ValueError):

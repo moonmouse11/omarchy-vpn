@@ -85,6 +85,7 @@ s = s.replace(
 probe = '''
     property bool auditCapture: false
     property var auditCommands: []
+    property string auditRaceExpectedKey: ""
     function auditTopRow(list): var {
       var best = null
       for (var i = 0; i < list.count; i++) {
@@ -128,6 +129,7 @@ probe = '''
         windowContentY: appWindow.locations.contentY,
         windowTopKey: windowTop.key,
         windowTopOffset: windowTop.offset,
+        raceExpectedKey: auditRaceExpectedKey,
         commands: auditCommands
       })
     }
@@ -163,6 +165,19 @@ probe = '''
         Qt.callLater(function() {
           panelList.positionViewAtIndex(12, ListView.Beginning)
           appWindow.locations.positionViewAtIndex(40, ListView.Beginning)
+        })
+      })
+    }
+    function auditStartRestoreRace(): void {
+      panelList.positionViewAtIndex(20, ListView.Beginning)
+      Qt.callLater(function() {
+        root.rememberViewports()
+        root.serverGroups = root.serverGroups.slice()
+        Qt.callLater(function() {
+          panelList.positionViewAtIndex(80, ListView.Beginning)
+          auditRaceExpectedKey = root.rowIdentity(root.serverRows[80])
+          root.rememberViewports()
+          root.serverProviders = root.serverProviders.slice()
         })
       })
     }
@@ -269,6 +284,9 @@ snapshot both-scrolled-before-refresh
 omarchy-shell omarchy-vpn refresh
 sleep 2
 snapshot both-scrolled-after-refresh
+omarchy-shell omarchy-vpn auditStartRestoreRace
+sleep 2
+snapshot restore-race
 omarchy-shell omarchy-vpn close
 wtype -k Escape
 journalctl --user --since "$start" --no-pager > "$OUT/shell-journal.txt"

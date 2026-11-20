@@ -141,6 +141,7 @@ ListView {
       }
       positionViewAtIndex(index, ListView.Visible)
       Qt.callLater(function() {
+        if (savedViewport !== saved) return
         var item = itemAtIndex(index)
         contentY = boundedContentY(item ? item.y - saved.offset : saved.contentY)
         savedViewport = null

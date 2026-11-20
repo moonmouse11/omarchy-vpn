@@ -68,6 +68,13 @@ def test_inactive_list_cannot_reuse_a_stale_viewport_anchor():
     assert "savedViewport = null" in restore
 
 
+def test_deferred_restore_cannot_overwrite_a_newer_viewport_snapshot():
+    restore = SERVER_LIST.split("function restoreViewport", 1)[1].split("// Hover moves", 1)[0]
+    inner = restore.split("Qt.callLater(function()", 2)[2]
+    assert "savedViewport !== saved" in inner
+    assert inner.index("savedViewport !== saved") < inner.index("contentY =")
+
+
 def test_server_list_exposes_preamble_tail_filter_and_gate():
     assert "property Component preamble" in SERVER_LIST
     assert "property Component tail" in SERVER_LIST

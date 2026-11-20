@@ -110,6 +110,14 @@ def _verify_viewport_stability(output: Path) -> None:
                 f"dual-surface refresh moved {surface}: before={both_before}, after={both_after}"
             )
 
+    race = read("restore-race")
+    if (
+        race.get("raceExpectedKey") == ""
+        or race.get("panelTopKey") != race.get("raceExpectedKey")
+        or abs(race.get("panelTopOffset", 0)) > 2
+    ):
+        raise ValueError(f"an older deferred restore beat the newest snapshot: {race}")
+
 
 def verify(output: Path) -> None:
     _verify_windscribe_handover(output)

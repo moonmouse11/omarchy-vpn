@@ -514,6 +514,10 @@ Panel {
       text = text !== "" ? text + " · " + activity : activity
     return text
   }
+  property bool panelBarLabelCaptured: false
+  property string panelBarLabel: ""
+  readonly property string displayedBarLabel:
+    opened && panelBarLabelCaptured ? panelBarLabel : barLabel
 
   // "{subscription}: {server}" -> "Provider B: 🇩🇪 Germany 1". An empty
   // placeholder takes one separator with it: the one before it when a value
@@ -788,7 +792,13 @@ Panel {
 
   Component.onCompleted: setupCheck.running = true
 
-  onOpenedChanged: if (opened) {
+  onOpenedChanged: {
+    if (!opened) {
+      panelBarLabelCaptured = false
+      return
+    }
+    panelBarLabel = barLabel
+    panelBarLabelCaptured = true
     if (!setupCheck.running) setupCheck.running = true
     refresh()
     loadServers()
@@ -950,7 +960,8 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: root.stateGlyph
-      + (root.showLabel && root.barLabel !== "" && !root.vertical ? "  " + root.barLabel : "")
+      + (root.showLabel && root.displayedBarLabel !== "" && !root.vertical
+        ? "  " + root.displayedBarLabel : "")
     tooltipText: root.opened ? "" : root.hoverText
     dimmed: !root.connected
     fontSize: Style.font.caption

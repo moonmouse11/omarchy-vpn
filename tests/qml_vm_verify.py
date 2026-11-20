@@ -90,6 +90,11 @@ def _verify_viewport_stability(output: Path) -> None:
         or abs(after.get("activeContentY", 0) - before.get("activeContentY", 0)) > 2
     ):
         raise ValueError(f"server refresh moved the viewport: before={before}, after={after}")
+    if after.get("panelDelegateCreates") != 0:
+        raise ValueError(
+            "same-size server refresh recreated visible delegates: "
+            f"{after.get('panelDelegateCreates')}"
+        )
 
     both_before = read("both-scrolled-before-refresh")
     both_after = read("both-scrolled-after-refresh")
@@ -109,6 +114,20 @@ def _verify_viewport_stability(output: Path) -> None:
             raise ValueError(
                 f"dual-surface refresh moved {surface}: before={both_before}, after={both_after}"
             )
+
+    label_short = read("bar-label-short")
+    label_long = read("bar-label-long")
+    if (
+        label_short.get("requestedBarLabel") == label_long.get("requestedBarLabel")
+        or label_short.get("displayedBarLabel") != label_long.get("displayedBarLabel")
+        or abs(label_short.get("barButtonWidth", 0) - label_long.get("barButtonWidth", 0)) > 1
+        or abs(label_short.get("panelCardX", 0) - label_long.get("panelCardX", 0)) > 1
+        or label_short.get("panelContentWidth") != label_long.get("panelContentWidth")
+    ):
+        raise ValueError(
+            "an open panel moved with the changing bar label: "
+            f"short={label_short}, long={label_long}"
+        )
 
     race = read("restore-race")
     if (

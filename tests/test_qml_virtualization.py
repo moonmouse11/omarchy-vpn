@@ -15,10 +15,23 @@ def test_server_list_is_a_listview_without_repeater():
     assert "Repeater" not in SERVER_LIST
 
 
-def test_server_list_model_empties_while_inactive():
-    # a hidden panel/window owns no ServerRow delegates at all
+def test_open_panel_freezes_the_bar_label_that_defines_its_anchor_geometry():
+    assert "property bool panelBarLabelCaptured: false" in WIDGET
+    assert 'property string panelBarLabel: ""' in WIDGET
+    assert "opened && panelBarLabelCaptured ? panelBarLabel : barLabel" in WIDGET
+    assert "panelBarLabel = barLabel" in WIDGET
+    button = WIDGET.split("WidgetButton {", 1)[1].split("KeyboardPanel {", 1)[0]
+    assert "root.displayedBarLabel" in button
+    assert "root.barLabel" not in button
+
+
+def test_server_list_model_empties_while_inactive_without_replacing_the_model_array():
+    # A numeric model keeps existing delegates alive when --servers replaces
+    # the JavaScript array with the same number of rows. Hidden lists own none.
     assert re.search(r"property bool active", SERVER_LIST)
-    assert "model: active ? host.serverRows : []" in SERVER_LIST
+    assert "model: active ? host.serverRows.length : 0" in SERVER_LIST
+    assert "row: list.host.serverRows[index]" in SERVER_LIST
+    assert "model: active ? host.serverRows : []" not in SERVER_LIST
 
 
 def test_server_list_scrolls_and_resets_by_index():

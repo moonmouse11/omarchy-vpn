@@ -35,9 +35,8 @@ ListView {
   readonly property var pickedProvider: inWindow && host.rowsLayout !== "tree" && host.providerFilter !== ""
     ? host.providerInfo(host.providerFilter) : null
 
-  model: active ? host.serverRows : []
+  model: active ? host.serverRows.length : 0
   delegate: ServerRow {
-    required property var modelData
     required property int index
     width: list.width
     // ListView (unlike the old Column) doesn't fall back to implicitHeight
@@ -45,7 +44,7 @@ ListView {
     host: list.host
     gate: pointerGate
     inWindow: list.inWindow
-    row: modelData
+    row: list.host.serverRows[index]
     rowIndex: index
   }
   spacing: Style.space(2)

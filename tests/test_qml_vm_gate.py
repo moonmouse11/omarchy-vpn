@@ -75,8 +75,10 @@ def observations(tmp_path):
         "topOffset": -4.0,
         "activeContentY": 1400.0,
     }
-    for name in ("panel-scrolled-before-refresh", "panel-scrolled-after-refresh"):
-        (tmp_path / f"{name}.json").write_text(json.dumps(scrolled))
+    (tmp_path / "panel-scrolled-before-refresh.json").write_text(json.dumps(scrolled))
+    (tmp_path / "panel-scrolled-after-refresh.json").write_text(
+        json.dumps({**scrolled, "panelDelegateCreates": 0})
+    )
     both_scrolled = {
         "panelContentY": 800.0,
         "panelTopKey": "server\nwindscribe\nVM Region - City 020 - Server 020",
@@ -87,6 +89,19 @@ def observations(tmp_path):
     }
     for name in ("both-scrolled-before-refresh", "both-scrolled-after-refresh"):
         (tmp_path / f"{name}.json").write_text(json.dumps(both_scrolled))
+    for name, live in (("bar-label-short", "DE"), ("bar-label-long", "Netherlands")):
+        (tmp_path / f"{name}.json").write_text(
+            json.dumps(
+                {
+                    "requestedBarLabel": live,
+                    "liveBarLabel": live,
+                    "displayedBarLabel": "Germany",
+                    "barButtonWidth": 112.0,
+                    "panelCardX": 840.0,
+                    "panelContentWidth": 400.0,
+                }
+            )
+        )
     (tmp_path / "restore-race.json").write_text(
         json.dumps(
             {
@@ -155,6 +170,8 @@ def test_guest_captures_expanded_folded_and_scrolled_geometry():
         "panel-scrolled-after-refresh",
         "both-scrolled-before-refresh",
         "both-scrolled-after-refresh",
+        "bar-label-short",
+        "bar-label-long",
         "restore-race",
     ):
         assert f"snapshot {snapshot}" in GUEST_SCRIPT
@@ -178,6 +195,28 @@ def test_runtime_verifier_rejects_a_model_rebuild_viewport_jump(
     data = json.loads(path.read_text())
     data[content_field] = 0
     data[key_field] = "provider\nWindscribe"
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(ValueError):
+        _verifier()(observations)
+
+
+def test_runtime_verifier_rejects_open_panel_moving_with_a_longer_bar_label(observations):
+    path = observations / "bar-label-long.json"
+    data = json.loads(path.read_text())
+    data["displayedBarLabel"] = "Netherlands"
+    data["barButtonWidth"] = 164.0
+    data["panelCardX"] = 866.0
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(ValueError):
+        _verifier()(observations)
+
+
+def test_runtime_verifier_rejects_delegate_recreation_on_same_size_refresh(observations):
+    path = observations / "panel-scrolled-after-refresh.json"
+    data = json.loads(path.read_text())
+    data["panelDelegateCreates"] = 12
     path.write_text(json.dumps(data))
 
     with pytest.raises(ValueError):

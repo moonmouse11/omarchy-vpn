@@ -7,13 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-20
+
+### Upgrade notes
+
+Run **Update setup** in the panel (or `make install`) after updating. This release adds the
+persistent backend service and updates installed helpers and trusted backend modules; updating the
+plugin clone alone is not enough. Existing profiles, keys, subscriptions, favourites and recent
+connections are retained.
+
 ### Added
 
-- Support both Windscribe CLI 2.21.x and official 2.25.x status output, serialize vendor
-  CLI calls across processes, and fail closed on unknown successful output.
-- Add a canonical Best Location row, structured Pro/Disabled/10 Gbps location metadata,
-  and validated persisted protocol/port preferences. Explicit protocols make one attempt;
-  Automatic retains the confirmed-teardown fallback sequence.
+- **Cloudflare WARP** as a free vendor provider, including setup guidance, registration,
+  connect/disconnect lifecycle, exact interface ownership and disposable end-to-end tests.
+- **Windscribe CLI** free-location support with canonical Best Location, structured
+  Pro/Disabled/10 Gbps metadata and validated persisted protocol/port preferences. Explicit
+  protocols make one attempt; Automatic retains the confirmed-teardown fallback sequence. Support
+  both 2.21.x and official 2.25.x status output, serialize vendor CLI calls across processes and
+  fail closed on unknown successful output.
+- A persistent per-user backend service with direct-read fallback, bounded IPC deadlines and a
+  virtualized server list, reducing repeated Python startup and QML delegate costs.
+- Explicit Windscribe **Force switch** confirmation after bounded ordinary teardown fails. The
+  fixed privileged reset targets only `windscribe-helper.service`, verifies teardown and preserves
+  the user's Firewall state before continuing to the originally selected VPN.
 
 ### Security
 
@@ -44,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Backend IPC applies a shared monotonic deadline across each request's socket operations,
   so a peer sending one byte at a time cannot extend the wait indefinitely. Provider
   handlers themselves are not forcibly interrupted.
+- Preserve the current row and visual offset when server data, favourites, pings or connection
+  state refresh the list. Panel and app-window viewports remain independent, unchanged delegates
+  are reused, and a changing bar label no longer moves an open panel.
 
 ### Tests
 
@@ -51,7 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   window, simultaneous visibility and shared filter updates, empty hidden-list models,
   zero vendor actions and absence of QML runtime errors.
 
-## [0.4.0] - Unreleased
+## [0.4.0] - 2026-11-06
 
 ### Upgrade notes
 
@@ -276,8 +295,9 @@ window rules and restarts the shell so the new widget code loads.
 First release: a fork of [waybar-vpn-manager](https://github.com/moonmouse11/waybar-vpn-manager)
 0.3.0 (archived), renamed ahead of the Omarchy 4 port.
 
-[Unreleased]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.2...HEAD
-[0.4.0]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.2...release/0.4.0
+[Unreleased]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/moonmouse11/omarchy-vpn/compare/v0.2.0...v0.3.0

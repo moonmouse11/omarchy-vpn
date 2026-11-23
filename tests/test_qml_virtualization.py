@@ -15,16 +15,77 @@ def test_server_list_is_a_listview_without_repeater():
     assert "Repeater" not in SERVER_LIST
 
 
-def test_server_list_model_empties_while_inactive():
-    # a hidden panel/window owns no ServerRow delegates at all
+def test_open_panel_freezes_the_bar_label_that_defines_its_anchor_geometry():
+    assert "property bool panelBarLabelCaptured: false" in WIDGET
+    assert 'property string panelBarLabel: ""' in WIDGET
+    assert "opened && panelBarLabelCaptured ? panelBarLabel : barLabel" in WIDGET
+    assert "panelBarLabel = barLabel" in WIDGET
+    button = WIDGET.split("WidgetButton {", 1)[1].split("KeyboardPanel {", 1)[0]
+    assert "root.displayedBarLabel" in button
+    assert "root.barLabel" not in button
+
+
+def test_server_list_model_empties_while_inactive_without_replacing_the_model_array():
+    # A numeric model keeps existing delegates alive when --servers replaces
+    # the JavaScript array with the same number of rows. Hidden lists own none.
     assert re.search(r"property bool active", SERVER_LIST)
-    assert "model: active ? host.serverRows : []" in SERVER_LIST
+    assert "model: active ? host.serverRows.length : 0" in SERVER_LIST
+    assert "row: list.host.serverRows[index]" in SERVER_LIST
+    assert "model: active ? host.serverRows : []" not in SERVER_LIST
 
 
 def test_server_list_scrolls_and_resets_by_index():
     assert "function scrollToRow" in SERVER_LIST
     assert "positionViewAtIndex" in SERVER_LIST
     assert "function resetPointer" in SERVER_LIST
+
+
+def test_model_rebuilds_preserve_every_visible_viewport():
+    assert "function rememberViewport" in SERVER_LIST
+    assert "function restoreViewport" in SERVER_LIST
+    assert "host.rowIdentity" in SERVER_LIST
+    assert "function rememberViewports" in WIDGET
+    remembered = WIDGET.split("function rememberViewports", 1)[1].split("function setExpanded", 1)[
+        0
+    ]
+    assert "panelList.rememberViewport" in remembered
+    assert "appWindow.locations.rememberViewport" in remembered
+
+    expanded = WIDGET.split("function setExpanded", 1)[1].split("function rowOpenKey", 1)[0]
+    assert "rememberViewports" in expanded
+    assert expanded.index("rememberViewports") < expanded.index("expandedGroups = next")
+
+    loaded = WIDGET.split("id: serversProc", 1)[1].split("id: pingSettle", 1)[0]
+    assert "root.rememberViewports()" in loaded
+    assert loaded.index("root.rememberViewports()") < loaded.index("root.serverGroups =")
+
+    changed = WIDGET.split("onServerRowsChanged:", 1)[1].split("AppWindow {", 1)[0]
+    assert "panelList.restoreViewport()" in changed
+    assert "appWindow.locations.restoreViewport()" in changed
+
+
+def test_fold_restore_is_anchored_to_the_clicked_header():
+    assert "function rowIdentity" in WIDGET
+    assert "function rowIndex" in WIDGET
+    assert "setExpanded(rowOpenKey(row), !row.open, row)" in WIDGET
+    assert "setExpanded(rowOpenKey(row), open, row)" in WIDGET
+
+
+def test_inactive_list_cannot_reuse_a_stale_viewport_anchor():
+    remember = SERVER_LIST.split("function rememberViewport", 1)[1].split(
+        "function boundedContentY", 1
+    )[0]
+    assert "savedViewport = null" in remember
+    restore = SERVER_LIST.split("function restoreViewport", 1)[1].split("// Hover moves", 1)[0]
+    assert "if (!active)" in restore
+    assert "savedViewport = null" in restore
+
+
+def test_deferred_restore_cannot_overwrite_a_newer_viewport_snapshot():
+    restore = SERVER_LIST.split("function restoreViewport", 1)[1].split("// Hover moves", 1)[0]
+    inner = restore.split("Qt.callLater(function()", 2)[2]
+    assert "savedViewport !== saved" in inner
+    assert inner.index("savedViewport !== saved") < inner.index("contentY =")
 
 
 def test_server_list_exposes_preamble_tail_filter_and_gate():

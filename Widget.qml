@@ -254,7 +254,27 @@ Panel {
     return rows
   }
 
-  function setExpanded(key, open) {
+  function rowIdentity(row) {
+    if (!row) return ""
+    if (row.kind === "provider") return "provider\n" + String(row.provider.name)
+    if (row.kind === "group") return "group\n" + String(row.group.id)
+    return String(row.kind) + "\n" + String(row.group.id) + "\n" + String(row.server.name)
+  }
+
+  function rowIndex(identity) {
+    for (var i = 0; i < serverRows.length; i++)
+      if (rowIdentity(serverRows[i]) === identity) return i
+    return -1
+  }
+
+  function rememberViewports(row) {
+    var key = row ? rowIdentity(row) : ""
+    panelList.rememberViewport(key)
+    appWindow.locations.rememberViewport(key)
+  }
+
+  function setExpanded(key, open, row) {
+    rememberViewports(row)
     var next = {}
     for (var k in expandedGroups) next[k] = expandedGroups[k]
     next[key] = open
@@ -391,7 +411,10 @@ Panel {
   function activateServerRow(row) {
     if (!row) return
     if (row.kind === "group" && row.group.setup) { runProviderSetup(row.group.setup); return }
-    if (row.kind === "group" || row.kind === "provider") { setExpanded(rowOpenKey(row), !row.open); return }
+    if (row.kind === "group" || row.kind === "provider") {
+      setExpanded(rowOpenKey(row), !row.open, row)
+      return
+    }
     var g = row.group, s = row.server
     pendingKey = rowKey(g, s)
     if (row.kind === "server" && s.active) {
@@ -473,7 +496,8 @@ Panel {
   // h/l on a protocol or group header: collapse/expand, like a file tree
   function openCursorGroup(open) {
     var row = serverRows[serverCursor]
-    if (row && (row.kind === "group" || row.kind === "provider")) setExpanded(rowOpenKey(row), open)
+    if (row && (row.kind === "group" || row.kind === "provider"))
+      setExpanded(rowOpenKey(row), open, row)
   }
 
   // What the backend is busy with ("ping 23/150"): next to the connection
@@ -490,6 +514,10 @@ Panel {
       text = text !== "" ? text + " · " + activity : activity
     return text
   }
+  property bool panelBarLabelCaptured: false
+  property string panelBarLabel: ""
+  readonly property string displayedBarLabel:
+    opened && panelBarLabelCaptured ? panelBarLabel : barLabel
 
   // "{subscription}: {server}" -> "Provider B: 🇩🇪 Germany 1". An empty
   // placeholder takes one separator with it: the one before it when a value
@@ -764,7 +792,13 @@ Panel {
 
   Component.onCompleted: setupCheck.running = true
 
-  onOpenedChanged: if (opened) {
+  onOpenedChanged: {
+    if (!opened) {
+      panelBarLabelCaptured = false
+      return
+    }
+    panelBarLabel = barLabel
+    panelBarLabelCaptured = true
     if (!setupCheck.running) setupCheck.running = true
     refresh()
     loadServers()
@@ -777,6 +811,8 @@ Panel {
     // rows just moved under a still pointer — not a hover
     panelList.resetPointer()
     appWindow.locations.resetPointer()
+    panelList.restoreViewport()
+    appWindow.locations.restoreViewport()
     if (serverCursor >= serverRows.length) serverCursor = serverRows.length - 1
   }
 
@@ -885,6 +921,7 @@ Panel {
       onStreamFinished: {
         var data = null
         try { data = JSON.parse(String(text || "")) } catch (e) {}
+        root.rememberViewports()
         root.serverGroups = data && data.groups instanceof Array ? data.groups : []
         root.serverProviders = data && data.providers instanceof Array ? data.providers : []
         root.quick = data && data.quick ? data.quick : { favourites: [], recent: [], last: null }
@@ -923,7 +960,8 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: root.stateGlyph
-      + (root.showLabel && root.barLabel !== "" && !root.vertical ? "  " + root.barLabel : "")
+      + (root.showLabel && root.displayedBarLabel !== "" && !root.vertical
+        ? "  " + root.displayedBarLabel : "")
     tooltipText: root.opened ? "" : root.hoverText
     dimmed: !root.connected
     fontSize: Style.font.caption

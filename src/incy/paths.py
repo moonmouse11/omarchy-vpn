@@ -20,7 +20,7 @@ def _root_from_exec(raw: str) -> Path | None:
     # Desktop Entry: Exec=/…/opt/incy/bin/incy %u
     exe = line.split()[0] if line.split() else line
     if exe.endswith(("/bin/incy", "\\bin\\incy")):
-        return Path(exe).resolve().parent.parent
+        return Path(exe).resolve().parent.parent  # NOSONAR — desktop entry has same user
     return None
 
 

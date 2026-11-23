@@ -35,9 +35,8 @@ ListView {
   readonly property var pickedProvider: inWindow && host.rowsLayout !== "tree" && host.providerFilter !== ""
     ? host.providerInfo(host.providerFilter) : null
 
-  model: active ? host.serverRows : []
+  model: active ? host.serverRows.length : 0
   delegate: ServerRow {
-    required property var modelData
     required property int index
     width: list.width
     // ListView (unlike the old Column) doesn't fall back to implicitHeight
@@ -45,7 +44,7 @@ ListView {
     host: list.host
     gate: pointerGate
     inWindow: list.inWindow
-    row: modelData
+    row: list.host.serverRows[index]
     rowIndex: index
   }
   spacing: Style.space(2)
@@ -77,6 +76,76 @@ ListView {
     if (index < 0) return
     // callLater: the model may just have changed, delegates still settling
     Qt.callLater(function() { positionViewAtIndex(index, ListView.Contain) })
+  }
+
+  // Replacing a JavaScript-array model resets ListView to its origin. Keep the
+  // first visible row (or a clicked header) at the same viewport offset while
+  // folding groups or applying a refreshed --servers response.
+  property var savedViewport: null
+  property bool viewportRestorePending: false
+
+  function rememberViewport(preferredKey) {
+    if (!active || count === 0) {
+      savedViewport = null
+      return
+    }
+    var key = String(preferredKey || "")
+    var item = null
+    if (key !== "") {
+      var preferred = host.rowIndex(key)
+      if (preferred >= 0) item = itemAtIndex(preferred)
+    }
+    if (!item) {
+      var bestY = Infinity
+      for (var i = 0; i < count; i++) {
+        var candidate = itemAtIndex(i)
+        if (!candidate || candidate.y + candidate.height <= contentY || candidate.y >= contentY + height)
+          continue
+        if (candidate.y < bestY) {
+          item = candidate
+          key = host.rowIdentity(host.serverRows[i])
+          bestY = candidate.y
+        }
+      }
+    }
+    savedViewport = item
+      ? { key: key, offset: item.y - contentY, contentY: contentY }
+      : { key: "", offset: 0, contentY: contentY }
+  }
+
+  function boundedContentY(value) {
+    return Math.max(originY, Math.min(originY + Math.max(0, contentHeight - height), value))
+  }
+
+  function restoreViewport() {
+    if (!active) {
+      savedViewport = null
+      return
+    }
+    if (!savedViewport || viewportRestorePending) return
+    viewportRestorePending = true
+    Qt.callLater(function() {
+      viewportRestorePending = false
+      if (!active) {
+        savedViewport = null
+        return
+      }
+      var saved = savedViewport
+      if (!saved) return
+      var index = saved.key !== "" ? host.rowIndex(saved.key) : -1
+      if (index < 0) {
+        contentY = boundedContentY(saved.contentY)
+        savedViewport = null
+        return
+      }
+      positionViewAtIndex(index, ListView.Visible)
+      Qt.callLater(function() {
+        if (savedViewport !== saved) return
+        var item = itemAtIndex(index)
+        contentY = boundedContentY(item ? item.y - saved.offset : saved.contentY)
+        savedViewport = null
+      })
+    })
   }
 
   // Hover moves the cursor only when the pointer itself moved: a rebuilt or

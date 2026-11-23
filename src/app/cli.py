@@ -5,6 +5,7 @@ import json
 import os
 import sys
 
+import clipboardread
 import happmeta
 import ipinfo
 import logutil
@@ -108,6 +109,11 @@ def main() -> None:
         nargs="+",
         metavar="dns|ip|speed [TARGET]",
         help="Run a check for the app window's card (JSON lines); speed: all|NAME|URL",
+    )
+    group.add_argument(
+        "--clipboard",
+        choices=("filter", "url", "key"),
+        help="Read bounded text from the Wayland clipboard (internal)",
     )
     group.add_argument(
         "--dns-route-update",
@@ -259,6 +265,14 @@ def main() -> None:
         if args.check[0] not in CHECK_TITLES or len(args.check) > 2:
             parser.error("--check takes dns|ip|speed [TARGET]")
         _report(_patched("run_check", run_check)(*args.check))
+    elif args.clipboard is not None:
+        limits = {"filter": 4096, "url": 8192, "key": 65536}
+        try:
+            text = clipboardread.read_text(limits[args.clipboard])
+        except clipboardread.ClipboardReadError as error:
+            print(json.dumps({"error": str(error)}))
+            sys.exit(1)
+        print(json.dumps({"text": text}, ensure_ascii=False))
     elif args.dns_route_update:
         dnsroutes.update(active_connections())
     elif args.dns_autotest:

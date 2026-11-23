@@ -8,6 +8,74 @@ SERVER_LIST = (ROOT / "ServerList.qml").read_text()
 WIDGET = (ROOT / "Widget.qml").read_text()
 APP = (ROOT / "AppWindow.qml").read_text()
 SERVER_ROW = (ROOT / "ServerRow.qml").read_text()
+PROFILE_BAR = (ROOT / "ProfileBar.qml").read_text()
+CHECK_CARD = (ROOT / "CheckCard.qml").read_text()
+BOUNDED_FIELD_PATH = ROOT / "BoundedTextField.qml"
+
+
+def bounded_field() -> str:
+    assert BOUNDED_FIELD_PATH.exists(), "BoundedTextField.qml must exist"
+    return BOUNDED_FIELD_PATH.read_text()
+
+
+def test_bounded_paste_field_uses_fixed_process_argv_without_a_shell():
+    field = bounded_field()
+    assert "Process {" in field
+    assert 'command: ["python3", root.backend, "--clipboard", root.pasteKind]' in field
+    assert '"bash", "-c"' not in field
+    assert "StdioCollector" in field
+
+
+def test_bounded_paste_field_claims_keyboard_and_pointer_paste():
+    field = bounded_field()
+    assert "Keys.onShortcutOverride" in field
+    assert "event.matches(StandardKey.Paste)" in field
+    assert "Keys.onPressed" in field
+    assert "root.requestBoundedPaste()" in field
+    assert "TapHandler" in field
+    assert "Qt.RightButton | Qt.MiddleButton" in field
+    assert "Quickshell.clipboardText" not in field
+    assert ".paste(" not in field
+
+
+def test_bounded_paste_field_rejects_stale_results():
+    field = bounded_field()
+    assert "requestGeneration" in field
+    assert "generation !== root.requestGeneration" in field
+
+
+def test_bounded_paste_field_replaces_selection_within_maximum_length():
+    field = bounded_field()
+    assert "selectionStart" in field
+    assert "selectionEnd" in field
+    assert "maximumLength" in field
+    assert "root.remove(" in field
+    assert "root.insert(" in field
+
+
+def test_server_filter_uses_the_filter_bounded_paste_preset():
+    assert "BoundedTextField {\n      id: filterInput" in SERVER_LIST
+    assert "backend: list.host.backend" in SERVER_LIST
+    assert 'pasteKind: "filter"' in SERVER_LIST
+    assert "maximumLength: 4096" in SERVER_LIST
+    assert not re.search(r"^\s*TextField\s*\{", SERVER_LIST, re.M)
+
+
+def test_profile_import_uses_the_key_bounded_paste_preset():
+    assert "BoundedTextField {\n    id: input" in PROFILE_BAR
+    assert "backend: bar.host.backend" in PROFILE_BAR
+    assert 'pasteKind: "key"' in PROFILE_BAR
+    assert "maximumLength: 65536" in PROFILE_BAR
+    assert "password: bar.keyImport" in PROFILE_BAR
+    assert not re.search(r"^\s*TextField\s*\{", PROFILE_BAR, re.M)
+
+
+def test_speed_url_uses_the_url_bounded_paste_preset():
+    assert "BoundedTextField {\n            id: urlField" in CHECK_CARD
+    assert "backend: card.host.backend" in CHECK_CARD
+    assert 'pasteKind: "url"' in CHECK_CARD
+    assert "maximumLength: 8192" in CHECK_CARD
+    assert not re.search(r"^\s*TextField\s*\{", CHECK_CARD, re.M)
 
 
 def test_server_list_is_a_listview_without_repeater():

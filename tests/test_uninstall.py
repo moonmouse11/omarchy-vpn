@@ -3,6 +3,7 @@ before the plugin, its script or the sudoers rule that runs it are removed. With
 rules left behind block all traffic until a reboot."""
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ _REAL_RUN = subprocess.run
 _REAL_POPEN = subprocess.Popen
 
 SCRIPT = Path(__file__).parent.parent / "uninstall.sh"
+MANAGED_BLOCK = SCRIPT.parent / "scripts" / "omarchy-vpn-managed-block"
 
 
 def _commands() -> list[str]:
@@ -102,6 +104,76 @@ def test_uninstall_removes_root_incy_package(monkeypatch, tmp_path, cleanup_fail
 def test_make_uninstall_runs_the_script():
     lines = (Path(__file__).parent.parent / "Makefile").read_text().splitlines()
     assert lines[lines.index("uninstall:") + 1].strip() == "@bash uninstall.sh"
+
+
+def _run_uninstall_with_bindings(monkeypatch, tmp_path, content):
+    monkeypatch.setattr(subprocess, "Popen", _REAL_POPEN)
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts"
+    scripts.mkdir(parents=True)
+    helper = scripts / MANAGED_BLOCK.name
+    helper.write_bytes(MANAGED_BLOCK.read_bytes())
+    helper.chmod(0o755)
+    root = tmp_path / "root"
+    script = repo / "uninstall.sh"
+    script.write_text(
+        SCRIPT.read_text()
+        .replace("/usr/local", str(root))
+        .replace("/etc/sudoers.d", str(root / "sudoers"))
+    )
+    home = tmp_path / "home"
+    bindings = home / ".config" / "hypr" / "bindings.lua"
+    if content is not None:
+        bindings.parent.mkdir(parents=True)
+        bindings.write_text(content)
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    for name, body in {
+        "sudo": 'exec "$@"',
+        "nft": "exit 1",
+        "omarchy": "exit 0",
+        "omarchy-shell": "exit 0",
+        "python3": f'exec "{sys.executable}" "$@"',
+        "systemctl": "exit 0",
+    }.items():
+        shim = shims / name
+        shim.write_text(f"#!/bin/sh\n{body}\n")
+        shim.chmod(0o755)
+    result = _REAL_RUN(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{shims}:/usr/bin:/bin", "HOME": str(home)},
+    )
+    return result, bindings
+
+
+def test_uninstall_removes_only_one_complete_bindings_block(monkeypatch, tmp_path):
+    result, bindings = _run_uninstall_with_bindings(
+        monkeypatch,
+        tmp_path,
+        "before\n-- >>> omarchy-vpn\nmanaged\n-- <<< omarchy-vpn\nafter\n",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert bindings.read_text() == "before\nafter\n"
+
+
+def test_uninstall_missing_bindings_file_succeeds(monkeypatch, tmp_path):
+    result, bindings = _run_uninstall_with_bindings(monkeypatch, tmp_path, None)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not bindings.exists()
+
+
+def test_uninstall_reports_malformed_bindings_without_modifying_it(monkeypatch, tmp_path):
+    original = "before\n-- >>> omarchy-vpn\nunterminated\nafter must survive\n"
+    result, bindings = _run_uninstall_with_bindings(monkeypatch, tmp_path, original)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "malformed omarchy-vpn marker block" in result.stderr
+    assert "bindings.lua was not changed" in result.stderr
+    assert bindings.read_text() == original
 
 
 def _at(commands, needle):

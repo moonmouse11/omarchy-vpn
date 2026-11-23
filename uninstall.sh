@@ -28,7 +28,9 @@ systemctl --user daemon-reload 2>/dev/null || true
 if [[ -n ${XDG_RUNTIME_DIR:-} ]]; then
     [[ ! -S "$XDG_RUNTIME_DIR/omarchy-vpn/backend.sock" ]] || rm -f "$XDG_RUNTIME_DIR/omarchy-vpn/backend.sock"
 fi
-sed -i '/^-- >>> omarchy-vpn$/,/^-- <<< omarchy-vpn$/d' "$HOME/.config/hypr/bindings.lua" 2>/dev/null || true
+if ! "$REPO_DIR/scripts/omarchy-vpn-managed-block" remove "$HOME/.config/hypr/bindings.lua"; then
+    echo "warning: malformed omarchy-vpn markers; bindings.lua was not changed" >&2
+fi
 sudo rm -f /usr/local/bin/happ-killswitch /usr/local/bin/openvpn-dns-updown /usr/local/bin/omarchy-vpn-helper /usr/local/bin/omarchy-vpn-incy-network /usr/local/bin/omarchy-vpn-dns-bootstrap
 sudo rm -rf /usr/local/lib/omarchy-vpn
 rm -f "$HOME/.config/happ-killswitch.conf"

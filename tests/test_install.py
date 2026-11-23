@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ _REAL_POPEN = subprocess.Popen
 
 INSTALL = Path(__file__).resolve().parent.parent / "install.sh"
 UNIT = INSTALL.parent / "systemd" / "omarchy-vpn-backend.service"
+MANAGED_BLOCK = INSTALL.parent / "scripts" / "omarchy-vpn-managed-block"
 
 
 def lines() -> list[str]:
@@ -241,13 +243,19 @@ def _install_from_checkout(monkeypatch, tmp_path, missing=(), systemctl_body=Non
     (repo / "install.sh").write_text(INSTALL.read_text())
     for name in set(HELPERS) - set(missing):
         (repo / "scripts" / name).write_text((INSTALL.parent / "scripts" / name).read_text())
+    managed_block = repo / "scripts" / MANAGED_BLOCK.name
+    managed_block.write_bytes(MANAGED_BLOCK.read_bytes())
+    managed_block.chmod(0o755)
     root.mkdir()
     shims.mkdir()
     log = tmp_path / "log"
     log.mkdir()
+    managed_python = (
+        f'case "$*" in *omarchy-vpn-managed-block*) exec "{sys.executable}" "$@";; esac\nexit 0'
+    )
     for cmd, body in (
         ("omarchy-shell", "exit 0"),
-        ("python3", "exit 0"),
+        ("python3", managed_python),
         ("omarchy", "exit 0"),
         ("systemctl", systemctl_body or 'echo "$@" >> "$LOG/systemctl.log"'),
     ):
@@ -413,6 +421,54 @@ def test_install_lifecycle_is_idempotent_on_rerun(monkeypatch, tmp_path):
         },
     )
     assert again.returncode == 0, again.stdout + again.stderr
+
+
+def test_install_replaces_only_one_complete_bindings_block(monkeypatch, tmp_path):
+    bindings = tmp_path / ".config" / "hypr" / "bindings.lua"
+    bindings.parent.mkdir(parents=True)
+    bindings.write_text("before\n-- >>> omarchy-vpn\nold binding\n-- <<< omarchy-vpn\nafter\n")
+
+    result, repo, _ = _install_from_checkout(monkeypatch, tmp_path)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    expected = (
+        "before\n"
+        "-- >>> omarchy-vpn\n"
+        'o.bind("SUPER + SHIFT + V", "VPN window", "omarchy-shell -q omarchy-vpn window")\n'
+        'o.window({ class = "^org.quickshell$", title = "^VPN( Check)?$" }, '
+        '{ tag = "+floating-window" })\n'
+        "-- <<< omarchy-vpn\n"
+        "after\n"
+    )
+    assert bindings.read_text() == expected
+
+    again = _REAL_RUN(
+        ["bash", str(repo / "install.sh")],
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": f"{tmp_path / 'bin'}:/usr/bin:/bin",
+            "HOME": str(tmp_path),
+            "REPO": str(repo),
+            "ROOT": str(tmp_path / "root"),
+            "LOG": str(tmp_path / "log"),
+        },
+    )
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert bindings.read_text() == expected
+
+
+def test_install_refuses_malformed_bindings_without_modifying_it(monkeypatch, tmp_path):
+    bindings = tmp_path / ".config" / "hypr" / "bindings.lua"
+    bindings.parent.mkdir(parents=True)
+    original = "before\n-- >>> omarchy-vpn\nunterminated\nafter must survive\n"
+    bindings.write_text(original)
+
+    result, _, _ = _install_from_checkout(monkeypatch, tmp_path)
+
+    assert result.returncode != 0
+    assert "malformed omarchy-vpn marker block" in result.stderr
+    assert bindings.read_text() == original
 
 
 def test_upgrade_replaces_the_backend_with_the_service_stopped(monkeypatch, tmp_path):

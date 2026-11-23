@@ -99,6 +99,22 @@ def test_vless_outbound_structure():
     assert out["streamSettings"]["grpcSettings"]["serviceName"] == "SVC"
 
 
+def test_keys_proxy_inbounds_are_loopback_only():
+    cfg = keys._build_xray_config(keys.parse_key(ss_url()))
+    proxy_inbounds = {
+        inbound["protocol"]: inbound
+        for inbound in cfg["inbounds"]
+        if inbound["protocol"] in {"socks", "http"}
+    }
+    assert {name: inbound.get("listen") for name, inbound in proxy_inbounds.items()} == {
+        "socks": "127.0.0.1",
+        "http": "127.0.0.1",
+    }
+    assert "listen" not in next(
+        inbound for inbound in cfg["inbounds"] if inbound["protocol"] == "tun"
+    )
+
+
 def test_parse_key_dispatch():
     assert keys.parse_key(ss_url())["kind"] == "ss"
     assert keys.parse_key("vless://3874802c-d7fb-43e3-aeed-d4413fe444b2@h.com:1")["kind"] == "vless"

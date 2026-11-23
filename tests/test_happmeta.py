@@ -218,6 +218,18 @@ def test_build_runtime_config_merges_like_gui():
     }
     cfg = happmeta.build_runtime_config(server_cfg)
     assert [i["protocol"] for i in cfg["inbounds"]] == ["socks", "http", "tun"]
+    proxy_inbounds = {
+        inbound["protocol"]: inbound
+        for inbound in cfg["inbounds"]
+        if inbound["protocol"] in {"socks", "http"}
+    }
+    assert {name: inbound.get("listen") for name, inbound in proxy_inbounds.items()} == {
+        "socks": "127.0.0.1",
+        "http": "127.0.0.1",
+    }
+    assert "listen" not in next(
+        inbound for inbound in cfg["inbounds"] if inbound["protocol"] == "tun"
+    )
     assert cfg["dns"]["tag"] == "dns-in"
     tags = [o["tag"] for o in cfg["outbounds"]]
     assert "dns-out" in tags and "dns-direct" in tags and len(tags) == 4

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-23
+
+### Upgrade notes
+
+Run **Update setup** in the panel (or `make install`) after updating. This copies the hardened
+backend and restarts the shell; updating the plugin clone alone does not update installed backend
+files. Existing profiles, keys, subscriptions, favourites and recent connections are retained.
+
+### Security
+
+- Bind the unauthenticated local Xray SOCKS and HTTP inbounds to `127.0.0.1`; the TUN inbound
+  remains unchanged. Generated Happ and key configurations are covered by the pinned Xray suite.
+- Preserve `bindings.lua` when the managed marker block is malformed, duplicated, reversed or
+  nested. Installer replacement and uninstall removal validate one complete pair before an atomic
+  update, retaining unrelated bytes, file mode and symlinked dotfiles.
+- Route server-filter, custom speed-test URL and key/path paste through a fixed `wl-paste` command
+  with one two-second deadline and byte limits of 4 KiB, 8 KiB and 64 KiB. Ctrl+V, Shift+Insert,
+  right-click and middle-click cannot bypass the bounded reader; stale results cannot overwrite a
+  newer request, and imported keys remain masked and leave QML over stdin rather than argv.
+- Retain the 16 MiB subscription response limit introduced in 0.5.0: the bound is applied before
+  decoding, oversized responses are not retried and the last valid cache is preserved.
+
+### Tests
+
+- Extend the disposable Omarchy VM gate with real Ctrl+V and Shift+Insert input, oversized and
+  stalled clipboard transfers, focus recovery, URL/key fields and secret-argv/log checks.
+- Add generated-config regressions for loopback-only Xray proxies and installer/uninstaller tests
+  for every malformed marker shape, symlink preservation and atomic replacement.
+
 ## [0.5.0] - 2026-11-20
 
 ### Upgrade notes

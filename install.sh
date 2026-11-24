@@ -245,8 +245,7 @@ fi
 BINDINGS="$HOME/.config/hypr/bindings.lua"
 if [[ -f "$BINDINGS" ]]; then
     echo "==> SUPER+Shift+V opens the VPN window ($BINDINGS)"
-    sed -i '/^-- >>> omarchy-vpn$/,/^-- <<< omarchy-vpn$/d' "$BINDINGS"
-    cat >> "$BINDINGS" <<EOF
+    "$REPO_DIR/scripts/omarchy-vpn-managed-block" replace "$BINDINGS" <<EOF
 -- >>> omarchy-vpn
 o.bind("SUPER + SHIFT + V", "VPN window", "omarchy-shell -q $PLUGIN_ID window")
 o.window({ class = "^org.quickshell$", title = "^VPN( Check)?$" }, { tag = "+floating-window" })

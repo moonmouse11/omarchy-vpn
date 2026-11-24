@@ -47,16 +47,19 @@ Column {
     font.bold: true
   }
 
-  TextField {
+  BoundedTextField {
     id: input
     visible: bar.importing
     width: parent.width
     foreground: bar.host.foreground
+    backend: bar.host.backend
+    pasteKind: "key"
+    maximumLength: 65536
     // a key is a password: never shown, never in argv (stdin, see Widget.importKey)
     password: bar.keyImport
     placeholderText: bar.keyImport ? "Paste a vless:// or ss:// key" : "Path to the config file"
     onAccepted: bar.submit()
-    Keys.onPressed: function(event) {
+    onUnhandledKeyPressed: function(event) {
       if (event.key === Qt.Key_Escape) { bar.host.closeProfileBar(); event.accepted = true }
     }
   }

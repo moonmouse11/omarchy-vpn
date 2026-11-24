@@ -250,10 +250,13 @@ ListView {
       }
     }
 
-    TextField {
+    BoundedTextField {
       id: filterInput
       width: parent.width
       foreground: list.host.foreground
+      backend: list.host.backend
+      pasteKind: "filter"
+      maximumLength: 4096
       placeholderText: "Filter servers — press /, Enter to apply"
       text: list.host.serverFilter
       onAccepted: {
@@ -265,7 +268,7 @@ ListView {
         }
         list.host.activateServerRow(list.host.serverRows[Math.max(0, list.host.serverCursor)])
       }
-      Keys.onPressed: function(event) {
+      onUnhandledKeyPressed: function(event) {
         if (event.key === Qt.Key_Down) { list.host.moveServerCursor(1); event.accepted = true }
         else if (event.key === Qt.Key_Up) { list.host.moveServerCursor(-1); event.accepted = true }
         else if (event.key === Qt.Key_Escape) {

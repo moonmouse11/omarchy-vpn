@@ -25,6 +25,7 @@ SUBS_REFRESH_RETRY = 60  # seconds, avoid spawning a worker per status tick when
 # Local inbounds the GUI adds to every subscription config (from a capture).
 DEFAULT_INBOUNDS = [
     {
+        "listen": "127.0.0.1",
         "port": 10808,
         "protocol": "socks",
         "settings": {"auth": "noauth", "udp": True},
@@ -32,6 +33,7 @@ DEFAULT_INBOUNDS = [
         "tag": "socks",
     },
     {
+        "listen": "127.0.0.1",
         "port": 10809,
         "protocol": "http",
         "settings": {"allowTransparent": False},

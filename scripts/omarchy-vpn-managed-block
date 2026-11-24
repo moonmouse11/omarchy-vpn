@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Safely replace or remove omarchy-vpn's bindings.lua block."""
+
+from __future__ import annotations
+
+import os
+import stat
+import sys
+import tempfile
+from pathlib import Path
+
+START = b"-- >>> omarchy-vpn"
+END = b"-- <<< omarchy-vpn"
+
+
+class BlockError(Exception):
+    pass
+
+
+def _marker_indexes(data: bytes) -> tuple[list[bytes], list[int], list[int]]:
+    lines = data.splitlines(keepends=True)
+    starts = [i for i, line in enumerate(lines) if line.rstrip(b"\r\n") == START]
+    ends = [i for i, line in enumerate(lines) if line.rstrip(b"\r\n") == END]
+    return lines, starts, ends
+
+
+def _complete_pair(data: bytes) -> tuple[list[bytes], int, int] | None:
+    lines, starts, ends = _marker_indexes(data)
+    if not starts and not ends:
+        return None
+    if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:
+        raise BlockError("malformed omarchy-vpn marker block")
+    return lines, starts[0], ends[0]
+
+
+def _replacement_block(data: bytes) -> bytes:
+    pair = _complete_pair(data)
+    if pair is None:
+        raise BlockError("replacement must contain one complete omarchy-vpn marker block")
+    lines, start, end = pair
+    if start != 0 or end != len(lines) - 1:
+        raise BlockError("replacement must contain only the omarchy-vpn marker block")
+    return data
+
+
+def _write_atomic(path: Path, data: bytes, mode: int) -> None:
+    fd, temporary = tempfile.mkstemp(prefix=".omarchy-vpn.", dir=path.parent)
+    try:
+        os.fchmod(fd, stat.S_IMODE(mode))
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def update(operation: str, path: Path, replacement: bytes = b"") -> None:
+    if not path.exists():
+        if operation == "remove":
+            return
+        raise BlockError(f"file not found: {path}")
+
+    target = path.resolve(strict=True)
+    original = target.read_bytes()
+    pair = _complete_pair(original)
+
+    if operation == "remove":
+        if pair is None:
+            return
+        lines, start, end = pair
+        updated = b"".join([*lines[:start], *lines[end + 1 :]])
+    else:
+        block = _replacement_block(replacement)
+        if pair is None:
+            separator = b"" if not original or original.endswith((b"\n", b"\r")) else b"\n"
+            updated = original + separator + block
+        else:
+            lines, start, end = pair
+            updated = b"".join([*lines[:start], block, *lines[end + 1 :]])
+
+    if updated != original:
+        _write_atomic(target, updated, target.stat().st_mode)
+
+
+def main() -> int:
+    if len(sys.argv) != 3 or sys.argv[1] not in {"replace", "remove"}:
+        print(f"usage: {Path(sys.argv[0]).name} replace|remove PATH", file=sys.stderr)
+        return 2
+    operation = sys.argv[1]
+    replacement = sys.stdin.buffer.read() if operation == "replace" else b""
+    try:
+        update(operation, Path(sys.argv[2]), replacement)
+    except (BlockError, OSError) as error:
+        print(error, file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

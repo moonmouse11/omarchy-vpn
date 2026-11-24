@@ -137,6 +137,29 @@ def observations(tmp_path):
         },
     }.items():
         (tmp_path / f"{name}.json").write_text(json.dumps(data))
+    for name, data in {
+        "paste-valid": {
+            "fieldText": "City 198",
+            "appliedFilter": "",
+            "filterFocused": True,
+        },
+        "paste-oversize": {"fieldText": "", "filterFocused": True},
+        "paste-timeout": {"fieldText": "", "filterFocused": True},
+        "paste-recovered": {"fieldText": "City 197", "filterFocused": True},
+        "paste-url": {"urlText": "https://example.com/vm.bin", "urlFocused": True},
+        "paste-key": {"keyLength": 48, "keyMasked": True, "keyFocused": True},
+        "paste-process": {"clipboardProcessSeen": True, "secretInArgv": False},
+        "paste-evidence": {
+            "paste_valid": True,
+            "paste_oversize_rejected": True,
+            "paste_timeout_recovered": True,
+            "paste_focus_retained": True,
+            "paste_secret_not_in_argv": True,
+            "paste_url_field": True,
+            "paste_key_masked": True,
+        },
+    }.items():
+        (tmp_path / f"{name}.json").write_text(json.dumps(data))
     (tmp_path / "actions.log").write_text("")
     (tmp_path / "shell-journal.txt").write_text("clean runtime\n")
     (tmp_path / "windscribe-handover.json").write_text(
@@ -179,6 +202,50 @@ def test_guest_captures_expanded_folded_and_scrolled_geometry():
 
 def test_runtime_verifier_accepts_full_filter_on_both_surfaces(observations):
     _verifier()(observations)
+
+
+def test_guest_records_bounded_paste_evidence():
+    for name in ("paste-valid", "paste-oversize", "paste-timeout", "paste-recovered"):
+        assert f"snapshot {name}" in GUEST_SCRIPT
+    assert "auditOpenUrlPaste" in GUEST_SCRIPT
+    assert "auditOpenKeyPaste" in GUEST_SCRIPT
+    for key in (
+        "paste_valid",
+        "paste_oversize_rejected",
+        "paste_timeout_recovered",
+        "paste_focus_retained",
+        "paste_secret_not_in_argv",
+    ):
+        assert key in GUEST_SCRIPT
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "paste_valid",
+        "paste_oversize_rejected",
+        "paste_timeout_recovered",
+        "paste_focus_retained",
+        "paste_secret_not_in_argv",
+        "paste_url_field",
+        "paste_key_masked",
+    ],
+)
+def test_runtime_verifier_rejects_missing_bounded_paste_evidence(observations, key):
+    path = observations / "paste-evidence.json"
+    data = json.loads(path.read_text())
+    data[key] = False
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(ValueError):
+        _verifier()(observations)
+
+
+def test_runtime_verifier_rejects_clipboard_secret_in_logs(observations):
+    (observations / "shell-journal.txt").write_text("vm-secret-DO-NOT-LEAK")
+
+    with pytest.raises(ValueError):
+        _verifier()(observations)
 
 
 @pytest.mark.parametrize(

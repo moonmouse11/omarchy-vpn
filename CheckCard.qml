@@ -160,13 +160,16 @@ Item {
           width: parent.width
           spacing: Style.space(8)
 
-          TextField {
+          BoundedTextField {
             id: urlField
             width: parent.width - measureButton.width - parent.spacing
             foreground: card.host.foreground
+            backend: card.host.backend
+            pasteKind: "url"
+            maximumLength: 8192
             placeholderText: "Custom URL (http/https, a large file)"
             onAccepted: card.measureUrl()
-            Keys.onPressed: function(event) {
+            onUnhandledKeyPressed: function(event) {
               if (event.key === Qt.Key_Escape) { card.focusKeys(); event.accepted = true }
             }
           }

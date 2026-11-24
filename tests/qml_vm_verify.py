@@ -138,10 +138,66 @@ def _verify_viewport_stability(output: Path) -> None:
         raise ValueError(f"an older deferred restore beat the newest snapshot: {race}")
 
 
+def _verify_bounded_paste(output: Path) -> None:
+    def read(name: str) -> dict:
+        return json.loads((output / f"{name}.json").read_text())
+
+    valid = read("paste-valid")
+    oversize = read("paste-oversize")
+    timed_out = read("paste-timeout")
+    recovered = read("paste-recovered")
+    url = read("paste-url")
+    key = read("paste-key")
+    process = read("paste-process")
+    evidence = read("paste-evidence")
+    required = {
+        "paste_valid",
+        "paste_oversize_rejected",
+        "paste_timeout_recovered",
+        "paste_focus_retained",
+        "paste_secret_not_in_argv",
+        "paste_url_field",
+        "paste_key_masked",
+    }
+    if set(evidence) != required or any(evidence[name] is not True for name in required):
+        raise ValueError(f"bounded paste evidence is incomplete: {evidence}")
+    if (
+        valid.get("fieldText") != "City 198"
+        or valid.get("appliedFilter") != ""
+        or valid.get("filterFocused") is not True
+        or oversize.get("fieldText") != ""
+        or oversize.get("filterFocused") is not True
+        or timed_out.get("fieldText") != ""
+        or timed_out.get("filterFocused") is not True
+        or recovered.get("fieldText") != "City 197"
+        or recovered.get("filterFocused") is not True
+    ):
+        raise ValueError(
+            "filter bounded paste failed: "
+            f"valid={valid}, oversize={oversize}, timeout={timed_out}, recovered={recovered}"
+        )
+    if url != {"urlText": "https://example.com/vm.bin", "urlFocused": True}:
+        raise ValueError(f"URL bounded paste failed: {url}")
+    if (
+        not isinstance(key.get("keyLength"), int)
+        or key["keyLength"] < 16
+        or key.get("keyMasked") is not True
+        or key.get("keyFocused") is not True
+    ):
+        raise ValueError(f"key bounded paste was not masked: {key}")
+    if process != {"clipboardProcessSeen": True, "secretInArgv": False}:
+        raise ValueError(f"clipboard secret reached process argv: {process}")
+    marker = "vm-secret-DO-NOT-LEAK"
+    for path in output.iterdir():
+        if path.suffix in {".json", ".log", ".txt"} and marker in path.read_text(errors="ignore"):
+            raise ValueError(f"clipboard secret reached evidence/log output: {path.name}")
+
+
 def verify(output: Path) -> None:
     _verify_windscribe_handover(output)
     _verify_force_confirmation(output)
     _verify_viewport_stability(output)
+    _verify_bounded_paste(output)
     if (output / "actions.log").read_text().strip():
         raise ValueError("filter typing invoked a vendor action")
     if RUNTIME_ERRORS.search((output / "shell-journal.txt").read_text()):
